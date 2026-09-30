@@ -1,2 +1,7 @@
-Manrope — SIL Open Font License 1.1 — Copyright 2018 The Manrope Project Authors (https://github.com/sharanda/manrope)
-Syne — SIL Open Font License 1.1 — Copyright 2020 The Syne Project Authors (https://gitlab.com/bonjour-monde/fonts/syne)
+Web fonts bundled with the musik Web UI (self-hosted, no runtime request to Google):
+
+- Unbounded — Copyright 2022 The Unbounded Project Authors (NaN). SIL Open Font License 1.1.
+- IBM Plex Sans, IBM Plex Mono — Copyright © 2017 IBM Corp. SIL Open Font License 1.1.
+
+Files were downloaded from fonts.gstatic.com (cyrillic, cyrillic-ext, latin, latin-ext subsets).
+License text: https://openfontlicense.org

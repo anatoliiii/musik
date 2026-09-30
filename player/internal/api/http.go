@@ -117,10 +117,10 @@ func staticCacheControl(path string) string {
 	}
 	switch path {
 	case "/", "", "/index.html":
-		// Revalidate the page itself: with max-age=3600 a browser keeps an old
-		// index.html (and the app.js it pairs with) for up to an hour after a deploy.
+		// The page is tiny and names its assets with ?v=<content hash>, so always revalidate
+		// it: a new deploy then reaches browsers at once instead of after an hour.
 		return "no-cache"
-	case "/app.js", "/style.css", "/fonts.css":
+	case "/app.js", "/style.css", "/redesign.css", "/fonts.css":
 		return "public, max-age=3600"
 	default:
 		return ""

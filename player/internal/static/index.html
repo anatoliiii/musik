@@ -3,11 +3,12 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#1a120c" />
+  <meta name="theme-color" content="#101114" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>musik</title>
-  <link rel="stylesheet" href="/fonts.css" />
-  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="/fonts.css?v=25b38b046e" />
+  <link rel="stylesheet" href="/style.css?v=586e439651" />
+  <link rel="stylesheet" href="/redesign.css?v=668d8d6fbe" />
 </head>
 <body>
   <div id="login-gate" class="login-gate" hidden>
@@ -24,16 +25,18 @@
   <div class="shell" id="app-shell">
     <header class="top">
       <div class="brand-block">
-        <div class="brand">musik</div>
+        <div class="brand">musik<span class="brand-dot">.</span></div>
         <p class="tagline" id="maturity">твой локальный микс</p>
       </div>
       <nav class="tabs" aria-label="Разделы">
-        <button type="button" class="tab active" data-view="home" aria-current="page">Главная</button>
-        <button type="button" class="tab" data-view="player">Сейчас</button>
-        <button type="button" class="tab" data-view="library">Библиотека</button>
-        <button type="button" class="tab" data-view="collections">Плейлисты</button>
-        <button type="button" class="tab" data-view="profile">Профиль</button>
-        <button type="button" class="tab" data-view="upload">Загрузка</button>
+        <button type="button" class="tab active" data-view="home" data-nav="listen" aria-current="page"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12h.01M16.2 7.8a6 6 0 0 1 0 8.4M7.8 16.2a6 6 0 0 1 0-8.4M19.1 4.9a10 10 0 0 1 0 14.2M4.9 19.1a10 10 0 0 1 0-14.2"/></svg><span>Слушать</span></button>
+        <button type="button" class="tab" data-view="library" data-nav="search" data-lib-default="tracks"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><span>Поиск</span></button>
+        <button type="button" class="tab" data-view="library" data-nav="collection" data-lib-default="albums"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4v16M9 4v16M14 5l5 15"/></svg><span>Коллекция</span></button>
+        <button type="button" class="tab" data-view="profile" data-nav="me"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg><span>Я</span></button>
+        <span class="tabs-divider" aria-hidden="true"></span>
+        <button type="button" class="tab tab-secondary" data-view="player" data-nav="now">Сейчас играет</button>
+        <button type="button" class="tab tab-secondary" data-view="collections" data-nav="collection">Плейлисты</button>
+        <button type="button" class="tab tab-secondary" data-view="upload" data-nav="me">Загрузка</button>
         <button type="button" class="tab logout-tab" id="btn-logout" title="Выйти из аккаунта" hidden>Выйти</button>
       </nav>
     </header>
@@ -42,17 +45,19 @@
       <section id="view-home" class="view active">
         <div class="home-intro">
           <div class="home-copy">
-            <span class="eyebrow">Твоя музыка · твои правила</span>
-            <h1>Что послушаем?</h1>
-            <p>Запусти персональное радио или выбери настроение из коллекции ниже.</p>
+            <span class="eyebrow">Радио под тебя</span>
+            <h1>Поставить что-нибудь в&nbsp;твоём духе</h1>
+            <p>Учится на лайках и скипах. Выбери настроение — или просто жми «Слушать».</p>
           </div>
           <div class="home-actions">
-            <button type="button" class="btn primary hero-play" id="btn-radio"><svg class="glyph" viewBox="8.75 5.5 10 13" width="12" height="16" aria-hidden="true"><path fill="currentColor" d="M8.75 5.5v13l10-6.5z"/></svg>Запустить радио</button>
+            <button type="button" class="btn primary hero-play" id="btn-radio"><svg class="glyph" viewBox="8.75 5.5 10 13" width="12" height="16" aria-hidden="true"><path fill="currentColor" d="M8.75 5.5v13l10-6.5z"/></svg>Слушать радио</button>
             <button type="button" class="btn" id="btn-share-radio" title="Ссылка для VLC, браузера или телефона">Поделиться</button>
             <button type="button" class="btn quiet" id="btn-refresh-mixes">
               <span id="refresh-label">Обновить миксы</span>
             </button>
           </div>
+          <div class="home-moods" id="home-moods" aria-label="Настроения"></div>
+          <div class="home-taste" id="home-taste" aria-label="Сейчас в профиле"></div>
           <div class="home-status">
             <p class="status-line" id="job-status" hidden></p>
             <p class="status-line" id="share-url-line" hidden></p>
@@ -68,6 +73,20 @@
             <button type="button" class="shelf-nav prev" data-for="mix-cards" aria-label="Назад">‹</button>
             <div class="shelf-row" id="mix-cards"></div>
             <button type="button" class="shelf-nav next" data-for="mix-cards" aria-label="Вперёд">›</button>
+          </div>
+        </section>
+
+        <section class="shelf" id="games-shelf" hidden>
+          <div class="shelf-head">
+            <h2>Полка игр</h2>
+            <div class="shelf-head-actions">
+              <button type="button" class="text-link" data-lib-tab="games">все саундтреки</button>
+            </div>
+          </div>
+          <div class="shelf-rail">
+            <button type="button" class="shelf-nav prev" data-for="home-games" aria-label="Назад">‹</button>
+            <div class="shelf-row smooth game-row" id="home-games"></div>
+            <button type="button" class="shelf-nav next" data-for="home-games" aria-label="Вперёд">›</button>
           </div>
         </section>
 
@@ -208,6 +227,7 @@
             </div>
             <h2 id="title">Выбери микс</h2>
             <p id="artist">или запусти радио на главной</p>
+            <div class="np-passport" id="now-passport" aria-label="Паспорт трека"></div>
 
             <div class="progress-wrap">
               <input type="range" id="seek" min="0" max="1000" value="0" step="1" aria-label="Прогресс" />
@@ -221,19 +241,27 @@
 
             <div class="transport">
               <div class="transport-btns">
-                <button type="button" class="icon-btn" id="btn-later" title="В «Потом»">◷</button>
                 <button type="button" class="icon-btn" id="btn-dislike" title="Dislike">✕</button>
                 <button type="button" class="icon-btn" id="btn-back" title="Назад"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5.6 5.2h2.2v13.6H5.6zm11.6.3v13.6L8.4 12z"/></svg></button>
                 <button type="button" class="icon-btn play-btn" id="btn-play" title="Play/Pause"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.75 5.5v13l10-6.5z"/></svg></button>
                 <button type="button" class="icon-btn primary-icon" id="btn-skip" title="Skip">⏭</button>
-                <button type="button" class="icon-btn" id="btn-like" title="Любимая песня">♥</button>
               </div>
               <div class="volume-row">
                 <button type="button" class="icon-btn sm" id="btn-mute" title="Звук" aria-label="Звук"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4.5 9.2h3.4L12.2 5v14l-4.3-4.2H4.5z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M16 9.2a4.2 4.2 0 0 1 0 5.6M18.2 7a7 7 0 0 1 0 10"/></svg></button>
                 <input class="slider" id="volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Громкость">
               </div>
             </div>
+            <div class="np-actions">
+              <button type="button" class="icon-btn" id="btn-like" title="Любимая песня" aria-label="Любимая песня">♥</button>
+              <button type="button" class="icon-btn" id="btn-np-share" title="Поделиться эфиром" aria-label="Поделиться эфиром"><svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 13v6h14v-6"/></svg></button>
+              <button type="button" class="icon-btn" id="btn-np-more" title="Ещё" aria-label="Ещё действия" aria-expanded="false">⋯</button>
+            </div>
+            <div class="np-feedback">
+              <button type="button" class="btn" id="btn-more" title="Радио поставит больше похожего">Больше такого</button>
+              <button type="button" class="btn" id="btn-notthis" title="Не нравится — дальше">Не то</button>
+            </div>
             <div class="fav-extra">
+              <button type="button" class="chip" id="btn-later" title="В «Потом»">в «Потом»</button>
               <button type="button" class="chip" id="btn-fav-artist">♥ артист</button>
               <button type="button" class="chip" id="btn-fav-album">♥ альбом</button>
               <button type="button" class="chip" id="btn-similar-now">похожее</button>
@@ -242,13 +270,20 @@
               <button type="button" class="chip" id="btn-add-pl">в плейлист</button>
             </div>
             <p class="hint-keys">Пробел — play/pause · B — назад · N — skip · L — любимая песня</p>
-            <details class="lyrics-box" id="lyrics-box">
-              <summary>Текст песни</summary>
-              <pre id="lyrics-text" class="lyrics-text">—</pre>
-            </details>
           </div>
         </div>
-        <div class="queue-panel">
+        <aside class="np-side" aria-label="Очередь, текст и объяснения">
+        <div class="np-tabs" role="tablist">
+          <button type="button" class="np-tab active" role="tab" aria-selected="true" data-np-tab="queue">Очередь</button>
+          <button type="button" class="np-tab" role="tab" aria-selected="false" data-np-tab="lyrics">Текст</button>
+          <button type="button" class="np-tab" role="tab" aria-selected="false" data-np-tab="why">Почему</button>
+        </div>
+        <div class="np-pane np-why" data-np-pane="why" id="now-why" hidden></div>
+        <div class="np-pane" data-np-pane="lyrics" hidden>
+          <pre id="lyrics-text" class="lyrics-text">—</pre>
+        </div>
+        <div class="queue-panel np-pane" data-np-pane="queue">
+          <p class="np-queue-why" id="queue-why" hidden></p>
           <div class="queue-head">
             <div>
               <div class="label" id="playlist-label">Дальше</div>
@@ -259,19 +294,22 @@
           <ol id="playlist" class="playlist"></ol>
           <ol id="queue" class="playlist" hidden></ol>
         </div>
+        </aside>
       </section>
 
       <section id="view-library" class="view">
-        <h1 class="page-title">Библиотека</h1>
+        <h1 class="page-title" id="lib-title">Коллекция</h1>
         <p class="sub" id="lib-count">—</p>
         <div class="seg" role="tablist" aria-label="Разделы библиотеки">
-          <button type="button" class="seg-btn active" data-lib="tracks">Треки</button>
-          <button type="button" class="seg-btn" data-lib="artists">Артисты</button>
+          <button type="button" class="seg-btn" data-lib="games">Игры</button>
           <button type="button" class="seg-btn" data-lib="albums">Альбомы</button>
+          <button type="button" class="seg-btn" data-lib="artists">Артисты</button>
+          <button type="button" class="seg-btn active" data-lib="tracks">Треки</button>
           <button type="button" class="seg-btn" data-lib="favorites">Избранное</button>
+          <button type="button" class="seg-btn seg-link" id="seg-playlists">Плейлисты</button>
         </div>
         <div class="lib-tools">
-          <input id="lib-filter" type="search" placeholder="Поиск…" autocomplete="off" />
+          <input id="lib-filter" type="search" placeholder="Трек, альбом, игра…" autocomplete="off" aria-label="Поиск по коллекции" />
           <select id="lib-sort" aria-label="Сортировка"></select>
         </div>
         <ul id="lib-list" class="track-list"></ul>
@@ -412,6 +450,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js"></script>
+  <script src="/app.js?v=4880cac5b9"></script>
 </body>
 </html>

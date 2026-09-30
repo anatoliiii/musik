@@ -33,7 +33,7 @@ func TestStaticCacheHeaders(t *testing.T) {
 		{"/app.js", "public, max-age=3600"},
 		{"/style.css", "public, max-age=3600"},
 		{"/fonts.css", "public, max-age=3600"},
-		{"/fonts/manrope-latin.woff2", "public, max-age=31536000, immutable"},
+		{"/fonts/plex-sans-400-latin.woff2", "public, max-age=31536000, immutable"},
 	}
 	for _, tc := range cases {
 		rec := serve(server, httptest.NewRequest("GET", tc.path, nil))
@@ -82,7 +82,7 @@ func TestGzipJSONAndStaticNotImages(t *testing.T) {
 		t.Fatal("expected gunzipped app.js")
 	}
 
-	req = httptest.NewRequest("GET", "/fonts/manrope-latin.woff2", nil)
+	req = httptest.NewRequest("GET", "/fonts/plex-sans-400-latin.woff2", nil)
 	req.Header.Set("Accept-Encoding", "gzip")
 	rec = serve(server, req)
 	if rec.Code != 200 {
