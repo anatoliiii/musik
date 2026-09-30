@@ -29,7 +29,7 @@ func TestStaticCacheHeaders(t *testing.T) {
 	cases := []struct {
 		path, want string
 	}{
-		{"/", "public, max-age=3600"},
+		{"/", "no-cache"},
 		{"/app.js", "public, max-age=3600"},
 		{"/style.css", "public, max-age=3600"},
 		{"/fonts.css", "public, max-age=3600"},

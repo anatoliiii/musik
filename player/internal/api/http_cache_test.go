@@ -6,8 +6,8 @@ func TestStaticCacheControl(t *testing.T) {
 	cases := []struct {
 		path, want string
 	}{
-		{"/", "public, max-age=3600"},
-		{"/index.html", "public, max-age=3600"},
+		{"/", "no-cache"},
+		{"/index.html", "no-cache"},
 		{"/app.js", "public, max-age=3600"},
 		{"/style.css", "public, max-age=3600"},
 		{"/fonts.css", "public, max-age=3600"},

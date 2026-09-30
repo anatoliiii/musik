@@ -116,7 +116,11 @@ func staticCacheControl(path string) string {
 		return "public, max-age=31536000, immutable"
 	}
 	switch path {
-	case "/", "", "/index.html", "/app.js", "/style.css", "/fonts.css":
+	case "/", "", "/index.html":
+		// Revalidate the page itself: with max-age=3600 a browser keeps an old
+		// index.html (and the app.js it pairs with) for up to an hour after a deploy.
+		return "no-cache"
+	case "/app.js", "/style.css", "/fonts.css":
 		return "public, max-age=3600"
 	default:
 		return ""
