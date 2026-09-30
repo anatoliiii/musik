@@ -68,5 +68,10 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "track not found")
 		return
 	}
+	if out, ok := tj.(map[string]any); ok {
+		if p, err := s.Store.TrackPassport(id); err == nil && p != nil {
+			out["passport"] = p
+		}
+	}
 	writeJSON(w, tj)
 }

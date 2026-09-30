@@ -16,6 +16,7 @@ PRAGMA foreign_keys = ON;
 CREATE TABLE tracks (
  id INTEGER PRIMARY KEY, path TEXT NOT NULL DEFAULT '', file_md5 TEXT, title TEXT,
  artist TEXT, album TEXT, year INTEGER, duration REAL, lufs REAL,
+ bitrate INTEGER, sample_rate INTEGER, channels INTEGER,
  is_active INTEGER NOT NULL DEFAULT 1,
  is_duplicate_of INTEGER, artwork_path TEXT, created_at TEXT
 );

@@ -63,3 +63,48 @@ func TestLibraryFiltersByArtistAndAlbum(t *testing.T) {
 		})
 	}
 }
+
+func TestTrackPassport(t *testing.T) {
+	server := openTestServer(t)
+	if _, err := server.Store.DB.Exec(`DELETE FROM tracks`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO tracks(id, path, title, artist, album, duration, lufs, bitrate, sample_rate, channels)
+		 VALUES (1, '/tmp/one.flac', 'One', 'Artist A', 'Album A', 180, -15, 900000, 44100, 2)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO features(track_id, status, bpm, key_name, mode, lufs) VALUES (1, 'ready', 128, 'A', 'minor', -14.5)`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(server, jsonReq("GET", "/api/tracks/1", ""))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Passport *struct {
+			Format     string  `json:"format"`
+			Bitrate    int64   `json:"bitrate"`
+			SampleRate int64   `json:"sample_rate"`
+			Channels   int64   `json:"channels"`
+			LUFS       float64 `json:"lufs"`
+			BPM        float64 `json:"bpm"`
+			Key        string  `json:"key"`
+			Mode       string  `json:"mode"`
+		} `json:"passport"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	p := got.Passport
+	if p == nil {
+		t.Fatalf("no passport in %s", rec.Body.String())
+	}
+	if p.Format != "FLAC" || p.Bitrate != 900000 || p.SampleRate != 44100 || p.Channels != 2 ||
+		p.LUFS != -14.5 || p.BPM != 128 || p.Key != "A" || p.Mode != "minor" {
+		t.Fatalf("passport = %+v", *p)
+	}
+}

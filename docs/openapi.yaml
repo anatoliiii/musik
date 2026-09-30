@@ -55,6 +55,31 @@ components:
           pattern: '^[0-9a-f]{32}$'
         source:
           type: string
+        passport:
+          $ref: '#/components/schemas/TrackPassport'
+    TrackPassport:
+      type: object
+      description: Technical card of the file; only on GET /api/tracks/{id}. Fields are omitted when unknown.
+      properties:
+        format:
+          type: string
+          description: Upper-case file extension, e.g. FLAC, MP3
+        bitrate:
+          type: integer
+          description: bits per second
+        sample_rate:
+          type: integer
+        channels:
+          type: integer
+        lufs:
+          type: number
+        bpm:
+          type: number
+        key:
+          type: string
+        mode:
+          type: string
+          enum: [major, minor]
     PlaybackEvent:
       type: object
       required: [type, event_id, track_id, session_id]
