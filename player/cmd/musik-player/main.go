@@ -38,8 +38,14 @@ func main() {
 	if err != nil {
 		log.Fatalf("static: %v", err)
 	}
+	var webFS http.FileSystem = http.FS(staticFS)
+	// Development: serve the Web UI from disk so edits show up without a rebuild.
+	if dir := os.Getenv("MUSIK_STATIC_DIR"); dir != "" {
+		log.Printf("serving web UI from %s", dir)
+		webFS = http.Dir(dir)
+	}
 
-	srv := api.New(cfg, store, idx, tp, http.FS(staticFS))
+	srv := api.New(cfg, store, idx, tp, webFS)
 	if err := srv.Reload(); err != nil {
 		log.Fatalf("reload: %v", err)
 	}
