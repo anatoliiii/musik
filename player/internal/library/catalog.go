@@ -1,6 +1,7 @@
 package library
 
 import (
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -20,6 +21,25 @@ type AlbumGroup struct {
 	Tracks       int
 	CoverTrackID int64
 	HasArtwork   bool
+	// Game is true when the album's files live under a game-soundtrack folder
+	// ("Steam OST", "GOG OST"): album titles like "Cyberpunk 2077" say nothing.
+	Game bool
+}
+
+// gameSoundtrackDirs are library folders that hold game soundtracks (see the Steam/GOG importer).
+var gameSoundtrackDirs = []string{"steam ost", "gog ost"}
+
+// IsGameSoundtrackPath reports whether a track path lies in a game-soundtrack folder.
+func IsGameSoundtrackPath(path string) bool {
+	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
+		part = strings.ToLower(strings.TrimSpace(part))
+		for _, dir := range gameSoundtrackDirs {
+			if part == dir {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func MatchArtistAlbum(gotArtist, gotAlbum, wantArtist, wantAlbum string) bool {
@@ -88,6 +108,9 @@ func GroupAlbums(idx *index.Index) []AlbumGroup {
 			by[key] = g
 		}
 		g.Tracks++
+		if IsGameSoundtrackPath(m.Path) {
+			g.Game = true
+		}
 	}
 	out := make([]AlbumGroup, 0, len(by))
 	for _, g := range by {

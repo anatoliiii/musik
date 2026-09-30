@@ -54,3 +54,21 @@ func TestGroupArtistsAndAlbums(t *testing.T) {
 		t.Fatalf("albums=%d, want 3 (empty album skipped): %+v", len(albums), albums)
 	}
 }
+
+func TestGameSoundtrackAlbums(t *testing.T) {
+	idx := testIndex(t, []db.TrackRow{
+		{ID: 1, Title: "Theme", Artist: "Composer A", Album: "Space Game", Path: "/music/Steam OST/Space Game/01.mp3", Embedding: vec(1), Dim: 2},
+		{ID: 2, Title: "Song", Artist: "Band B", Album: "Studio Album", Path: "/music/Band B/Studio Album/01.mp3", Embedding: vec(2), Dim: 2},
+		{ID: 3, Title: "Battle", Artist: "Composer C", Album: "Fantasy Game", Path: "/music/gog ost/Fantasy Game/01.flac", Embedding: vec(3), Dim: 2},
+	})
+	games := map[string]bool{}
+	for _, al := range GroupAlbums(idx) {
+		games[al.Album] = al.Game
+	}
+	if !games["Space Game"] || !games["Fantasy Game"] || games["Studio Album"] {
+		t.Fatalf("game flags = %v", games)
+	}
+	if IsGameSoundtrackPath("/music/Steam OSTs/x.mp3") {
+		t.Fatal("only whole folder names count")
+	}
+}

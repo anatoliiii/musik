@@ -191,7 +191,9 @@ paths:
       summary: Albums
       responses:
         '200':
-          description: '{albums, count}'
+          description: >-
+            {albums, count}. Each album: artist, album, tracks, cover_track_id, artwork,
+            and game=true when its files live under a "Steam OST" or "GOG OST" folder.
   /api/tracks/{id}:
     get:
       summary: Track by id
