@@ -47,7 +47,11 @@ type TrackRow struct {
 }
 
 func Open(path string) (*Store, error) {
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)", path)
+	// _txlock=immediate: transactions take the write lock on BEGIN. A deferred
+	// transaction that reads first and then writes cannot be upgraded once another
+	// writer has committed in WAL mode — SQLite fails it at once (SQLITE_BUSY /
+	// BUSY_SNAPSHOT) instead of waiting for busy_timeout.
+	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate", path)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
