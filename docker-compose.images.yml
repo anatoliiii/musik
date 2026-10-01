@@ -1,0 +1,59 @@
+# Same stack as docker-compose.yml, but from prebuilt images (GitHub Actions →
+# GHCR, see .github/workflows/images.yml) — nothing is compiled locally:
+#
+#   cp .env.example .env        # set MUSIK_PASSWORD, MUSIK_API_TOKEN, MUSIK_SESSION_SECRET, MUSIK_LIBRARY
+#   docker compose -f docker-compose.images.yml pull
+#   docker compose -f docker-compose.images.yml up -d
+#
+# Pin a build with MUSIK_IMAGE_TAG (a short commit sha or a v* tag); default: latest.
+# The worker image includes CPU torch for CLAP; a GPU host can compute embeddings
+# separately and copy data/db + data/cache/embeddings over (see README).
+services:
+  player:
+    image: ghcr.io/anatoliiii/musik-player:${MUSIK_IMAGE_TAG:-latest}
+    ports:
+      - "8787:8787"   # behind a reverse proxy, prefer "127.0.0.1:8787:8787"
+    env_file: .env
+    environment:
+      MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_LIBRARY: /music
+      MUSIK_WORKER_URL: http://worker:8790
+      MUSIK_WORKER_AUTOSTART: "0"
+      MUSIK_PLAYER_ADDR: ":8787"
+    volumes:
+      - musik-data:/data
+      - ${MUSIK_LIBRARY:-./data/music}:/music
+    depends_on:
+      worker:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    image: ghcr.io/anatoliiii/musik-worker:${MUSIK_IMAGE_TAG:-latest}
+    env_file: .env
+    environment:
+      MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_LIBRARY: /music
+      MUSIK_DATA_DIR: /data
+      MUSIK_EMBEDDINGS_CACHE: /data/cache/embeddings
+      MUSIK_ARTWORK_CACHE: /data/cache/artwork
+      MUSIK_WORKER_ADDR: 0.0.0.0:8790
+      MUSIK_PLAYER_RELOAD_URL: http://player:8787/api/reload
+      MUSIK_NIGHTLY_MIXES_TIMEZONE: ${MUSIK_NIGHTLY_MIXES_TIMEZONE:-UTC}
+    volumes:
+      - musik-data:/data
+      - ${MUSIK_LIBRARY:-./data/music}:/music:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import json, urllib.request; assert json.load(urllib.request.urlopen('http://127.0.0.1:8790/health', timeout=2))['status'] == 'ready'"
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+volumes:
+  musik-data:
