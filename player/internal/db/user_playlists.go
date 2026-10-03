@@ -9,40 +9,40 @@ import (
 )
 
 type UserPlaylist struct {
-	ID              int64            `json:"id"`
-	Kind            string           `json:"kind"`
-	Type            string           `json:"type"`
-	Name            string           `json:"name"`
-	Description     string           `json:"description,omitempty"`
-	CreatedAt       string           `json:"created_at"`
-	UpdatedAt       string           `json:"updated_at,omitempty"`
-	CoverTrackID    int64            `json:"cover_track_id,omitempty"`
-	CoverArtwork    string           `json:"cover_artwork,omitempty"`
-	SortMode        string           `json:"sort_mode"`
-	ArchivedAt      string           `json:"archived_at,omitempty"`
-	RuleSchema      int              `json:"rule_schema_version,omitempty"`
-	RuleJSON        string           `json:"rule_json,omitempty"`
-	AllowDuplicates bool             `json:"allow_duplicates"`
+	ID              int64              `json:"id"`
+	Kind            string             `json:"kind"`
+	Type            string             `json:"type"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	CreatedAt       string             `json:"created_at"`
+	UpdatedAt       string             `json:"updated_at,omitempty"`
+	CoverTrackID    int64              `json:"cover_track_id,omitempty"`
+	CoverArtwork    string             `json:"cover_artwork,omitempty"`
+	SortMode        string             `json:"sort_mode"`
+	ArchivedAt      string             `json:"archived_at,omitempty"`
+	RuleSchema      int                `json:"rule_schema_version,omitempty"`
+	RuleJSON        string             `json:"rule_json,omitempty"`
+	AllowDuplicates bool               `json:"allow_duplicates"`
 	Tracks          []UserPlaylistItem `json:"tracks,omitempty"`
-	TrackCount      int              `json:"track_count"`
+	TrackCount      int                `json:"track_count"`
 }
 
 type UserPlaylistItem struct {
-	ItemID            string  `json:"item_id"`
-	Position          int     `json:"position"`
-	TrackID           int64   `json:"track_id,omitempty"`
-	Artist            string  `json:"artist,omitempty"`
-	Title             string  `json:"title,omitempty"`
-	Album             string  `json:"album,omitempty"`
-	Duration          float64 `json:"duration,omitempty"`
-	Source            string  `json:"source"`
-	Note              string  `json:"note,omitempty"`
-	Explanation       string  `json:"explanation,omitempty"`
-	AddedAt           string  `json:"added_at,omitempty"`
-	UnresolvedArtist  string  `json:"unresolved_artist,omitempty"`
-	UnresolvedTitle   string  `json:"unresolved_title,omitempty"`
-	UnresolvedPath    string  `json:"unresolved_path,omitempty"`
-	Unresolved        bool    `json:"unresolved,omitempty"`
+	ItemID           string  `json:"item_id"`
+	Position         int     `json:"position"`
+	TrackID          int64   `json:"track_id,omitempty"`
+	Artist           string  `json:"artist,omitempty"`
+	Title            string  `json:"title,omitempty"`
+	Album            string  `json:"album,omitempty"`
+	Duration         float64 `json:"duration,omitempty"`
+	Source           string  `json:"source"`
+	Note             string  `json:"note,omitempty"`
+	Explanation      string  `json:"explanation,omitempty"`
+	AddedAt          string  `json:"added_at,omitempty"`
+	UnresolvedArtist string  `json:"unresolved_artist,omitempty"`
+	UnresolvedTitle  string  `json:"unresolved_title,omitempty"`
+	UnresolvedPath   string  `json:"unresolved_path,omitempty"`
+	Unresolved       bool    `json:"unresolved,omitempty"`
 }
 
 func validPlaylistType(v string) bool {
@@ -89,25 +89,29 @@ func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 	if pl.AllowDuplicates {
 		dup = 1
 	}
-	var ruleJSON sql.NullString
-	var ruleVer sql.NullInt64
+	var ruleJSON *string
+	var ruleVer *int64
 	if pl.RuleJSON != "" {
-		ruleJSON = sql.NullString{String: pl.RuleJSON, Valid: true}
-		ruleVer = sql.NullInt64{Int64: int64(pl.RuleSchema), Valid: true}
+		ruleJSON = &pl.RuleJSON
+		version := int64(pl.RuleSchema)
+		ruleVer = &version
 	}
-	res, err := s.DB.Exec(`
-INSERT INTO playlists(
-  kind, name, created_at, type, description, updated_at, cover_track_id,
-  cover_artwork, sort_mode, rule_schema_version, rule_json, allow_duplicates
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		pl.Kind, pl.Name, pl.CreatedAt, pl.Type, nullStr(pl.Description), pl.UpdatedAt,
-		nullInt64(pl.CoverTrackID), nullStr(pl.CoverArtwork), pl.SortMode,
-		ruleVer, ruleJSON, dup)
-	if err != nil {
+	var coverTrackID *int64
+	if pl.CoverTrackID > 0 {
+		coverTrackID = &pl.CoverTrackID
+	}
+	record := PlaylistRecord{
+		Kind: pl.Kind, Name: pl.Name, CreatedAt: pl.CreatedAt, Type: pl.Type,
+		Description: optionalString(pl.Description), UpdatedAt: &pl.UpdatedAt,
+		CoverTrackID: coverTrackID, CoverArtwork: optionalString(pl.CoverArtwork),
+		SortMode: pl.SortMode, RuleSchemaVersion: ruleVer, RuleJSON: ruleJSON,
+		AllowDuplicates: dup,
+	}
+	if err := s.ORM.Create(&record).Error; err != nil {
 		return pl, err
 	}
-	pl.ID, err = res.LastInsertId()
-	return pl, err
+	pl.ID = record.ID
+	return pl, nil
 }
 
 func (s *Store) UpdateUserPlaylist(pl UserPlaylist) error {
@@ -527,7 +531,12 @@ func (s *Store) scanUserPlaylist(row playlistScanner) (*UserPlaylist, error) {
 	return &pl, nil
 }
 
-func compactPlaylistPositions(tx *sql.Tx, playlistID int64) error {
+type playlistPositionTx interface {
+	Query(string, ...any) (*sql.Rows, error)
+	Exec(string, ...any) (sql.Result, error)
+}
+
+func compactPlaylistPositions(tx playlistPositionTx, playlistID int64) error {
 	rows, err := tx.Query(`SELECT item_id FROM playlist_tracks WHERE playlist_id = ? ORDER BY position`, playlistID)
 	if err != nil {
 		return err

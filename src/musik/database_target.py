@@ -4,6 +4,25 @@ from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 
+def normalize_database_url(database_url: str) -> str:
+    """Validate and normalize the public URL without revealing its credentials."""
+    parsed = urlsplit(database_url)
+    scheme = parsed.scheme.lower()
+    if scheme == "sqlite":
+        if parsed.netloc or parsed.query or parsed.fragment or not parsed.path.startswith("/"):
+            raise ValueError("MUSIK_DATABASE_URL must be an absolute sqlite:/// path without options")
+        return database_url
+    if scheme in ("postgres", "postgresql"):
+        if not parsed.hostname or not parsed.path.strip("/"):
+            raise ValueError("PostgreSQL MUSIK_DATABASE_URL must include a host and database")
+        try:
+            _ = parsed.port
+        except ValueError as exc:
+            raise ValueError("invalid PostgreSQL port in MUSIK_DATABASE_URL") from exc
+        return "postgresql://" + database_url.split("://", 1)[1]
+    raise ValueError("unsupported MUSIK_DATABASE_URL scheme")
+
+
 def resolve_sqlite_path(
     database_url: str | None, legacy_path: Path | None, default_path: Path
 ) -> Path:
@@ -18,5 +37,5 @@ def resolve_sqlite_path(
             raise ValueError("MUSIK_DATABASE_URL must be an absolute sqlite:/// path without options")
         return Path(unquote(parsed.path))
     if parsed.scheme in ("postgres", "postgresql"):
-        raise ValueError("PostgreSQL storage adapter is not available yet")
+        raise ValueError("PostgreSQL URL cannot be resolved to a SQLite filesystem path")
     raise ValueError("unsupported MUSIK_DATABASE_URL scheme")

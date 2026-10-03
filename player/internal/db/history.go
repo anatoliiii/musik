@@ -31,11 +31,11 @@ func (s *Store) RecentTrackIDs(hours int, limit int) ([]int64, error) {
 SELECT track_id FROM (
   SELECT track_id, MAX(ts) AS last_ts
   FROM listening_history
-  WHERE ts >= datetime('now', ?)
+  WHERE ts >= ?
   GROUP BY track_id
   ORDER BY last_ts DESC
   LIMIT ?
-)`, fmt.Sprintf("-%d hours", hours), limit)
+)`, time.Now().UTC().Add(-time.Duration(hours)*time.Hour).Format(time.RFC3339Nano), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -55,19 +55,24 @@ func (s *Store) InsertListen(trackID int64, action, source, sessionID, reason st
 	position, duration, listened *float64) (int64, error) {
 	now := time.Now().UTC()
 	daypart := dayPart(now.Hour())
-	res, err := s.DB.Exec(`
-INSERT INTO listening_history(
-  track_id, ts, source, action, daypart, weekday,
-  position_sec, duration_sec, listened_sec, session_id, reason
-) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		trackID, now.Format(time.RFC3339Nano), source, action, daypart,
-		mondayZeroWeekday(now.Weekday()),
-		position, duration, listened, nullStr(sessionID), nullStr(reason),
-	)
-	if err != nil {
+	weekday := mondayZeroWeekday(now.Weekday())
+	record := ListenRecord{
+		TrackID: trackID, TS: now.Format(time.RFC3339Nano), Source: optionalString(source),
+		Action: action, Daypart: optionalString(daypart), Weekday: &weekday,
+		PositionSec: position, DurationSec: duration, ListenedSec: listened,
+		SessionID: optionalString(sessionID), Reason: optionalString(reason),
+	}
+	if err := s.ORM.Create(&record).Error; err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return record.ID, nil
+}
+
+func optionalString(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func (s *Store) BumpTransition(fromID, toID int64, weight float64) error {

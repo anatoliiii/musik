@@ -6,7 +6,7 @@ from pathlib import Path
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from musik.database_target import resolve_sqlite_path
+from musik.database_target import normalize_database_url, resolve_sqlite_path
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -57,15 +57,20 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def select_database(self) -> "Settings":
-        self.db_path = resolve_sqlite_path(
-            self.database_url,
-            self.db_path if "db_path" in self.model_fields_set else None,
-            self.db_path,
-        )
+        legacy_path = self.db_path if "db_path" in self.model_fields_set else None
+        if self.database_url:
+            if legacy_path is not None:
+                raise ValueError("MUSIK_DATABASE_URL and MUSIK_DB_PATH cannot both be set")
+            self.database_url = normalize_database_url(self.database_url)
+            if self.database_url.startswith("sqlite:"):
+                self.db_path = resolve_sqlite_path(self.database_url, None, self.db_path)
+        else:
+            self.db_path = legacy_path or self.db_path
         return self
 
     def ensure_dirs(self) -> None:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.database_url is None or self.database_url.startswith("sqlite:"):
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.embeddings_cache.mkdir(parents=True, exist_ok=True)
         self.artwork_cache.mkdir(parents=True, exist_ok=True)
 

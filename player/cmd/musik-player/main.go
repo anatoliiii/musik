@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/torwin-job/musik/player/internal/api"
@@ -17,23 +18,35 @@ import (
 
 func main() {
 	cfg := config.Load()
-	resolvedPath, err := config.ResolveDatabase(cfg.DatabaseURL, os.Getenv("MUSIK_DB_PATH"), cfg.DBPath)
+	resolvedDatabase, err := config.ResolveDatabase(cfg.DatabaseURL, os.Getenv("MUSIK_DB_PATH"), cfg.DBPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg.DBPath = resolvedPath
-	// The worker receives the resolved SQLite path through MUSIK_DB_PATH.
-	// Do not pass both selectors into a child process.
-	_ = os.Unsetenv("MUSIK_DATABASE_URL")
+	if strings.HasPrefix(resolvedDatabase, "postgresql://") {
+		cfg.DatabaseURL = resolvedDatabase
+	} else {
+		cfg.DBPath = resolvedDatabase
+		cfg.DatabaseURL = ""
+		if os.Getenv("MUSIK_DATA_DIR") == "" {
+			cfg.DataDir = filepath.Dir(filepath.Dir(resolvedDatabase))
+		}
+	}
+	if os.Getenv("MUSIK_THEMES") == "" {
+		cfg.ThemesDir = filepath.Join(cfg.DataRoot(), "themes")
+	}
 	if !cfg.AuthEnabled() && !cfg.AuthDisabled {
 		log.Fatal("auth required: set MUSIK_PASSWORD and/or MUSIK_API_TOKEN (or MUSIK_AUTH_DISABLED=1 for local open mode)")
 	}
-	log.Printf("musik-player db=%s addr=%s themes=%s", cfg.DBPath, cfg.Addr, cfg.ThemesDir)
+	dbBackend := "sqlite"
+	if cfg.DatabaseURL != "" {
+		dbBackend = "postgresql"
+	}
+	log.Printf("musik-player db_backend=%s addr=%s themes=%s", dbBackend, cfg.Addr, cfg.ThemesDir)
 	if err := os.MkdirAll(cfg.ThemesDir, 0o755); err != nil {
 		log.Printf("themes dir: %v", err)
 	}
 
-	store, err := db.Open(cfg.DBPath)
+	store, err := db.OpenDatabase(cfg.DatabaseURL, cfg.DBPath)
 	if err != nil {
 		log.Fatalf("db: %v", err)
 	}

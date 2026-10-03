@@ -1,27 +1,32 @@
-# SQLite and PostgreSQL portability contract (proposal)
+# SQLite and PostgreSQL portability contract
 
-Status: implementation started. The first step resolves SQLite URLs consistently
-in the Go player and Python worker and rejects conflicting selectors. PostgreSQL
-storage, schema migrations and verified transfer remain to be implemented.
+Status: the first SQLite/PostgreSQL implementation is wired and verified
+against SQLite and PostgreSQL 17. ORM engines, selected-backend schema gates,
+Alembic migrations and offline transfer are in place. Older repository paths
+still use dialect-aware SQL compatibility ports over the ORM-managed pools, so
+not every query is expressed as a mapped ORM repository. This branch targets
+the shared pre-multi-user schema; owner/profile data mapping remains an
+integration step before combining it with multi-user work.
 
 The same musik build and logical schema must run on SQLite or PostgreSQL. Selecting a backend must not change API behavior, account/profile isolation, queue ordering, recommendation outcomes, migration safety, or worker behavior. SQLite remains the default and supported deployment; PostgreSQL is an optional backend.
 
 ## Current boundary and portability gaps
 
-- The Go player opens `modernc.org/sqlite` directly and exposes `*sql.DB` as `db.Store.DB`. Direct SQL is currently concentrated in `player/internal/db/*`, which is a useful starting boundary, but the raw handle is public and the store/repository surface is not expressed as a backend-neutral interface. The store hardcodes SQLite DSN pragmas, `_txlock=immediate`, `PRAGMA user_version`, and WAL checkpointing.
-- Go and Python use SQLite `?` placeholders and SQLite SQL functions. Go also uses `LastInsertId`, `datetime('now', ...)`, and SQLite-specific migration/version behavior.
-- Python worker code imports `sqlite3`, depends on `sqlite3.Row` and `cursor.lastrowid`, and opens the same DB itself (`src/musik/db/schema.py`, `src/musik/db/migrations.py`, `src/musik/db/store.py`, `src/musik/jobs/*`, `src/musik/listen/*`). It performs schema migrations via `PRAGMA user_version`.
-- The Go player requires exactly schema version 5 and directs operators to the Python worker for migrations. Thus the database is shared across languages and has one implicit migration owner today.
-- There is no PostgreSQL driver or PostgreSQL schema/test configuration in the upstream `player/go.mod` or Python dependencies.
+- GORM opens either SQLite or PostgreSQL and owns the shared connection pool. `player/internal/db` exposes a compatibility port for older queries plus mapped GORM records for writes already migrated. SQLite-specific connection options and schema checks are isolated in the store.
+- Older Go and Python repositories retain qmark SQL behind compatibility ports; placeholder binding and the currently used SQLite time expressions are adapted for PostgreSQL. Direct driver `LastInsertId` use is isolated at that boundary.
+- Python runtime connections are SQLAlchemy sessions. The remaining direct `sqlite3` usage is limited to legacy migrations, SQLite snapshot/transfer checks, and SQLite-specific test setup.
+- Alembic owns migration history. Go requires the shared `musik_5` head and additionally checks `PRAGMA user_version` on SQLite; it does not migrate at startup.
+- GORM/SQLAlchemy drivers and PostgreSQL schema tooling are present. Conformance coverage is still narrower than the full behavioral contract below; broader job, profile, rollback, and service-path parity remains future work.
 
 ## Required architecture
 
-### Domain and repository boundary
+### Domain, ORM and repository boundary
 
-- Domain, API and recommendation logic depend on narrow repository/store interfaces, not `*sql.DB`, `*sql.Tx`, driver rows, DSNs, SQL fragments, SQLite connection pragmas, or PostgreSQL types.
+- Go uses GORM for backend creation and mapped writes, and Python uses SQLAlchemy sessions/mapped models. Existing paths not yet migrated use dialect-aware compatibility ports over the same ORM-managed pool. Further repository conversion should remove those legacy query paths incrementally.
 - Repositories own SQL and transaction boundaries. Use interfaces by use case (catalog, playback, profile, library jobs, migrations), not one generic CRUD abstraction and not a generic SQL-builder leaking into services.
-- The Python worker has its own persistence port. It must not bypass the selected backend through `sqlite3.connect` in a command, job or helper path.
+- The Python worker has its own SQLAlchemy persistence port. It must not bypass the selected backend through `sqlite3.connect` in a command, job or helper path.
 - The application receives a storage configuration at startup and constructs one backend. Go player, Python worker, CLI and migration command must resolve the same backend and database identity; secret DSNs are never logged.
+- Mapped models in both languages mirror one named constraint/index/schema contract. A conformance check compares their table/column/key definitions with the migration metadata so the two ORM declarations cannot drift silently.
 - Stable application IDs for users, external identities, profiles and sessions are UUID text generated by the application. Existing track/catalog numeric IDs may remain integer identity values, provided inserts use a portable returned-ID contract and callers do not depend on driver `LastInsertId`.
 
 ### SQL and type contract
@@ -45,10 +50,10 @@ The same musik build and logical schema must run on SQLite or PostgreSQL. Select
 ## Migration and configuration contract
 
 - One migration command is the only schema writer. Applications and workers validate schema compatibility and fail clearly; they do not race to migrate at startup.
-- Keep a shared ordered migration history with paired SQLite/PostgreSQL implementations for migrations whose DDL differs. Both implementations carry the same logical migration version and invariant. No `PRAGMA user_version` as the cross-backend version authority.
-- Recommended deployment contract: operator runs `musik db migrate` once before player/worker startup; backup and schema-version verification are prerequisites. This command must be safe on an existing SQLite v5 database and on a new PostgreSQL database. Downgrade is not assumed safe for data migrations; forward repair/backup restore must be documented. Changing an installation's backend never means pointing at an empty database and hoping state appears: provide a verified offline copy/export-import path before claiming SQLite-to-PostgreSQL in-place migration support.
-- The first PostgreSQL release includes an offline `musik db transfer` path from an existing SQLite database. It requires a stopped/read-only source, a consistent backup, and an explicit destination. It copies logical database rows and binary payloads, preserves catalog IDs/references, validates schema and foreign keys, compares per-table counts and deterministic checksums, and emits a report before cutover. It never deletes or mutates the SQLite source, performs dual writes, or moves music/artwork files; referenced library paths must already be mounted at the destination.
-- For conversion to the multi-user schema, transfer requires the destination owner `UserID` and default `ProfileID`. All existing single-user personal rows map exactly once to that profile; they are not copied to all invited OIDC accounts. A failed validation leaves the source and destination available for diagnosis and prevents cutover.
+- Alembic over SQLAlchemy is the sole migration runner. Operator runs `musik db migrate` once before player/worker startup; backup and schema-version verification are prerequisites. The runner must adopt an existing SQLite v5 database without changing its rows and create an equivalent fresh PostgreSQL schema. Go validates the same migration head and never migrates at application startup. Downgrade is not assumed safe for data migrations; forward repair/backup restore must be documented. Changing an installation's backend never means pointing at an empty database and hoping state appears: provide a verified offline copy/export-import path before claiming SQLite-to-PostgreSQL in-place migration support.
+- Alembic candidate generation is reviewed and corrected by hand; it is not treated as a complete migration. SQLite batch DDL and PostgreSQL constraints may have different operations as long as the migration has the same logical version and invariant. The current implementation adopts SQLite v5 and installs one shared Alembic head, `musik_5`.
+- The offline `musik db transfer` path copies shared v5 SQLite rows and binary payloads to an empty PostgreSQL schema. It verifies the read-only source snapshot, schema and foreign keys, then compares per-table counts and deterministic checksums. It never deletes or mutates the SQLite source, performs dual writes, or moves music/artwork files; referenced library paths must already be mounted at the destination.
+- Multi-user conversion is not implemented in this branch. Before integrating it, transfer must require a destination owner `UserID` and default `ProfileID`, map each existing personal row exactly once, and prove that rows are not copied to invited OIDC accounts.
 - Configuration contract: `MUSIK_DATABASE_URL` selects the backend (`sqlite:///...` or a PostgreSQL URL). Keep `MUSIK_DB_PATH` as a deprecated SQLite-only alias during transition; setting both is an error. Redact credentials from logs and diagnostics.
 - SQLite and PostgreSQL use the same schema version, migration identity, account/profile model and logical defaults. PostgreSQL is not a separate product mode.
 
@@ -75,7 +80,7 @@ Run the same repository and service contract cases against SQLite and PostgreSQL
 ## Decisions needed before implementation
 
 - Keep two native adapters (Go `database/sql` plus Python DB-API) or move all persistence behind one internal storage service? Recommendation: adapters in each runtime for the first stage, with explicit repository contracts; a storage service would add operational/network failure modes and is a later option.
-- Which migration runner owns the shared schema? Recommendation: one Go `musik db migrate` command invoked before both services, with ordered dialect-specific SQL migrations. This replaces the current Python-only migration path and must preserve every existing SQLite migration.
-- Resolved: the first PostgreSQL release includes a verified offline SQLite-to-PostgreSQL transfer. Music and artwork files remain external; only database state and embedded binary payloads are transferred.
-- PostgreSQL driver and minimum supported versions: select only after CI/deployment constraints are known; require a supported SQLite version with `RETURNING` if numeric generated IDs retain that contract.
+- Resolved: the ORM layer uses GORM for Go and SQLAlchemy ORM for Python; Alembic owns migration history and `musik db migrate` remains the operator-facing command. Legacy repositories still use compatibility SQL and should migrate to mapped repositories over time.
+- Implemented for the shared v5 schema: offline SQLite-to-PostgreSQL transfer verifies per-table row counts and SHA-256 checksums. Music and artwork files remain external; only database state and embedded binary payloads are transferred. Owner/profile mapping is a prerequisite for multi-user integration.
+- Verified PostgreSQL major version: 17. Define the minimum supported server version in CI/deployment policy before release; SQLite requires a version supporting the migration's `RETURNING` behavior.
 - SQLite in-memory test compatibility and PostgreSQL CI service image/version are implementation choices; the behavioral cases above are mandatory regardless of tool.

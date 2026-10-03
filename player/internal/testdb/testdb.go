@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/glebarez/go-sqlite"
 )
 
 const Schema = `
@@ -202,6 +202,8 @@ CREATE TABLE radio_prefs (
  explore_lo REAL NOT NULL DEFAULT 0.10, explore_hi REAL NOT NULL DEFAULT 0.40,
  updated_at TEXT NOT NULL
 );
+CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
+INSERT INTO alembic_version(version_num) VALUES ('musik_5');
 PRAGMA user_version = 5;
 `
 

@@ -7,13 +7,15 @@ import (
 
 func (s *Store) EnqueueJob(kind, payloadJSON string) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.DB.Exec(`
-INSERT INTO jobs(kind, status, payload_json, created_at, updated_at)
-VALUES (?,'pending',?,?,?)`, kind, nullStr(payloadJSON), now, now)
-	if err != nil {
+	var payload *string
+	if payloadJSON != "" {
+		payload = &payloadJSON
+	}
+	job := JobRecord{Kind: kind, Status: "pending", PayloadJSON: payload, CreatedAt: now, UpdatedAt: now}
+	if err := s.ORM.Create(&job).Error; err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	return job.ID, nil
 }
 
 type Job struct {

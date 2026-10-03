@@ -30,15 +30,11 @@ func New(cfg config.Config, idx *index.Index) *Service {
 }
 
 func (s *Service) streamCacheDir() string {
-	dbDir := filepath.Dir(s.cfg.DBPath)
-	dataDir := filepath.Dir(dbDir)
-	return filepath.Join(dataDir, "cache", "stream")
+	return filepath.Join(s.cfg.DataRoot(), "cache", "stream")
 }
 
 func (s *Service) artworkCacheDir() string {
-	dbDir := filepath.Dir(s.cfg.DBPath)
-	dataDir := filepath.Dir(dbDir)
-	return filepath.Join(dataDir, "cache", "art")
+	return filepath.Join(s.cfg.DataRoot(), "cache", "art")
 }
 
 func contentType(path string) string {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/torwin-job/musik/player/internal/db"
 )
@@ -11,9 +12,9 @@ import (
 const RuleSchemaVersion = 1
 
 type Rule struct {
-	SchemaVersion int     `json:"schema_version"`
-	Limit         int     `json:"limit,omitempty"`
-	Sort          string  `json:"sort,omitempty"`
+	SchemaVersion int      `json:"schema_version"`
+	Limit         int      `json:"limit,omitempty"`
+	Sort          string   `json:"sort,omitempty"`
 	All           []Clause `json:"all,omitempty"`
 	Any           []Clause `json:"any,omitempty"`
 }
@@ -229,13 +230,19 @@ func compareNumber(expr string, c Clause) (string, []any, error) {
 }
 
 func compareLastPlayed(c Clause) (string, []any, error) {
+	days := int(asFloat(c.Value))
+	if days < 0 {
+		days = 0
+	}
+	if days > 36500 {
+		days = 36500
+	}
+	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339Nano)
 	switch c.Op {
 	case "older_than_days":
-		return "ts.last_played_at IS NOT NULL AND ts.last_played_at <= datetime('now', ?)",
-			[]any{fmt.Sprintf("-%d days", int(asFloat(c.Value)))}, nil
+		return "ts.last_played_at IS NOT NULL AND ts.last_played_at <= ?", []any{cutoff}, nil
 	case "newer_than_days":
-		return "ts.last_played_at IS NOT NULL AND ts.last_played_at >= datetime('now', ?)",
-			[]any{fmt.Sprintf("-%d days", int(asFloat(c.Value)))}, nil
+		return "ts.last_played_at IS NOT NULL AND ts.last_played_at >= ?", []any{cutoff}, nil
 	case "eq":
 		if !asBool(c.Value) {
 			return "ts.last_played_at IS NULL", nil, nil

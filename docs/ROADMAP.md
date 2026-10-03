@@ -23,7 +23,8 @@
 
 | Этап | Содержание | Статус |
 |------|------------|--------|
-| **0A** | Python migrations, `musik db migrate`, `PRAGMA user_version`, точный Go schema gate | **готово** |
+| **0A** | Alembic migrations, `musik db migrate`, общий schema head и точный Go gate | **готово** |
+| **0E** | SQLite/PostgreSQL portability через SQLAlchemy и GORM, проверенный SQLite transfer | **реализовано в ветке** |
 | **0B** | Упорядоченный startup worker → healthcheck → player | **готово** |
 | **0C** | Foundation-схема requests/events/contexts/rules/entities/models | **готово** |
 | **0D** | Детерминированный listener simulator и 2k/50k exact benchmarks | **готово** |
@@ -38,10 +39,12 @@
 
 ### Схема и запуск
 
-- Python является единственным владельцем миграций.
+- Alembic через Python является единственным владельцем миграций.
 - Worker применяет миграции до запуска HTTP-сервиса.
-- Go player только проверяет точную поддерживаемую версию и завершает старт с
-  понятной ошибкой при несовпадении.
+- Go player проверяет Alembic head и для SQLite дополнительно проверяет
+  `PRAGMA user_version`; при несовпадении завершается с понятной ошибкой.
+- SQLite остаётся backend по умолчанию; PostgreSQL выбирается общим
+  `MUSIK_DATABASE_URL` для player и worker.
 - Compose запускает player только после успешного worker healthcheck.
 - Новые таблицы покрывают recommendation requests, event/context references,
   taste contexts, entity vectors, radio rules, model versions и training runs.
