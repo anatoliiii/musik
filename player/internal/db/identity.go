@@ -170,6 +170,11 @@ func (s *Store) DeleteProfile(ctx context.Context, userID, profileID string) err
 		if err != nil {
 			return err
 		}
+		if err := tx.Model(&DeviceTokenRecord{}).
+			Where("user_id = ? AND profile_id = ? AND revoked_at IS NULL", userID, profileID).
+			Update("revoked_at", now).Error; err != nil {
+			return err
+		}
 		if err := tx.Model(&ProfileRecord{}).Where("id = ? AND owner_user_id = ?", profileID, userID).
 			Updates(map[string]any{"deleted_at": now, "is_default": 0, "updated_at": now}).Error; err != nil {
 			return err

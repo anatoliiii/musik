@@ -54,13 +54,19 @@ func TestEmbeddedOpenAPIMatchesRegisteredRoutes(t *testing.T) {
 	for _, name := range eventSchema.Required {
 		required[name] = true
 	}
-	for _, name := range []string{"type", "event_id", "track_id", "session_id"} {
+	for _, name := range []string{"type", "track_id", "session_id"} {
 		if !required[name] {
 			t.Errorf("PlaybackEvent does not require %s", name)
 		}
 		if eventSchema.Properties[name] == nil {
 			t.Errorf("PlaybackEvent does not define %s", name)
 		}
+	}
+	if required["event_id"] {
+		t.Error("PlaybackEvent must keep event_id optional for legacy mobile requests")
+	}
+	if eventSchema.Properties["event_id"] == nil {
+		t.Error("PlaybackEvent does not define optional event_id")
 	}
 	if eventSchema.Properties["impression_id"] == nil {
 		t.Error("PlaybackEvent does not define impression_id")

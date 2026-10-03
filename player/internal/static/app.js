@@ -103,6 +103,8 @@ function renderAccount(me) {
   document.querySelector('[data-view="upload"]').hidden = multiUser && !admin;
   if (admin) refreshAdminLists().catch((error) => toast(error.message));
   if (!account) return;
+  refreshDeviceTokenProfiles();
+  refreshDeviceTokens().catch((error) => toast(error.message));
   const identity = `${account.user.id}/${account.active_profile.id}`;
   if (sessionStorage.getItem("musik_identity") !== identity) {
     sessionStorage.removeItem("musik_session");
@@ -131,6 +133,81 @@ function adminRow(label, detail) {
   subtitle.textContent = detail;
   row.append(title, subtitle);
   return row;
+}
+
+function refreshDeviceTokenProfiles() {
+  const select = $("device-token-profile");
+  if (!select || !account) return;
+  select.replaceChildren();
+  for (const profile of account.profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.is_default ? `${profile.name} · основной` : profile.name;
+    option.selected = profile.is_default;
+    select.append(option);
+  }
+}
+
+function deviceDate(value) {
+  if (!value) return "ещё не использовался";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function showDeviceTokenSecret(secret) {
+  $("device-token-secret").value = secret;
+  $("device-token-created").hidden = false;
+  $("device-token-created").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+
+function deviceTokenRow(token) {
+  const row = adminRow(token.name || "Устройство", `Профиль: ${token.profile_name}\nСоздан: ${deviceDate(token.created_at)}\nПоследнее использование: ${deviceDate(token.last_used_at)}\nДействует до: ${deviceDate(token.expires_at)}${token.revoked_at ? `\nОтозван: ${deviceDate(token.revoked_at)}` : ""}`);
+  row.classList.add("device-token-row");
+  if (!token.revoked_at) {
+    const replace = document.createElement("button");
+    replace.className = "btn";
+    replace.type = "button";
+    replace.textContent = "Заменить";
+    replace.onclick = async () => {
+      if (!confirm(`Выпустить новый токен для «${token.name}»? Текущий перестанет работать.`)) return;
+      replace.disabled = true;
+      try {
+        const result = await api(`/api/account/device-tokens/${encodeURIComponent(token.id)}/replace`, { method: "POST", body: "{}" });
+        showDeviceTokenSecret(result.token);
+        await refreshDeviceTokens();
+      } catch (error) { toast(error.message); }
+      finally { replace.disabled = false; }
+    };
+    const revoke = document.createElement("button");
+    revoke.className = "btn";
+    revoke.type = "button";
+    revoke.textContent = "Отозвать";
+    revoke.onclick = async () => {
+      if (!confirm(`Отозвать токен устройства «${token.name}»?`)) return;
+      revoke.disabled = true;
+      try {
+        await api(`/api/account/device-tokens/${encodeURIComponent(token.id)}`, { method: "DELETE" });
+        await refreshDeviceTokens();
+      } catch (error) { toast(error.message); }
+      finally { revoke.disabled = false; }
+    };
+    row.append(replace, revoke);
+  }
+  return row;
+}
+
+async function refreshDeviceTokens() {
+  if (!multiUser || !account) return;
+  const data = await api("/api/account/device-tokens");
+  const list = $("device-token-list");
+  list.replaceChildren();
+  for (const token of data.tokens || []) list.append(deviceTokenRow(token));
+  if (!list.childElementCount) {
+    const empty = document.createElement("p");
+    empty.className = "sub";
+    empty.textContent = "Пока нет выданных токенов.";
+    list.append(empty);
+  }
 }
 
 async function refreshAdminLists() {
@@ -4120,6 +4197,31 @@ $("profile-delete").onclick = async () => {
   try { await api(`/api/profiles/${account.active_profile.id}`, { method: "DELETE" }); reloadProfile(); }
   catch (error) { toast(error.message); }
 };
+$("device-token-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    const result = await api("/api/account/device-tokens", {
+      method: "POST",
+      body: JSON.stringify({ name: $("device-token-name").value, profile_id: $("device-token-profile").value }),
+    });
+    $("device-token-name").value = "";
+    showDeviceTokenSecret(result.token);
+    await refreshDeviceTokens();
+  } catch (error) { toast(error.message); }
+};
+$("device-token-copy").onclick = async () => {
+  try {
+    await navigator.clipboard.writeText($("device-token-secret").value);
+    toast("Токен скопирован");
+  } catch (_) {
+    $("device-token-secret").select();
+    toast("Выдели токен и скопируй его вручную");
+  }
+};
+$("device-token-dismiss").onclick = () => {
+  $("device-token-secret").value = "";
+  $("device-token-created").hidden = true;
+};
 $("invitation-form").onsubmit = async (event) => {
   event.preventDefault();
   try { const invite = await api("/api/admin/invitations", { method: "POST", body: JSON.stringify({ email: $("invitation-email").value, ttl_hours: Number($("invitation-hours").value) }) }); $("invitation-url").value = invite.url; $("invitation-result").hidden = false; }
@@ -4127,7 +4229,11 @@ $("invitation-form").onsubmit = async (event) => {
 };
 window.addEventListener("focus", async () => {
   if (!multiUser || !account) return;
-  try { const me = await api("/api/auth/me"); if (!me.authenticated || me.user.id !== account.user.id || me.active_profile.id !== account.active_profile.id) reloadProfile(); }
+  try {
+    const me = await api("/api/auth/me");
+    if (!me.authenticated || me.user.id !== account.user.id || me.active_profile.id !== account.active_profile.id) reloadProfile();
+    await refreshDeviceTokens();
+  }
   catch (_) {}
 });
 

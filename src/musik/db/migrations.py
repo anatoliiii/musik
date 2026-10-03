@@ -653,6 +653,28 @@ def _profile_ownership(conn: sqlite3.Connection) -> None:
     migrate_profiles(conn)
 
 
+def _device_tokens(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS device_tokens (
+            id          TEXT PRIMARY KEY,
+            secret_hash TEXT NOT NULL UNIQUE,
+            user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            profile_id  TEXT NOT NULL REFERENCES profiles(id),
+            name        TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            last_used_at TEXT,
+            expires_at  TEXT NOT NULL,
+            revoked_at  TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_tokens_user
+            ON device_tokens(user_id, revoked_at, expires_at);
+        INSERT OR IGNORE INTO installation_state(key,value)
+            VALUES ('active_admin_guard','1');
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "baseline", _baseline),
     Migration(2, "future_data_foundation", _future_data_foundation),
@@ -661,6 +683,7 @@ MIGRATIONS = (
     Migration(5, "ranker_and_explore", _ranker_and_explore),
     Migration(6, "identity_foundation", _identity_foundation),
     Migration(7, "profile_ownership", _profile_ownership),
+    Migration(8, "device_tokens_and_admin_guard", _device_tokens),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

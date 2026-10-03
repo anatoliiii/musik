@@ -393,6 +393,25 @@
             <button class="btn" type="submit">Переименовать</button>
             <button class="btn" type="button" id="profile-delete">Удалить профиль</button>
           </form>
+          <section class="device-token-section" aria-labelledby="device-token-title">
+            <h2 id="device-token-title">Устройства и токены</h2>
+            <p class="sub">Токен действует 180 дней и привязан к выбранному профилю. Скопируй его в существующее поле токена мобильного приложения.</p>
+            <form id="device-token-form">
+              <label>Имя устройства <input id="device-token-name" maxlength="128" autocomplete="off" placeholder="Телефон" required /></label>
+              <label>Профиль <select id="device-token-profile" required></select></label>
+              <button class="btn" type="submit">Создать токен</button>
+            </form>
+            <div class="device-token-secret" id="device-token-created" hidden>
+              <strong>Скопируй токен сейчас</strong>
+              <p class="sub">Полный секрет больше не будет показан. Сохрани его в настройках мобильного приложения.</p>
+              <input id="device-token-secret" type="text" readonly autocomplete="off" spellcheck="false" aria-label="Новый секрет устройства" />
+              <div class="device-token-actions">
+                <button class="btn" type="button" id="device-token-copy">Скопировать</button>
+                <button class="btn" type="button" id="device-token-dismiss">Готово</button>
+              </div>
+            </div>
+            <div id="device-token-list" class="admin-list" aria-live="polite"></div>
+          </section>
         </div>
         <div class="panel" id="invitation-box" hidden>
           <h2>Пригласить пользователя</h2>

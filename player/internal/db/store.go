@@ -19,8 +19,8 @@ type Store struct {
 	Dialect string
 }
 
-const SupportedSchemaVersion = 7
-const SupportedSchemaRevision = "musik_7"
+const SupportedSchemaVersion = 8
+const SupportedSchemaRevision = "musik_8"
 
 func mondayZeroWeekday(day time.Weekday) int { return (int(day) + 6) % 7 }
 

@@ -1,9 +1,14 @@
 # Руководство по мобильному клиенту musik
 
-Мобилка — **полноценный клиент Go API** (`:8787`), не Python worker. Этот
-контракт описывает legacy-режим с Bearer token. Браузерный OIDC multi-user уже
-есть в отдельной ветке; выдача машинных токенов для мобильных клиентов в нём
-пока не поддерживается.
+Мобильный клиент обращается к Go API (`:8787`), не к Python worker. Фактический
+Flutter-исходник изучен в соседнем проекте `musik-mobile`: git tag `v0.1.1`,
+`pubspec.yaml` version `0.1.1+2`. Это версия доступного исходника; APK/AAB/IPA
+или установленное устройство для подтверждения бинарного релиза не были
+доступны. Код клиента, его зависимости и тесты в этой задаче не менялись.
+
+Ниже раздел A фиксирует реализованный протокол клиента и серверную
+совместимость. Раздел B — сохранённый план разработки; его нельзя считать
+перечнем возможностей выпущенной версии.
 
 Канон маршрутов: [API.md](API.md) · OpenAPI: `GET /api/openapi.json` · PWA: [mobile/README.md](../mobile/README.md)
 
@@ -12,7 +17,10 @@
 `request_id`/`impression_id` и новый event lifecycle добавляются в мобильный
 клиент только после стабилизации OpenAPI.
 
-Ниже: (A) контракт API для любого native-клиента · (B) **полный план Flutter-приложения с 100% паритетом веб-UI**.
+Клиент поддерживает Bearer-аутентификацию через существующее поле API token.
+В single-user режиме туда вводится `MUSIK_API_TOKEN`; в multi-user режиме —
+секрет персонального device token, выпущенного для пользователя и профиля в
+браузере.
 
 ---
 
@@ -30,17 +38,31 @@
 | Способ | Использование |
 |--------|----------------|
 | Cookie `musik_session` | WebView / PWA после `POST /api/auth/login` |
-| `Authorization: Bearer <MUSIK_API_TOKEN>` | **Рекомендуется для Flutter** (flutter_secure_storage) |
+| `Authorization: Bearer <token>` | Flutter отправляет сохранённый token во всех API запросах и отдельно для stream/artwork |
 | Share token в path | Только `/listen/{token}` |
 
-Нюансы: `/api/stream` и `/api/artwork` под auth; `401` → экран логина; `GET /api/auth/me` решает boot.
+Клиент хранит URL, token и `session_id` через `SharedPreferences`. При входе
+делает `GET /api/health`, затем `GET /api/auth/me`; если `auth_enabled=true` и
+`ok` не `true`, считает token неверным и очищает его. Пользовательское поле
+пароля необязательно и вызывает `POST /api/auth/login` только при непустом
+значении. Ответ device token на `/api/auth/me` намеренно содержит только
+`{"ok":true,"auth_enabled":true}`; для неверного token там HTTP 200 и
+`ok:false`, а остальные защищённые API отвечают HTTP 401 без OIDC redirect.
 
 ## A3. Сессии
 
-- Вкус общий; `session_id` — на устройство/вкладку.
+- Клиент сохраняет `session_id` между запусками и один раз пытается восстановить
+  его через `GET /api/now?session_id=…`; ошибка этого восстановления
+  перехватывается и не очищает учётные данные.
 - Старт: `radio/start` | `play` | `mixes/{kind}/play` | `session/start`.
-- Events и `/api/now?session_id=` всегда с этим id.
-- После рестарта player — сессия умерла → новый start.
+- Events, `session/jump` и `/api/now` отправляют этот id.
+- При смене профиля пользователь должен вставить отдельный device token и
+  перелогиниться через существующие настройки. Токен сервера выбирает свой
+  профиль независимо от активного профиля браузера. Если сохранённый
+  `session_id` принадлежал другому профилю, сервер отвечает `404` и на
+  восстановление, и на отложенные события: его нельзя использовать для чтения
+  playback state или записи истории в новый профиль. Клиентские тесты на
+  физическом устройстве для этого сценария не выполнялись.
 
 ## A4. Playback loop
 
@@ -52,6 +74,12 @@ like|dislike → обновляют EMA (не обязательны для см
 
 `POST /api/play` / fixed mixes: в конце списка `ended: true`, **не** уходить в радио.  
 Jump: `POST /api/session/jump` `{session_id, index}`.
+
+Фактический старый event body включает `type`, `session_id`, `track_id`,
+`position_sec`, `duration_sec`, `listened_sec` и необязательный `reason`; он не
+передаёт `event_id`, `impression_id`, `device_id` или `client_id`. Сервер
+продолжает принимать такой формат, генерирует отсутствующий event id сам и
+получает владельца/профиль из device token. Профиль не принимается из JSON.
 
 ## A5. Share radio
 
@@ -86,11 +114,44 @@ CachedNetworkImage(
 )
 ```
 
-Отдельный disk-cache писать не нужно: `cached_network_image` + долгий Cache-Control сервера достаточно.
+Текущий клиент использует авторизованный disk-cache обложек в каталоге
+`artwork`. Отзыв серверного token не удаляет локально сохранённые изображения;
+смена профиля также не гарантирует их очистку.
+
+## A8. Маршруты, наблюдаемые в исходнике клиента
+
+Все Dio запросы добавляют `Authorization: Bearer <token>`. Запросы аудио и
+обложек используют тот же заголовок через отдельные загрузчики. Базовые
+маршруты клиента:
+
+| Назначение | Метод и маршруты |
+|------------|------------------|
+| Вход и профиль | `GET /api/health`, `GET /api/auth/me`, optional `POST /api/auth/login`, `POST /api/auth/logout`, `GET /api/profile`, `GET /api/metrics/weekly` |
+| Каталог | `GET /api/library`, `/api/artists`, `/api/albums`, `/api/tracks/{id}`, `/api/tracks/{id}/lyrics`, `/api/mixes` |
+| Личные данные и рекомендации | `GET /api/favorites`, `POST /api/favorites/toggle`, `GET /api/favorites/status`, `GET /api/recommend/favorites`, `/api/recommend/seed`, `/api/discover/albums`, `/api/discover/resurfaced`, `/api/similar/{id}`, `/api/similar/artists`, `/api/similar/albums`, `GET/POST/DELETE /api/later` |
+| Воспроизведение | `POST /api/radio/start`, `/api/play`, `/api/mixes/{kind}/play`, `/api/session/jump`, `GET /api/now?session_id=…`, `POST /api/events` |
+| Задания и share | `POST /api/jobs/mix_pack`, `GET /api/jobs/{id}`, `POST/GET /api/share/radio`, `DELETE /api/share/radio/{token}` |
+| Поток и artwork | `GET /api/stream/{id}` с Authorization и поддержкой HTTP Range на сервере; `GET /api/artwork/{id}?w=96|256|640` с Authorization |
+
+Личный `mix_pack` ограничен профилем token: клиент получает только статус своего
+задания. Device token не может запускать rescan, обновление общей библиотеки,
+административные или произвольные jobs.
+
+Logout делает best-effort `POST /api/auth/logout`, затем очищает token и
+`session_id` в локальных настройках. Серверный logout не отзывает токен
+устройства; для этого владелец открывает настройки аккаунта в браузере и
+отзывает конкретное устройство. Любой HTTP 401 вызывает существующую обработку
+выхода клиента.
+
+Проверка сервера подтверждает старый `auth/me`, API playback и Bearer Range /
+artwork контракт на тестовой БД. Реальный native stream, фоновое аудио,
+lock-screen controls, перезапуск процесса приложения и кеши не проверялись на
+физическом устройстве или эмуляторе; исходник клиента сам по себе такого
+результата не подтверждает.
 
 ---
 
-# B. План разработки Flutter (100% паритет веб)
+# B. Исторический план разработки Flutter (100% паритет веб)
 
 Цель: нативное приложение (Android + iOS), которое повторяет **весь** функционал [Web UI](../player/internal/static/) — экраны, полки, плеер, избранное, discover, share radio, auth — без деградации UX на телефоне.
 
@@ -104,7 +165,8 @@ CachedNetworkImage(
 
 Вне скоупа (веб тоже не даёт как product UI, только API):
 
-- multi-user / OAuth;
+- автоматический OIDC-вход через Flutter (device Bearer использует отдельный
+  профильный секрет и не реализует OIDC в приложении);
 - прямой доступ к Python worker `:8790`;
 - offline-first библиотека на устройстве (опционально phase 2+);
 - Icecast title metadata в share-stream.

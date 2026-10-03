@@ -4,7 +4,9 @@ Base URL: `http://127.0.0.1:8787`
 OpenAPI: [`GET /api/openapi.json`](/api/openapi.json) · source [`openapi.yaml`](openapi.yaml)
 
 Документ описывает работающий API v1. Radio current/queue items содержат
-`request_id`, `impression_id` и `source`; события идемпотентны по `event_id`.
+`request_id`, `impression_id` и `source`. Новые клиенты повторяют события с тем
+же `event_id`; legacy Flutter его не отправляет, поэтому сервер генерирует id
+для каждого такого запроса и не обещает дедупликацию сырых строк истории.
 Контексты вкуса, radio rules и пользовательские/smart playlists доступны через
 `/api/contexts`, `/api/rules` и `/api/playlists`.
 
@@ -13,7 +15,9 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 
 ## Auth (один владелец)
 
-Этот раздел описывает legacy-режим для одного владельца.
+Этот раздел описывает legacy-режим для одного владельца. Flutter-клиент в этом
+режиме использует общий `MUSIK_API_TOKEN`; в multi-user режиме он заменяется
+персональным токеном устройства, созданным из браузерной учётной записи.
 
 | | |
 |--|--|
@@ -25,7 +29,7 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 `POST /api/reload` — loopback **или** Bearer (callback worker).  
 **Старт без пароля/токена запрещён**, кроме `MUSIK_AUTH_DISABLED=1`. Login rate-limit: 5/мин/IP.
 
-Мобильная разработка: [MOBILE.md](MOBILE.md).
+Мобильный протокол и фактические маршруты клиента: [MOBILE.md](MOBILE.md).
 
 | Method | Path | Описание |
 |--------|------|----------|
@@ -38,9 +42,12 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 Режим включается через `MUSIK_MULTI_USER=1`, HTTPS `MUSIK_PUBLIC_BASE_URL` и
 `MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
 `MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
-запрещены. Пользователи входят по OIDC-приглашению; старые личные данные после
-миграции остаются в профиле первого администратора. Подробности первого запуска
-описаны в [DEPLOY.md](DEPLOY.md).
+запрещены как общие настройки. Пользователи входят в браузере по OIDC-
+приглашению; старые личные данные после миграции остаются в профиле первого
+администратора. После входа владелец может выпустить отдельный Bearer-токен для
+каждого устройства. Такой токен фиксированно связан с выбранным профилем,
+действует 180 дней и не получает административных прав. Подробности первого
+запуска описаны в [DEPLOY.md](DEPLOY.md).
 
 Для изменяющих запросов обязательны cookie-сессия, `X-CSRF-Token` и тот же
 `Origin`, что у публичного HTTPS URL. `GET /api/auth/me` возвращает учётку,
@@ -48,7 +55,30 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 пользователя. Администраторы управляют приглашениями и статусами учёток через
 `/api/admin/*`. Явная привязка другого OIDC-входа начинается через
 `POST /api/auth/oidc/default/link`. Shared password и Bearer token не являются
-резервным способом входа в этом режиме.
+резервным способом входа в этом режиме. Персональные device Bearer-токены —
+отдельный способ доступа к обычным пользовательским API, streaming и artwork.
+
+| Method | Path | Описание |
+|--------|------|----------|
+| GET | `/api/account/device-tokens` | список метаданных устройств текущего пользователя; секретов в ответе нет |
+| POST | `/api/account/device-tokens` | `{name, profile_id?}` → метаданные и полный секрет для однократного копирования |
+| DELETE | `/api/account/device-tokens/{id}` | отзыв своего токена |
+| POST | `/api/account/device-tokens/{id}/replace` | атомарный отзыв и выпуск нового секрета для того же профиля |
+
+Все эти маршруты требуют OIDC cookie-сессию и CSRF/Origin-проверку. Bearer-
+токен устройства не может выпускать или отзывать токены, менять профили,
+управлять аккаунтами, общей библиотекой или административными заданиями.
+Устройство может поставить на выполнение только личную операцию
+`POST /api/jobs/mix_pack` и читать результат своего задания. Если запрос
+содержит одновременно браузерную cookie и `Authorization`, сервер отвечает
+`400 credential_conflict`; клиент должен отправлять один способ авторизации.
+
+Для device Bearer `GET /api/auth/me` сохраняет совместимый ответ
+`{"ok":true,"auth_enabled":true}`. Невалидный/отозванный токен получает на
+этом маршруте HTTP 200 с `ok:false`; остальные защищённые маршруты отвечают
+`401`. OIDC HTML redirect для запросов API не используется. Playback sessions
+и данные вычисляются для закреплённого профиля; чужой или устаревший
+`session_id` отвечает `404`, включая задержавшееся событие.
 
 ## Core
 
@@ -132,7 +162,7 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 ```json
 {
   "type": "track_start|progress|track_end|skip|like|dislike",
-  "event_id": "client-stable-id-for-retries",
+  "event_id": "client-stable-id-for-retries (optional for legacy clients)",
   "impression_id": "128-bit-id-from-current-or-queue",
   "client_id": "stable-browser-id",
   "device_id": "Linux x86_64",
@@ -146,7 +176,9 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 ```
 
 Новый radio-клиент обязан вернуть `impression_id` из current/queue и повторять
-тот же `event_id` при retry. Для старых клиентов сервер ищет единственный
+тот же `event_id` при retry. Установленный Flutter `v0.1.1+2` не отправляет
+`event_id` или `impression_id`; сервер назначает event id сам и привязывает
+запись к профилю device token и его `session_id`. Для старых событий сервер ищет единственный
 последний pending impression по `(session_id, track_id)`; неоднозначность
 возвращает `409 ambiguous_impression`, а не приписывает feedback случайной
 рекомендации. Повторный start/end/skip не меняет impression или `track_stats`.

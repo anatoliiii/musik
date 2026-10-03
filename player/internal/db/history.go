@@ -75,7 +75,7 @@ func (s *Store) BumpTransition(fromID, toID int64, weight float64) error {
 	_, err := s.DB.Exec(`
 INSERT INTO transitions(from_id, to_id, weight, updated_at,profile_id) VALUES (?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
-  weight = weight + excluded.weight,
+  weight = transitions.weight + excluded.weight,
   updated_at = excluded.updated_at`, fromID, toID, weight, now)
 	return err
 }
@@ -86,9 +86,9 @@ func (s *Store) BumpRecStats(trackID int64, shown, skipEarly, completed int) err
 INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at,profile_id)
 VALUES (?,?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
-  shown = shown + excluded.shown,
-  skipped_early = skipped_early + excluded.skipped_early,
-  completed = completed + excluded.completed,
+  shown = rec_stats.shown + excluded.shown,
+  skipped_early = rec_stats.skipped_early + excluded.skipped_early,
+  completed = rec_stats.completed + excluded.completed,
   updated_at = excluded.updated_at`,
 		trackID, shown, skipEarly, completed, now)
 	return err
@@ -109,6 +109,13 @@ type RecommendationImpression struct {
 	Mode          string
 	Source        string
 	FeaturesJSON  string
+}
+
+func boolFlag(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 type RecommendationRequest struct {
@@ -188,7 +195,7 @@ INSERT INTO recommendation_impressions(
 		if _, err = stmt.Exec(
 			item.ImpressionID, request.RequestID, item.SessionID, item.TrackID,
 			item.Position, item.Score, item.CosineTaste, item.CosineCurrent,
-			item.Explore, item.NewBoost, item.Maturity, item.Mode, item.Source,
+			boolFlag(item.Explore), boolFlag(item.NewBoost), item.Maturity, item.Mode, item.Source,
 			featuresVersion, featuresJSON, now, now,
 		); err != nil {
 			return err
@@ -346,7 +353,7 @@ WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=?
 INSERT INTO track_stats(track_id, plays, last_played_at, updated_at,profile_id)
 VALUES (?,1,?,?,:musik_profile)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
-  plays=plays+1, last_played_at=excluded.last_played_at,
+  plays=track_stats.plays+1, last_played_at=excluded.last_played_at,
   updated_at=excluded.updated_at`, ev.TrackID, nowText, nowText)
 		}
 	case "track_end", "skip":
@@ -383,9 +390,9 @@ INSERT INTO track_stats(
   track_id, finishes, partial, early_skips, last_finished_at, updated_at
 ,profile_id) VALUES (?,?,?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
-  finishes=finishes+excluded.finishes,
-  partial=partial+excluded.partial,
-  early_skips=early_skips+excluded.early_skips,
+  finishes=track_stats.finishes+excluded.finishes,
+  partial=track_stats.partial+excluded.partial,
+  early_skips=track_stats.early_skips+excluded.early_skips,
   last_finished_at=CASE WHEN excluded.finishes=1 THEN excluded.last_finished_at
                         ELSE track_stats.last_finished_at END,
   updated_at=excluded.updated_at`,
@@ -421,7 +428,8 @@ WHERE session_id=? AND track_id=? AND action=? AND event_id!=?`,
 INSERT INTO track_stats(track_id, likes, dislikes, updated_at,profile_id)
 VALUES (?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
-  likes=likes+excluded.likes, dislikes=dislikes+excluded.dislikes,
+  likes=track_stats.likes+excluded.likes,
+  dislikes=track_stats.dislikes+excluded.dislikes,
   updated_at=excluded.updated_at`, ev.TrackID, likes, dislikes, nowText)
 			out.LifecycleChanged = true
 		}
