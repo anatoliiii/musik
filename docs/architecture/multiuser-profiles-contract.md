@@ -19,7 +19,8 @@ This contract separates a person who can sign in (`User`) from listening state (
 - A user has status `active | disabled`, a display name, timestamps, and local musik roles. Roles are authorization policy, not identity-provider claims copied blindly.
 - `ExternalIdentity` is keyed by `(issuer, subject)` from a verified OpenID Connect ID token and references exactly one `UserID`. Enforce uniqueness on `(issuer, subject)`.
 - Email, username, and display name are mutable attributes. They are never identity keys and are never used to silently merge accounts.
-- Linking another OIDC identity to an existing user requires an authenticated, explicit linking flow. First-login provisioning is controlled by server policy (closed by default; allowlist/invite or explicit JIT provisioning).
+- Linking another OIDC identity to an existing user requires an authenticated, explicit linking flow. First-login provisioning is invite-gated: an OIDC callback can create a user only after consuming a valid, single-use invitation. Open JIT registration is out of scope.
+- Invitations have opaque, high-entropy, single-use secrets stored only as hashes, an expiry, optional verified-email binding, issuer/admin audit fields, and revocation. They grant only the ordinary `user` role. Email is an optional invitation constraint, never the account identity key.
 - Do not trust user IDs, roles, email, or profile IDs supplied in request bodies or proxy headers. The authenticated principal is constructed by server middleware.
 
 ### Profile
@@ -41,11 +42,11 @@ Recommendation feedback and listening events must never update another profile's
 
 ## Authentication contract
 
-- Keep an authentication-provider boundary: local compatibility login and optional OIDC are providers that produce the same internal `Principal`; handlers and domain services do not depend on Keycloak.
+- Keep an authentication-provider boundary: OIDC produces the same internal `Principal` consumed by handlers and domain services; those layers do not depend on Keycloak. The existing local password provider remains available only in legacy single-user mode.
 - OIDC uses Authorization Code + PKCE, verified issuer/audience/signature/expiry/nonce, discovery/JWKS, one-time state, and an allowlisted redirect URI. Keycloak is supported through standard OIDC configuration; there is no Keycloak-specific data model.
 - Browser tokens stay server-side. Successful login creates a rotated, opaque, `HttpOnly`, `Secure` (when HTTPS), `SameSite=Lax` cookie backed by revocable server session state. State-changing cookie-authenticated requests also require CSRF/Origin protection.
-- Existing `MUSIK_PASSWORD` single-user installations map to one explicitly provisioned local user and its default profile during migration. They do not create one shared user for every visitor. Existing Bearer API credentials become a separately identified service principal and are not silently treated as an interactive user.
-- Multi-user mode fails closed if no provider/bootstrap administrator is configured. Registration, provider linking, role assignment and account disabling are admin-controlled operations. Do not rely on Keycloak group names for authorization unless an explicit, documented mapping is configured.
+- Existing `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` remain single-user compatibility settings only. Multi-user mode rejects both; the old shared password and bearer token cannot authenticate users or API clients. A future machine-client contract is separate work.
+- Multi-user mode fails closed if OIDC or the initial administrator bootstrap is missing. A bootstrap CLI creates the first administrator invitation; subsequent invitations, provider linking, role assignment and account disabling are admin-controlled operations. Do not rely on Keycloak group names for authorization unless an explicit, documented mapping is configured.
 
 ## HTTP/API contract (proposed v1)
 
@@ -57,6 +58,8 @@ Existing library/playback URLs remain stable. They resolve the active profile fr
 - `PATCH /api/profiles/{profile_id}` changes that profile's name/settings only after ownership validation.
 - `POST /api/profiles/{profile_id}/activate` changes the current authenticated session's active profile and returns the selected profile. It does not accept an owner ID.
 - `DELETE /api/profiles/{profile_id}` soft-deletes a non-last profile owned by the caller; deleting the last profile is rejected. Default-profile reassignment is transactional.
+- `POST /api/admin/invitations` creates a single-use, expiring invitation and returns its secret once; `GET` and `DELETE /api/admin/invitations/{id}` list/revoke invitations. Delivery is out of scope initially; the administrator transmits the secret through their chosen channel. Responses never reveal whether an arbitrary email already has an account.
+- OIDC callback consumes an invitation atomically before provisioning a user. A failed or expired invitation creates no account or session.
 - OIDC routes are provider-named start/callback routes. Tokens and authorization codes are never returned to browser JavaScript. Exact route spelling is finalized with the OpenAPI update before implementation.
 - API error envelope stays `{ "error": string, "code": string }`; use stable codes `auth_required`, `profile_not_found`, `profile_limit`, `profile_required`, and `provider_unavailable`.
 
@@ -64,9 +67,9 @@ Every protected endpoint derives `UserID` and active `ProfileID` from request co
 
 ## Persistence and migration contract
 
-- Add normalized `users`, `external_identities`, `auth_sessions`, and `profiles` records. User/profile IDs are text UUIDs on SQLite and PostgreSQL alike. Enforce ownership with foreign keys and indexes; enforce one default profile per user with an equivalent constraint/transaction rule on both engines.
+- Add normalized `users`, `external_identities`, `auth_sessions`, `profiles`, and `invitations` records. User/profile/invitation IDs are text UUIDs on SQLite and PostgreSQL alike; invitation secrets are stored as hashes. Enforce ownership with foreign keys and indexes; enforce one default profile per user with an equivalent constraint/transaction rule on both engines.
 - Add `profile_id` to profile-owned rows and scope every query/update/delete by it. Shared catalog rows stay unowned. Composite ownership constraints should prevent playlist items, contexts and active sessions from referencing a foreign profile's parent.
-- A versioned migration creates one local owner and one default profile, then assigns all existing personal rows to that profile exactly once. It never copies legacy history or taste to each newly created account. The old single-user login remains available until the operator enables a new provider and verifies migration.
+- A versioned migration creates one pending bootstrap owner and one default profile, then assigns all existing personal rows to that profile exactly once. The initial administrator completes OIDC through the CLI-created bootstrap invitation before multi-user mode is enabled. It never copies legacy history or taste to each invited account. The old single-user login remains available only until cutover; multi-user mode rejects its password and token.
 - Each step is restartable or has a defined rollback/backup path. Migration refuses ambiguous existing ownership rather than guessing.
 
 ## Acceptance contract before implementation
@@ -81,8 +84,8 @@ Every protected endpoint derives `UserID` and active `ProfileID` from request co
 
 ## Decisions needed before implementation
 
-- Provisioning: invite/allowlist only (recommended for first release), or opt-in JIT for any valid OIDC user?
-- Profile limit: no limit, or a configurable per-user cap? The data model supports multiple profiles either way.
-- Local password: retain as an explicit local provider for recovery, or require OIDC in multi-user mode?
-- User administration: first administrator via one-time CLI/bootstrap secret (recommended), or configured OIDC groups?
-- Bearer integrations: map current token to a service principal with explicit scopes (recommended), or associate each token with a user/profile?
+- Resolved: users enter through OIDC only after accepting a valid invite; open JIT registration is disabled.
+- Resolved: `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` do not work in multi-user mode; they remain compatibility options only for single-user deployments.
+- Resolved: the first PostgreSQL release includes a verified SQLite-to-PostgreSQL data transfer; the import is offline and keeps the SQLite source intact.
+- Initial administrator bootstrap via one-time CLI invitation is the proposed contract. Confirm whether this is acceptable before implementation.
+- Profile limit and last-profile deletion behavior: no limit or a configurable per-user cap? The data model supports either; deleting the last profile is currently proposed as forbidden.
