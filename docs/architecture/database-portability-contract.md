@@ -1,6 +1,8 @@
 # SQLite and PostgreSQL portability contract (proposal)
 
-Status: design only. No database driver, schema or query changes are part of this branch.
+Status: implementation started. The first step resolves SQLite URLs consistently
+in the Go player and Python worker and rejects conflicting selectors. PostgreSQL
+storage, schema migrations and verified transfer remain to be implemented.
 
 The same musik build and logical schema must run on SQLite or PostgreSQL. Selecting a backend must not change API behavior, account/profile isolation, queue ordering, recommendation outcomes, migration safety, or worker behavior. SQLite remains the default and supported deployment; PostgreSQL is an optional backend.
 

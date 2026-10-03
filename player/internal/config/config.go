@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	DBPath               string
+	DatabaseURL          string
 	ThemesDir            string
 	Library              string
 	Addr                 string
@@ -46,6 +47,7 @@ func Load() Config {
 	db := env("MUSIK_DB_PATH", filepath.Join(root, "data", "db", "musik.db"))
 	return Config{
 		DBPath:               db,
+		DatabaseURL:          env("MUSIK_DATABASE_URL", ""),
 		ThemesDir:            env("MUSIK_THEMES", filepath.Join(filepath.Dir(filepath.Dir(db)), "themes")),
 		Library:              env("MUSIK_LIBRARY", filepath.Join(root, "data", "music")),
 		Addr:                 env("MUSIK_PLAYER_ADDR", ":8787"),

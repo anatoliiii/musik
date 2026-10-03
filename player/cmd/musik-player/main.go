@@ -17,9 +17,14 @@ import (
 
 func main() {
 	cfg := config.Load()
-	if v := os.Getenv("MUSIK_DB_PATH"); v != "" {
-		cfg.DBPath = v
+	resolvedPath, err := config.ResolveDatabase(cfg.DatabaseURL, os.Getenv("MUSIK_DB_PATH"), cfg.DBPath)
+	if err != nil {
+		log.Fatal(err)
 	}
+	cfg.DBPath = resolvedPath
+	// The worker receives the resolved SQLite path through MUSIK_DB_PATH.
+	// Do not pass both selectors into a child process.
+	_ = os.Unsetenv("MUSIK_DATABASE_URL")
 	if !cfg.AuthEnabled() && !cfg.AuthDisabled {
 		log.Fatal("auth required: set MUSIK_PASSWORD and/or MUSIK_API_TOKEN (or MUSIK_AUTH_DISABLED=1 for local open mode)")
 	}
