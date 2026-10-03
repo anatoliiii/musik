@@ -79,6 +79,126 @@ function albumKey(artist, album) {
 
 let authEnabled = false;
 let authReady = false;
+let multiUser = false;
+let account = null;
+
+function csrfHeaders() {
+  const cookie = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("musik_csrf="));
+  return cookie ? { "X-CSRF-Token": decodeURIComponent(cookie.slice("musik_csrf=".length)) } : {};
+}
+
+function renderAccount(me) {
+  multiUser = !!me.multi_user;
+  account = me.authenticated ? me : null;
+  $("login-password").hidden = multiUser;
+  $("login-password").required = !multiUser;
+  $("login-submit").hidden = multiUser;
+  $("oidc-login").hidden = !multiUser;
+  $("login-tagline").textContent = multiUser ? "Войдите через свой аккаунт" : "Введи пароль, чтобы открыть библиотеку";
+  $("account-box").hidden = !account;
+  $("profile-switch").hidden = !account;
+  const admin = !!account?.user?.roles?.includes("admin");
+  $("invitation-box").hidden = !admin;
+  $("oidc-link").hidden = !multiUser || !account;
+  document.querySelector('[data-view="upload"]').hidden = multiUser && !admin;
+  if (admin) refreshAdminLists().catch((error) => toast(error.message));
+  if (!account) return;
+  const identity = `${account.user.id}/${account.active_profile.id}`;
+  if (sessionStorage.getItem("musik_identity") !== identity) {
+    sessionStorage.removeItem("musik_session");
+    sessionId = null;
+    sessionStorage.setItem("musik_identity", identity);
+  }
+  $("profile-switch").replaceChildren();
+  for (const profile of account.profiles) {
+    const option = document.createElement("option");
+    option.value = profile.id;
+    option.textContent = profile.name;
+    option.selected = profile.id === account.active_profile.id;
+    $("profile-switch").append(option);
+  }
+  $("account-display").textContent = account.user.display_name;
+  $("profile-active-name").value = account.active_profile.name;
+  $("profile-delete").disabled = account.profiles.length < 2;
+}
+
+function adminRow(label, detail) {
+  const row = document.createElement("div");
+  row.className = "admin-row";
+  const title = document.createElement("strong");
+  title.textContent = label;
+  const subtitle = document.createElement("span");
+  subtitle.textContent = detail;
+  row.append(title, subtitle);
+  return row;
+}
+
+async function refreshAdminLists() {
+  if (!multiUser || !account?.user?.roles?.includes("admin")) return;
+  const [users, invitations] = await Promise.all([
+    api("/api/admin/users"),
+    api("/api/admin/invitations"),
+  ]);
+  const userList = $("admin-users");
+  userList.replaceChildren();
+  for (const user of users) {
+    const row = adminRow(user.display_name || "Пользователь", `${user.id} · профилей: ${user.profiles}`);
+    const status = document.createElement("select");
+    status.setAttribute("aria-label", `Статус ${user.display_name || user.id}`);
+    for (const [value, label] of [["active", "Активен"], ["disabled", "Отключён"]]) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = label;
+      status.append(option);
+    }
+    status.value = user.status;
+    const adminLabel = document.createElement("label");
+    const admin = document.createElement("input");
+    admin.type = "checkbox";
+    admin.checked = user.admin;
+    adminLabel.append(admin, document.createTextNode(" Администратор"));
+    const save = document.createElement("button");
+    save.className = "btn";
+    save.type = "button";
+    save.textContent = "Сохранить";
+    save.onclick = async () => {
+      try {
+        await api(`/api/admin/users/${encodeURIComponent(user.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ status: status.value, admin: admin.checked }),
+        });
+        await ensureAuth();
+        await refreshAdminLists();
+        toast("Доступ обновлён");
+      } catch (error) { toast(error.message); }
+    };
+    row.append(status, adminLabel, save);
+    userList.append(row);
+  }
+  const inviteList = $("admin-invitations");
+  inviteList.replaceChildren();
+  for (const invitation of invitations) {
+    const pending = !invitation.consumed_at && !invitation.revoked_at && Date.parse(invitation.expires_at) > Date.now();
+    const state = invitation.consumed_at ? "Использовано" : invitation.revoked_at ? "Отозвано" : pending ? "Ожидает входа" : "Истекло";
+    const row = adminRow(invitation.email || "Без привязки к email", `${state} · до ${new Date(invitation.expires_at).toLocaleString()}`);
+    if (pending) {
+      const revoke = document.createElement("button");
+      revoke.className = "btn";
+      revoke.type = "button";
+      revoke.textContent = "Отозвать";
+      revoke.onclick = async () => {
+        try {
+          await api(`/api/admin/invitations/${encodeURIComponent(invitation.id)}`, { method: "DELETE" });
+          await refreshAdminLists();
+        } catch (error) { toast(error.message); }
+      };
+      row.append(revoke);
+    }
+    inviteList.append(row);
+  }
+  if (!users.length) userList.textContent = "Пользователей пока нет";
+  if (!invitations.length) inviteList.textContent = "Приглашений пока нет";
+}
 
 function showLogin(message) {
   const gate = $("login-gate");
@@ -104,7 +224,7 @@ function hideLogin() {
 }
 
 async function api(path, opts = {}) {
-  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  const headers = { "Content-Type": "application/json", ...csrfHeaders(), ...(opts.headers || {}) };
   const res = await fetch(path, {
     credentials: "same-origin",
     ...opts,
@@ -134,6 +254,7 @@ async function api(path, opts = {}) {
 
 async function ensureAuth() {
   const me = await api("/api/auth/me");
+  renderAccount(me);
   authEnabled = !!me.auth_enabled;
   if (!authEnabled || me.ok) {
     hideLogin();
@@ -159,6 +280,8 @@ async function doLogout() {
   await api("/api/auth/logout", { method: "POST", body: "{}" });
   sessionStorage.removeItem("musik_session");
   sessionId = null;
+  $("audio")?.pause();
+  if (multiUser) { sessionStorage.removeItem("musik_identity"); location.reload(); return; }
   if (authEnabled) {
     showLogin();
     authReady = false;
@@ -2576,6 +2699,7 @@ async function uploadMusicFiles(fileList) {
       const res = await fetch("/api/library/upload", {
         method: "POST",
         credentials: "same-origin",
+        headers: csrfHeaders(),
         body: fd,
       });
       if (res.status === 401) {
@@ -3856,7 +3980,7 @@ function wire() {
       const res = await fetch("/api/playlists/import?name=" + encodeURIComponent(file.name), {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": ct },
+        headers: { "Content-Type": ct, ...csrfHeaders() },
         body: text,
       });
       if (!res.ok) throw new Error((await res.json()).error || res.statusText);
@@ -3936,7 +4060,7 @@ function wire() {
 }
 
 async function bootApp() {
-  startBackgroundJobsMonitor();
+  if (!multiUser || account?.user?.roles?.includes("admin")) startBackgroundJobsMonitor();
   api("/api/profile")
     .then((p) => renderMaturity(p.maturity))
     .catch(console.error);
@@ -3965,6 +4089,47 @@ $("login-form").onsubmit = (e) => {
 };
 $("btn-logout").onclick = () => doLogout().catch((e) => toast(e.message || String(e)));
 $("btn-logout-profile").onclick = () => doLogout().catch((e) => toast(e.message || String(e)));
+$("oidc-link").onclick = async () => {
+  try {
+    const result = await api("/api/auth/oidc/default/link", { method: "POST", body: "{}" });
+    location.assign(result.authorization_url);
+  } catch (error) { toast(error.message); }
+};
+
+function reloadProfile() {
+  $("audio")?.pause();
+  sessionStorage.removeItem("musik_session");
+  location.reload();
+}
+$("profile-switch").onchange = async (event) => {
+  try { await api(`/api/profiles/${encodeURIComponent(event.target.value)}/activate`, { method: "POST", body: "{}" }); reloadProfile(); }
+  catch (error) { toast(error.message); await ensureAuth(); }
+};
+$("profile-create-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try { await api("/api/profiles", { method: "POST", body: JSON.stringify({ name: $("profile-new-name").value }) }); $("profile-new-name").value = ""; await ensureAuth(); toast("Профиль создан"); }
+  catch (error) { toast(error.message); }
+};
+$("profile-rename-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try { await api(`/api/profiles/${account.active_profile.id}`, { method: "PATCH", body: JSON.stringify({ name: $("profile-active-name").value }) }); await ensureAuth(); toast("Название сохранено"); }
+  catch (error) { toast(error.message); }
+};
+$("profile-delete").onclick = async () => {
+  if (!confirm(`Удалить профиль «${account.active_profile.name}»? Его данные будут сохранены в архиве.`)) return;
+  try { await api(`/api/profiles/${account.active_profile.id}`, { method: "DELETE" }); reloadProfile(); }
+  catch (error) { toast(error.message); }
+};
+$("invitation-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try { const invite = await api("/api/admin/invitations", { method: "POST", body: JSON.stringify({ email: $("invitation-email").value, ttl_hours: Number($("invitation-hours").value) }) }); $("invitation-url").value = invite.url; $("invitation-result").hidden = false; }
+  catch (error) { toast(error.message); }
+};
+window.addEventListener("focus", async () => {
+  if (!multiUser || !account) return;
+  try { const me = await api("/api/auth/me"); if (!me.authenticated || me.user.id !== account.user.id || me.active_profile.id !== account.active_profile.id) reloadProfile(); }
+  catch (_) {}
+});
 
 ensureAuth()
   .then((ok) => {

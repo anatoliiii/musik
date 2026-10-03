@@ -1,8 +1,11 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +27,218 @@ func openTestStore(t *testing.T) (*Store, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, path
+}
+
+func TestPostgreSQLQueryAdapterPreservesBindPositions(t *testing.T) {
+	got, args, err := adaptQuery("SELECT ?, datetime('now', ?), '?' -- ?\n", []any{7, "-3 days"}, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT $1, (CURRENT_TIMESTAMP + CAST($2 AS INTERVAL)), '?' -- ?\n"
+	if got != want {
+		t.Fatalf("adaptQuery = %q, want %q", got, want)
+	}
+	if len(args) != 2 || args[0] != 7 || args[1] != "-3 days" {
+		t.Fatalf("bound arguments changed: %#v", args)
+	}
+}
+
+func TestPostgreSQLIgnoreBecomesConflictDoNothing(t *testing.T) {
+	got, _, err := adaptQuery("INSERT OR IGNORE INTO request_contexts(request_id) VALUES (?)", []any{"id"}, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "INSERT INTO request_contexts(request_id) VALUES ($1) ON CONFLICT DO NOTHING" {
+		t.Fatalf("adaptQuery = %q", got)
+	}
+}
+
+func TestPostgreSQLMetricTimeExpressionsArePortable(t *testing.T) {
+	got, _, err := adaptQuery(`SELECT CAST(strftime('%H', i.played_at) AS INTEGER), date(i.queued_at), julianday('now') - julianday(MIN(played_at))`, nil, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `SELECT CAST(EXTRACT(HOUR FROM CAST(i.played_at AS TIMESTAMPTZ)) AS INTEGER), CAST(CAST(i.queued_at AS TIMESTAMPTZ) AS DATE), EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - CAST(MIN(played_at) AS TIMESTAMPTZ))) / 86400.0`
+	if got != want {
+		t.Fatalf("adaptQuery = %q, want %q", got, want)
+	}
+}
+
+func TestPostgreSQLAdapterBindsProfileFromStoreContext(t *testing.T) {
+	got, args, err := adaptQueryProfile(
+		"SELECT id FROM profiles WHERE owner_profile=:musik_profile AND id=? AND note='?' -- ?",
+		[]any{17}, "postgres", "profile-a",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT id FROM profiles WHERE owner_profile=$1 AND id=$2 AND note='?' -- ?"
+	if got != want {
+		t.Fatalf("adaptQueryProfile = %q, want %q", got, want)
+	}
+	if len(args) != 2 || args[0] != "profile-a" || args[1] != 17 {
+		t.Fatalf("profile bind order = %#v", args)
+	}
+}
+
+func TestPostgreSQLDatetimeColumnExpressionIsPortable(t *testing.T) {
+	got, _, err := adaptQuery("SELECT datetime(i.queued_at) FROM recommendation_impressions i", nil, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT CAST(i.queued_at AS TIMESTAMPTZ) FROM recommendation_impressions i"
+	if got != want {
+		t.Fatalf("adaptQuery = %q, want %q", got, want)
+	}
+}
+
+func TestPostgreSQLStoreWhenConfigured(t *testing.T) {
+	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL conformance smoke test")
+	}
+	store, err := OpenDatabase(databaseURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if store.Dialect != "postgres" {
+		t.Fatalf("database dialect = %q, want postgres", store.Dialect)
+	}
+	if _, err := store.OutcomeMetrics(7); err != nil {
+		t.Fatalf("PostgreSQL metrics query failed: %v", err)
+	}
+
+	payload := `{"test":true}`
+	id, err := store.EnqueueJob("gorm-smoke-"+NewID(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.GetJob(id)
+	if err != nil || job == nil || job.Payload != payload {
+		t.Fatalf("ORM job roundtrip = %#v, %v", job, err)
+	}
+	if _, err := store.DB.Exec(`DELETE FROM jobs WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist, err := store.CreateUserPlaylist(UserPlaylist{Name: "gorm-smoke-" + NewID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playlist.ID == 0 {
+		t.Fatal("GORM create did not return the PostgreSQL playlist ID")
+	}
+	if _, err := store.DB.Exec(`DELETE FROM playlists WHERE id = ?`, playlist.ID); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPostgreSQLProfilesAreIsolatedWhenConfigured(t *testing.T) {
+	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL profile tests")
+	}
+	store, err := OpenDatabase(databaseURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	userID, mainProfile, err := store.CreateUserWithDefaultProfile(ctx, "PostgreSQL isolation test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondary, err := store.CreateProfile(ctx, userID, "Secondary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if _, err := store.DB.Exec(`DELETE FROM playlists WHERE profile_id IN (?,?)`, mainProfile.ID, secondary.ID); err != nil {
+			t.Errorf("clean test playlists: %v", err)
+		}
+		if _, err := store.DB.Exec(`DELETE FROM user_roles WHERE user_id=?`, userID); err != nil {
+			t.Errorf("clean test roles: %v", err)
+		}
+		if _, err := store.DB.Exec(`DELETE FROM profiles WHERE id IN (?,?) AND owner_user_id=?`, mainProfile.ID, secondary.ID, userID); err != nil {
+			t.Errorf("clean test profiles: %v", err)
+		}
+		if _, err := store.DB.Exec(`DELETE FROM users WHERE id=?`, userID); err != nil {
+			t.Errorf("clean test user: %v", err)
+		}
+	}()
+	mainStore := store.ForProfile(mainProfile.ID)
+	secondaryStore := store.ForProfile(secondary.ID)
+	if _, err := mainStore.CreateUserPlaylist(UserPlaylist{Name: "main-" + NewID()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondaryStore.CreateUserPlaylist(UserPlaylist{Name: "secondary-" + NewID()}); err != nil {
+		t.Fatal(err)
+	}
+	mainLists, err := mainStore.ListUserPlaylists(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondaryLists, err := secondaryStore.ListUserPlaylists(nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mainLists) != 1 || len(secondaryLists) != 1 || mainLists[0].Name == secondaryLists[0].Name {
+		t.Fatalf("profile playlists crossed scopes: main=%#v secondary=%#v", mainLists, secondaryLists)
+	}
+}
+
+func TestPostgreSQLOIDCInvitationProvisioningWhenConfigured(t *testing.T) {
+	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL OIDC provisioning test")
+	}
+	store, err := OpenDatabase(databaseURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	var activeAdmins int
+	if err := store.DB.QueryRowContext(ctx, `SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.status='active' AND r.role='admin'`).Scan(&activeAdmins); err != nil {
+		t.Fatal(err)
+	}
+	if activeAdmins != 0 {
+		t.Skip("PostgreSQL OIDC provisioning test requires a fresh database without an active admin")
+	}
+	issuer := "https://idp.example.test/realms/musik"
+	secret, err := store.BootstrapInvitation(ctx, issuer, time.Hour)
+	if err != nil {
+		t.Fatalf("bootstrap invitation: %v", err)
+	}
+	identity := VerifiedIdentity{
+		Issuer: issuer, Subject: "postgres-integration-user",
+		DisplayName: "PostgreSQL integration user", Email: "pg-test@example.test", EmailVerified: true,
+	}
+	userID, profile, err := store.AcceptInvitation(ctx, secret, identity)
+	if err != nil {
+		t.Fatalf("accept bootstrap invitation: %v", err)
+	}
+	if ok, err := store.UserIsAdmin(ctx, userID); err != nil || !ok {
+		t.Fatalf("bootstrapped owner admin = %v, %v", ok, err)
+	}
+	if linkedUser, err := store.IdentityUser(ctx, issuer, identity.Subject); err != nil || linkedUser != userID {
+		t.Fatalf("identity lookup = %q, %v; want %q", linkedUser, err, userID)
+	}
+	token, _, err := store.IssueUserSession(ctx, userID, time.Hour)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	gotUser, gotProfile, err := store.UserSession(ctx, token)
+	if err != nil || gotUser != userID || gotProfile.ID != profile.ID {
+		t.Fatalf("session principal = %q/%q, %v; want %q/%q", gotUser, gotProfile.ID, err, userID, profile.ID)
+	}
+	if err := store.RevokeUserSession(ctx, token); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	if _, _, err := store.UserSession(ctx, token); !errors.Is(err, ErrProfileNotFound) {
+		t.Fatalf("revoked session error = %v, want ErrProfileNotFound", err)
+	}
 }
 
 func TestMondayZeroWeekday(t *testing.T) {
@@ -475,13 +690,16 @@ func TestLatestPoliciesAndTrainingRuns(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at) VALUES ('ranker-v2','ranker',1,'/test/ranker.json','hash','active',datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.DB.Exec(`
 INSERT INTO training_runs(
   run_id, model_version, model_type, feature_schema_version, train_from, train_until,
   positive_count, negative_count, metrics_schema_version, metrics_json, status, created_at
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
 		NewID(), "ranker-v2", "linear", 1, "2026-01-01", "2026-02-01",
-		12, 8, 1, `{"auc":0.71}`, "published",
+		12, 8, 1, `{"auc":0.71}`, "completed",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +711,7 @@ INSERT INTO training_runs(
 		t.Fatalf("policy=%+v", policies[0])
 	}
 	runs, err := store.ListTrainingRuns(3)
-	if err != nil || len(runs) != 1 || runs[0].Status != "published" {
+	if err != nil || len(runs) != 1 || runs[0].Status != "completed" {
 		t.Fatalf("runs=%v err=%v", runs, err)
 	}
 	if runs[0].Metrics["auc"] != 0.71 {

@@ -54,7 +54,7 @@ def record_listen(
             INSERT INTO listening_history(
                 track_id, ts, source, action, daypart, weekday,
                 position_sec, duration_sec, listened_sec, session_id, reason
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            ,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,:musik_profile)
             """,
             (
                 track_id,
@@ -80,9 +80,9 @@ def record_listen(
             w = float(transition_weight) if transition_weight is not None else 1.0
             conn.execute(
                 """
-                INSERT INTO transitions(from_id, to_id, weight, updated_at)
-                VALUES (?,?,?,?)
-                ON CONFLICT(from_id, to_id) DO UPDATE SET
+                INSERT INTO transitions(from_id, to_id, weight, updated_at,profile_id)
+                VALUES (?,?,?,?,:musik_profile)
+                ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
                     weight = weight + excluded.weight,
                     updated_at = excluded.updated_at
                 """,
@@ -102,9 +102,9 @@ def bump_rec_stats(
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(track_id) DO UPDATE SET
+            INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at,profile_id)
+            VALUES (?, ?, ?, ?, ?,:musik_profile)
+            ON CONFLICT(profile_id,track_id) DO UPDATE SET
                 shown = shown + excluded.shown,
                 skipped_early = skipped_early + excluded.skipped_early,
                 completed = completed + excluded.completed,
@@ -121,7 +121,7 @@ def recent_history(limit: int = 50) -> list[dict[str, Any]]:
             SELECT h.id, h.track_id, h.ts, h.action, h.daypart, h.weekday,
                    h.listened_sec, h.duration_sec, h.reason, h.session_id,
                    t.artist, t.title
-            FROM listening_history h
+            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
             JOIN tracks t ON t.id = h.track_id
             ORDER BY h.id DESC
             LIMIT ?
@@ -134,7 +134,7 @@ def recent_history(limit: int = 50) -> list[dict[str, Any]]:
 def history_counts() -> dict[str, int]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT action, COUNT(*) AS n FROM listening_history GROUP BY action"
+            "SELECT action, COUNT(*) AS n FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history GROUP BY action"
         ).fetchall()
         out = {r["action"]: int(r["n"]) for r in rows}
         out["total"] = sum(out.values())
@@ -148,7 +148,7 @@ def top_transitions(limit: int = 20) -> list[dict[str, Any]]:
             SELECT tr.from_id, tr.to_id, tr.weight,
                    a.artist AS from_artist, a.title AS from_title,
                    b.artist AS to_artist, b.title AS to_title
-            FROM transitions tr
+            FROM (SELECT * FROM transitions WHERE profile_id=:musik_profile) tr
             JOIN tracks a ON a.id = tr.from_id
             JOIN tracks b ON b.id = tr.to_id
             ORDER BY tr.weight DESC

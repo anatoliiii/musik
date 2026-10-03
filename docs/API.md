@@ -13,6 +13,8 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 
 ## Auth (один владелец)
 
+Этот раздел описывает legacy-режим для одного владельца.
+
 | | |
 |--|--|
 | UI | пароль `MUSIK_PASSWORD` → `POST /api/auth/login` → httpOnly cookie `musik_session` |
@@ -31,12 +33,29 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 | POST | `/api/auth/logout` | сброс cookie |
 | GET | `/api/auth/me` | `{ok, auth_enabled}` |
 
+## Multi-user через OIDC
+
+Режим включается через `MUSIK_MULTI_USER=1`, HTTPS `MUSIK_PUBLIC_BASE_URL` и
+`MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
+`MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
+запрещены. Пользователи входят по OIDC-приглашению; старые личные данные после
+миграции остаются в профиле первого администратора. Подробности первого запуска
+описаны в [DEPLOY.md](DEPLOY.md).
+
+Для изменяющих запросов обязательны cookie-сессия, `X-CSRF-Token` и тот же
+`Origin`, что у публичного HTTPS URL. `GET /api/auth/me` возвращает учётку,
+роли и список профилей; `/api/profiles` управляет только профилями вошедшего
+пользователя. Администраторы управляют приглашениями и статусами учёток через
+`/api/admin/*`. Явная привязка другого OIDC-входа начинается через
+`POST /api/auth/oidc/default/link`. Shared password и Bearer token не являются
+резервным способом входа в этом режиме.
+
 ## Core
 
 | Method | Path | Описание |
 |--------|------|----------|
 | GET | `/api/health` | `{ok, version, api_version, auth}` (+ `tracks`, `dim` если auth) |
-| GET | `/api/status` | tracks, maturity, mode, session, explore |
+| GET | `/api/status` | tracks, maturity, mode, session, explore, `db_backend` (`sqlite` или `postgresql`) |
 | GET | `/api/profile` | maturity, signals, top_artists/clusters, confidence, explore bounds |
 | PUT | `/api/profile/explore` | `{explore_lo, explore_hi}` — UI bounds for gated Thompson sampling |
 | GET | `/api/library` | плоский список треков |
@@ -46,7 +65,7 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 | GET | `/api/stream/{id}` | оригинал (Range); `?q=mobile|aac|mp3`, alias `?fmt=…` — мобильный transcode |
 | GET | `/api/artwork/{id}` | JPEG 96/256/640 (`?w=`, default 640); `?full=1` — оригинал |
 | GET | `/api/similar/{id}` | top-10 cosine |
-| POST | `/api/reload` | перечитать индекс из SQLite |
+| POST | `/api/reload` | перечитать индекс из выбранной БД |
 | GET | `/api/now` | current + queue (`?session_id=`) |
 | POST | `/api/events` | playback events |
 | POST | `/api/session/start` | `{seed_track_id?}` |
@@ -138,7 +157,7 @@ Public share-radio не пишет owner events, transitions, taste или ме�
 ## Сессии и вкус
 
 - Каждая вкладка — свой `session_id` из `/api/radio/start`, `/api/play`, `/api/session/start`.
-- Сессии **персистятся в SQLite** (`play_sessions`) и переживают рестарт player.
+- Сессии персистятся в выбранной БД (`play_sessions`) и переживают рестарт player.
 - Вкус использует отдельные long/daypart/session positive-векторы. Малоданный
   daypart откатывается к long/session; session state переживает рестарт.
   Early skip попадает только в session negative prototypes, dislike — в

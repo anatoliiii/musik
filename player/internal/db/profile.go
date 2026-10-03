@@ -8,7 +8,7 @@ import (
 func (s *Store) SaveProfile(context string, emb []byte) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.Exec(
-		`INSERT INTO user_profile_snapshots(context, embedding, created_at) VALUES (?,?,?)`,
+		`INSERT INTO user_profile_snapshots(context, embedding, created_at,profile_id) VALUES (?,?,?,:musik_profile)`,
 		context, emb, now,
 	)
 	return err
@@ -21,17 +21,17 @@ func (s *Store) PruneProfiles(context string, keep int) error {
 	}
 	_, err := s.DB.Exec(`
 DELETE FROM user_profile_snapshots
-WHERE context = ? AND id NOT IN (
-  SELECT id FROM user_profile_snapshots WHERE context = ?
+WHERE user_profile_snapshots.profile_id=:musik_profile AND ( context = ? AND id NOT IN (
+  SELECT id FROM (SELECT * FROM user_profile_snapshots WHERE profile_id=:musik_profile) AS user_profile_snapshots WHERE context = ?
   ORDER BY id DESC LIMIT ?
-)`, context, context, keep)
+)) `, context, context, keep)
 	return err
 }
 
 func (s *Store) LatestProfile(context string) ([]byte, error) {
 	var b []byte
 	err := s.DB.QueryRow(`
-SELECT embedding FROM user_profile_snapshots WHERE context = ?
+SELECT embedding FROM (SELECT * FROM user_profile_snapshots WHERE profile_id=:musik_profile) AS user_profile_snapshots WHERE context = ?
 ORDER BY id DESC LIMIT 1`, context).Scan(&b)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -51,7 +51,7 @@ SELECT
     WHEN action IN ('dislike','skip') THEN 1
     WHEN action = 'track_end' AND reason = 'skipped' AND COALESCE(listened_sec,0) < 0.3 * COALESCE(duration_sec,1) THEN 1
     ELSE 0 END), 0)
-FROM listening_history`).Scan(&pos, &neg)
+FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history`).Scan(&pos, &neg)
 	return
 }
 
@@ -66,7 +66,7 @@ func (s *Store) TopArtists(limit int) ([]ArtistCount, error) {
 	}
 	rows, err := s.DB.Query(`
 SELECT COALESCE(t.artist,'(unknown)'), COUNT(*) AS c
-FROM listening_history h
+FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
 JOIN tracks t ON t.id = h.track_id
 WHERE h.action IN ('like','finish','track_end')
   AND (h.reason IS NULL OR h.reason != 'skipped')
@@ -119,8 +119,8 @@ INSERT INTO taste_states(
   state_key, positive_vector, embedding_dim, positive_samples,
   negative_samples, negative_schema_version, negative_prototypes_json,
   model_version, updated_at
-) VALUES (?,?,?,?,?,?,?,'clap-default',?)
-ON CONFLICT(state_key) DO UPDATE SET
+,profile_id) VALUES (?,?,?,?,?,?,?,'clap-default',?,:musik_profile)
+ON CONFLICT(profile_id,state_key) DO UPDATE SET
   positive_vector=excluded.positive_vector,
   embedding_dim=excluded.embedding_dim,
   positive_samples=excluded.positive_samples,
@@ -139,7 +139,7 @@ func (s *Store) LoadTasteStates() ([]TasteStateRow, error) {
 SELECT state_key, positive_vector, COALESCE(embedding_dim,0),
        positive_samples, negative_samples,
        COALESCE(negative_prototypes_json,'')
-FROM taste_states ORDER BY state_key`)
+FROM (SELECT * FROM taste_states WHERE profile_id=:musik_profile) AS taste_states ORDER BY state_key`)
 	if err != nil {
 		return nil, err
 	}
@@ -179,14 +179,14 @@ func (s *Store) ReplaceTasteCentroids(rows []TasteCentroidRow) error {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err = tx.Exec(`DELETE FROM taste_centroids WHERE algorithm_version=?`, version); err != nil {
+	if _, err = tx.Exec(`DELETE FROM taste_centroids WHERE taste_centroids.profile_id=:musik_profile AND ( algorithm_version=?) `, version); err != nil {
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	stmt, err := tx.Prepare(`
 INSERT INTO taste_centroids(
   idx, vector, embedding_dim, mass, label, sample_count, updated_at, algorithm_version
-) VALUES (?,?,?,?,?,?,?,?)`)
+,profile_id) VALUES (?,?,?,?,?,?,?,?,:musik_profile)`)
 	if err != nil {
 		return err
 	}
@@ -205,7 +205,7 @@ INSERT INTO taste_centroids(
 func (s *Store) LoadTasteCentroids(algorithmVersion string) ([]TasteCentroidRow, error) {
 	rows, err := s.DB.Query(`
 SELECT idx, vector, embedding_dim, mass, COALESCE(label,''), sample_count, algorithm_version
-FROM taste_centroids WHERE algorithm_version=? ORDER BY idx`, algorithmVersion)
+FROM (SELECT * FROM taste_centroids WHERE profile_id=:musik_profile) AS taste_centroids WHERE algorithm_version=? ORDER BY idx`, algorithmVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -241,17 +241,17 @@ func (s *Store) PositiveTasteSamples(limit int) ([]TasteSampleRow, error) {
 SELECT i.track_id,
        COALESCE(i.closed_at, i.played_at, i.queued_at),
        CASE WHEN EXISTS(
-         SELECT 1 FROM listening_history h
+         SELECT 1 FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
          WHERE h.impression_id=i.impression_id AND h.action='like'
        ) THEN 2.0 ELSE 1.0 END
-FROM recommendation_impressions i
+FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i
 WHERE i.legacy=0
   AND i.source NOT IN ('manual', 'legacy')
   AND COALESCE(i.mode, '') != 'share'
   AND (
     i.outcome='finished'
     OR EXISTS (
-      SELECT 1 FROM listening_history h
+      SELECT 1 FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
       WHERE h.impression_id=i.impression_id AND h.action='like'
     )
   )
@@ -284,7 +284,7 @@ func (s *Store) TopClusters(limit int) ([]ClusterCount, error) {
 	}
 	rows, err := s.DB.Query(`
 SELECT COALESCE(f.cluster_id, -1), COUNT(*) AS c
-FROM listening_history h
+FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
 JOIN features f ON f.track_id = h.track_id
 WHERE h.action IN ('like','finish','track_end')
   AND (h.reason IS NULL OR h.reason != 'skipped')

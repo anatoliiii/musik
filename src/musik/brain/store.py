@@ -23,8 +23,8 @@ def save_playlist(
     now = utcnow()
     with connect() as conn:
         cur = conn.execute(
-            """INSERT INTO playlists(kind, name, created_at, meta_json, type, updated_at)
-               VALUES (?,?,?,?, 'generated', ?)""",
+            """INSERT INTO playlists(kind, name, created_at, meta_json, type, updated_at,profile_id)
+               VALUES (?,?,?,?, 'generated', ?,:musik_profile)""",
             (kind, name, now, json.dumps(meta or {}, ensure_ascii=False), now),
         )
         pid = int(cur.lastrowid)
@@ -33,8 +33,8 @@ def save_playlist(
                 """
                 INSERT INTO playlist_tracks(
                     item_id, playlist_id, position, track_id, added_at, source, explanation
-                )
-                VALUES (lower(hex(randomblob(16))),?,?,?,?, 'rule', ?)
+                ,profile_id)
+                VALUES (lower(hex(randomblob(16))),?,?,?,?, 'rule', ?,:musik_profile)
                 """,
                 (pid, pos, int(e["track_id"]), now, e.get("explanation")),
             )
@@ -42,12 +42,12 @@ def save_playlist(
             conn.execute(
                 """
                 DELETE FROM playlists
-                WHERE kind = ? AND id NOT IN (
-                    SELECT id FROM playlists
+                WHERE playlists.profile_id=:musik_profile AND ( kind = ? AND id NOT IN (
+                    SELECT id FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists
                     WHERE kind = ?
                     ORDER BY id DESC
                     LIMIT ?
-                )
+                ))
                 """,
                 (kind, kind, retain),
             )
@@ -59,8 +59,8 @@ def list_playlists(limit: int = 30) -> list[dict[str, Any]]:
         rows = conn.execute(
             """
             SELECT p.id, p.kind, p.name, p.created_at,
-                   (SELECT COUNT(*) FROM playlist_tracks pt WHERE pt.playlist_id = p.id) AS n
-            FROM playlists p
+                   (SELECT COUNT(*) FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) pt WHERE pt.playlist_id = p.id) AS n
+            FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) p
             ORDER BY p.id DESC
             LIMIT ?
             """,
@@ -74,7 +74,7 @@ def latest_playlist(kind: str) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT id FROM playlists
+            SELECT id FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists
             WHERE kind = ?
             ORDER BY id DESC
             LIMIT 1
@@ -89,7 +89,7 @@ def latest_playlist(kind: str) -> dict[str, Any] | None:
 def get_playlist(playlist_id: int) -> dict[str, Any] | None:
     with connect() as conn:
         row = conn.execute(
-            "SELECT id, kind, name, created_at, meta_json FROM playlists WHERE id = ?",
+            "SELECT id, kind, name, created_at, meta_json FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHERE id = ?",
             (playlist_id,),
         ).fetchone()
         if not row:
@@ -99,7 +99,7 @@ def get_playlist(playlist_id: int) -> dict[str, Any] | None:
             """
             SELECT pt.position, pt.track_id, pt.explanation,
                    t.artist, t.title, t.path
-            FROM playlist_tracks pt
+            FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) pt
             JOIN tracks t ON t.id = pt.track_id
             WHERE pt.playlist_id = ?
             ORDER BY pt.position

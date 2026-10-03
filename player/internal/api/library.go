@@ -98,5 +98,21 @@ func isLoopback(r *http.Request) bool {
 }
 
 func (s *Server) Reload() error {
-	return s.App.Reload()
+	if err := s.App.Reload(); err != nil {
+		return err
+	}
+	if s.multi != nil {
+		s.multi.mu.Lock()
+		children := make([]*Server, 0, len(s.multi.profiles))
+		for _, child := range s.multi.profiles {
+			children = append(children, child)
+		}
+		s.multi.mu.Unlock()
+		for _, child := range children {
+			if err := child.Reload(); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

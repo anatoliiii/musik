@@ -1,11 +1,14 @@
-"""SQLite-backed job queue."""
+"""SQLAlchemy-backed job queue for the selected database."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from sqlalchemy import select, update
+
 from musik.db.schema import connect, row_to_dict, utcnow
+from musik.db.models import Job
 
 
 def _job_row(row: Any) -> dict[str, Any] | None:
@@ -33,18 +36,11 @@ def enqueue_job(kind: str, payload: dict[str, Any] | None = None) -> dict[str, A
     now = utcnow()
     payload_json = json.dumps(payload or {}, ensure_ascii=False)
     with connect() as conn:
-        cur = conn.execute(
-            """
-            INSERT INTO jobs(kind, status, payload_json, created_at, updated_at)
-            VALUES (?, 'pending', ?, ?, ?)
-            """,
-            (kind, payload_json, now, now),
-        )
-        job_id = int(cur.lastrowid)
-        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    job = _job_row(row)
-    assert job is not None
-    return job
+        job = Job(kind=kind, status="pending", payload_json=payload_json,
+                  created_at=now, updated_at=now)
+        conn.session.add(job)
+        conn.session.flush()
+        return _job_row(_job_mapping(job)) or {}
 
 
 def enqueue_job_once(
@@ -55,73 +51,49 @@ def enqueue_job_once(
     now = utcnow()
     payload_json = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     with connect() as conn:
-        existing = conn.execute(
-            """
-            SELECT * FROM jobs
-            WHERE kind = ? AND payload_json = ?
-            ORDER BY id DESC LIMIT 1
-            """,
-            (kind, payload_json),
-        ).fetchone()
+        existing = conn.session.scalar(
+            select(Job).where(Job.kind == kind, Job.payload_json == payload_json)
+            .order_by(Job.id.desc()).limit(1)
+        )
         if existing is not None:
             return None
-        cur = conn.execute(
-            """
-            INSERT INTO jobs(kind, status, payload_json, created_at, updated_at)
-            VALUES (?, 'pending', ?, ?, ?)
-            """,
-            (kind, payload_json, now, now),
-        )
-        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (int(cur.lastrowid),)).fetchone()
-    job = _job_row(row)
-    assert job is not None
-    return job
+        job = Job(kind=kind, status="pending", payload_json=payload_json,
+                  created_at=now, updated_at=now)
+        conn.session.add(job)
+        conn.session.flush()
+        return _job_row(_job_mapping(job))
 
 
 def claim_next() -> dict[str, Any] | None:
     now = utcnow()
     with connect() as conn:
-        row = conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'running', updated_at = ?
-            WHERE id = (
-                SELECT id FROM jobs
-                WHERE status = 'pending'
-                ORDER BY id
-                LIMIT 1
-            )
-            RETURNING *
-            """,
-            (now,),
-        ).fetchone()
-    return _job_row(row)
+        next_id = select(Job.id).where(Job.status == "pending").order_by(Job.id).limit(1).scalar_subquery()
+        statement = (
+            update(Job).where(Job.id == next_id, Job.status == "pending")
+            .values(status="running", updated_at=now).returning(Job)
+        )
+        job = conn.session.execute(statement).scalar_one_or_none()
+        return _job_row(_job_mapping(job)) if job is not None else None
 
 
 def finish_job(job_id: int, result: dict[str, Any] | None = None) -> None:
     now = utcnow()
     result_json = json.dumps(result or {}, ensure_ascii=False)
     with connect() as conn:
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'done', result_json = ?, error = NULL, updated_at = ?
-            WHERE id = ?
-            """,
-            (result_json, now, job_id),
+        conn.session.execute(
+            update(Job).where(Job.id == job_id).values(
+                status="done", result_json=result_json, error=None, updated_at=now
+            )
         )
 
 
 def fail_job(job_id: int, error: str) -> None:
     now = utcnow()
     with connect() as conn:
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'failed', error = ?, updated_at = ?
-            WHERE id = ?
-            """,
-            (error[:4000], now, job_id),
+        conn.session.execute(
+            update(Job).where(Job.id == job_id).values(
+                status="failed", error=error[:4000], updated_at=now
+            )
         )
 
 
@@ -131,31 +103,32 @@ def update_job_progress(job_id: int, progress: dict[str, Any]) -> None:
     body = {"progress": progress}
     result_json = json.dumps(body, ensure_ascii=False)
     with connect() as conn:
-        conn.execute(
-            """
-            UPDATE jobs
-            SET result_json = ?, updated_at = ?
-            WHERE id = ? AND status = 'running'
-            """,
-            (result_json, now, job_id),
+        conn.session.execute(
+            update(Job).where(Job.id == job_id, Job.status == "running").values(
+                result_json=result_json, updated_at=now
+            )
         )
 
 
 def get_job(job_id: int) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-    return _job_row(row)
+        job = conn.session.get(Job, job_id)
+        return _job_row(_job_mapping(job)) if job is not None else None
 
 
 def list_recent(limit: int = 30) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM jobs ORDER BY id DESC LIMIT ?",
-            (max(1, int(limit)),),
-        ).fetchall()
-    out: list[dict[str, Any]] = []
-    for r in rows:
-        job = _job_row(r)
-        if job is not None:
-            out.append(job)
-    return out
+        jobs = conn.session.scalars(
+            select(Job).order_by(Job.id.desc()).limit(max(1, int(limit)))
+        ).all()
+        return [result for job in jobs if (result := _job_row(_job_mapping(job))) is not None]
+
+
+def _job_mapping(job: Job | None) -> dict[str, Any] | None:
+    if job is None:
+        return None
+    return {
+        "id": job.id, "kind": job.kind, "status": job.status,
+        "payload_json": job.payload_json, "result_json": job.result_json,
+        "error": job.error, "created_at": job.created_at, "updated_at": job.updated_at,
+    }

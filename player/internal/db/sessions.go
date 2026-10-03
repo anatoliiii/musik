@@ -8,7 +8,7 @@ import (
 // LoadTransitionGraph loads from→to weights (min weight 1).
 func (s *Store) LoadTransitionGraph() (map[int64]map[int64]float64, error) {
 	rows, err := s.DB.Query(`
-SELECT from_id, to_id, weight FROM transitions WHERE weight >= 1
+SELECT from_id, to_id, weight FROM (SELECT * FROM transitions WHERE profile_id=:musik_profile) AS transitions WHERE weight >= 1
 ORDER BY weight DESC LIMIT 50000`)
 	if err != nil {
 		return nil, err
@@ -32,21 +32,21 @@ ORDER BY weight DESC LIMIT 50000`)
 }
 
 type PlaySessionRow struct {
-	ID              string
-	Mode            string
-	CurrentID       int64
-	QueueJSON       string
-	ExcludeJSON     string
-	RatedJSON       string
-	DailyIDsJSON    string
-	DailyPos        int
-	PlaylistName    string
-	PlaylistKind    string
-	CurrentItemJSON string
-	TasteStateJSON      string
-	ActiveContextsJSON  string
-	TransitionProfile   string
-	UpdatedAt           string
+	ID                 string
+	Mode               string
+	CurrentID          int64
+	QueueJSON          string
+	ExcludeJSON        string
+	RatedJSON          string
+	DailyIDsJSON       string
+	DailyPos           int
+	PlaylistName       string
+	PlaylistKind       string
+	CurrentItemJSON    string
+	TasteStateJSON     string
+	ActiveContextsJSON string
+	TransitionProfile  string
+	UpdatedAt          string
 }
 
 func (s *Store) UpsertPlaySession(row PlaySessionRow) error {
@@ -56,7 +56,7 @@ INSERT INTO play_sessions(
   daily_ids_json, daily_pos, playlist_name, playlist_kind, current_item_json,
   taste_state_schema_version, taste_state_json, active_contexts_json,
   transition_profile, updated_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?)
+,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,:musik_profile)
 ON CONFLICT(id) DO UPDATE SET
   mode=excluded.mode,
   current_id=excluded.current_id,
@@ -72,7 +72,7 @@ ON CONFLICT(id) DO UPDATE SET
   taste_state_json=excluded.taste_state_json,
   active_contexts_json=excluded.active_contexts_json,
   transition_profile=excluded.transition_profile,
-  updated_at=excluded.updated_at`,
+  updated_at=excluded.updated_at WHERE play_sessions.profile_id=:musik_profile`,
 		row.ID, row.Mode, row.CurrentID, nullStr(row.QueueJSON), nullStr(row.ExcludeJSON),
 		nullStr(row.RatedJSON), nullStr(row.DailyIDsJSON), row.DailyPos,
 		row.PlaylistName, row.PlaylistKind, nullStr(row.CurrentItemJSON),
@@ -95,7 +95,7 @@ SELECT id, mode, current_id, queue_json, exclude_json, rated_json,
        daily_ids_json, daily_pos, playlist_name, playlist_kind,
        current_item_json, taste_state_json, active_contexts_json,
        transition_profile, updated_at
-FROM play_sessions WHERE id = ?`, id).Scan(
+FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions WHERE id = ?`, id).Scan(
 		&row.ID, &row.Mode, &row.CurrentID, &q, &ex, &rated, &daily,
 		&row.DailyPos, &row.PlaylistName, &row.PlaylistKind, &currentItem,
 		&tasteState, &contexts, &profile, &row.UpdatedAt)
@@ -133,23 +133,23 @@ FROM play_sessions WHERE id = ?`, id).Scan(
 }
 
 func (s *Store) DeletePlaySession(id string) error {
-	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE id = ?`, id)
+	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( id = ?) `, id)
 	return err
 }
 
 func (s *Store) DeleteStalePlaySessions(olderThan time.Time) error {
-	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE updated_at < ?`, olderThan.UTC().Format(time.RFC3339Nano))
+	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( updated_at < ?) `, olderThan.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *Store) CountPlaySessions() (int, error) {
 	var n int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM play_sessions`).Scan(&n)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions`).Scan(&n)
 	return n, err
 }
 
 func (s *Store) OldestPlaySessionIDs(limit int) ([]string, error) {
-	rows, err := s.DB.Query(`SELECT id FROM play_sessions ORDER BY updated_at ASC LIMIT ?`, limit)
+	rows, err := s.DB.Query(`SELECT id FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions ORDER BY updated_at ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

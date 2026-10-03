@@ -44,8 +44,8 @@ func TestEmbeddedOpenAPIMatchesRegisteredRoutes(t *testing.T) {
 	}
 
 	var eventSchema struct {
-		Required   []string                       `json:"required"`
-		Properties map[string]map[string]any      `json:"properties"`
+		Required   []string                  `json:"required"`
+		Properties map[string]map[string]any `json:"properties"`
 	}
 	if err := json.Unmarshal(document.Components.Schemas["PlaybackEvent"], &eventSchema); err != nil {
 		t.Fatalf("parse PlaybackEvent schema: %v", err)

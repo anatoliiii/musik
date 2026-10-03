@@ -56,7 +56,7 @@ def build_profile(*, context: str = CONTEXT_OFFLINE, persist: bool = True) -> Ta
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT track_id, action FROM listening_history
+            SELECT track_id, action FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
             ORDER BY id DESC
             LIMIT 500
             """
@@ -98,8 +98,8 @@ def build_profile(*, context: str = CONTEXT_OFFLINE, persist: bool = True) -> Ta
         with connect() as conn:
             conn.execute(
                 """
-                INSERT INTO user_profile_snapshots(context, embedding, created_at)
-                VALUES (?,?,?)
+                INSERT INTO user_profile_snapshots(context, embedding, created_at,profile_id)
+                VALUES (?,?,?,:musik_profile)
                 """,
                 (write_context, blob, utcnow()),
             )
@@ -110,7 +110,7 @@ def latest_profile(context: str = CONTEXT_ONLINE) -> TasteProfile | None:
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT embedding FROM user_profile_snapshots
+            SELECT embedding FROM (SELECT * FROM user_profile_snapshots WHERE profile_id=:musik_profile) AS user_profile_snapshots
             WHERE context = ?
             ORDER BY id DESC LIMIT 1
             """,

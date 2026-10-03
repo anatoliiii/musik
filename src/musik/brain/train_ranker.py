@@ -20,6 +20,7 @@ from musik.brain.ranker import (
 )
 from musik.config import get_settings
 from musik.db.schema import connect, utcnow
+from musik.db.scoped_connection import active_profile
 
 MIN_LABELS = 1500
 MIN_PER_CLASS = 200
@@ -90,12 +91,12 @@ def load_labeled_impressions() -> list[dict[str, Any]]:
             SELECT i.impression_id, i.source, i.outcome, i.played_at, i.closed_at,
                    i.queued_at, i.legacy, i.features_json,
                    (
-                       SELECT h.action FROM listening_history h
+                       SELECT h.action FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
                        WHERE h.impression_id = i.impression_id
                          AND h.action IN ('like', 'dislike')
                        ORDER BY h.ts DESC LIMIT 1
                    ) AS explicit_action
-            FROM recommendation_impressions i
+            FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i
             WHERE i.legacy = 0
               AND i.played_at IS NOT NULL
             ORDER BY COALESCE(i.closed_at, i.played_at, i.queued_at)
@@ -120,7 +121,7 @@ def last_completed_label_count() -> int:
         row = conn.execute(
             """
             SELECT positive_count, negative_count
-            FROM training_runs
+            FROM (SELECT * FROM training_runs WHERE profile_id=:musik_profile) AS training_runs
             WHERE model_type='ranker' AND status='completed'
             ORDER BY created_at DESC LIMIT 1
             """
@@ -242,7 +243,7 @@ def _record_run(
               run_id, model_version, model_type, feature_schema_version,
               train_from, train_until, positive_count, negative_count,
               metrics_schema_version, metrics_json, status, created_at, completed_at
-            ) VALUES (?, ?, 'ranker', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ,profile_id) VALUES (?, ?, 'ranker', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,:musik_profile)
             """,
             (
                 run_id,
@@ -265,14 +266,14 @@ def _activate_model(model_version: str, path: Path, digest: str) -> None:
     now = utcnow()
     with connect() as conn:
         conn.execute(
-            "UPDATE model_versions SET status='retired' WHERE model_type='ranker' AND status='active'"
+            "UPDATE model_versions SET status='retired' WHERE model_versions.profile_id=:musik_profile AND ( model_type='ranker' AND status='active') "
         )
         conn.execute(
             """
             INSERT INTO model_versions(
               model_version, model_type, feature_schema_version, artifact_path,
               artifact_hash, status, created_at, activated_at
-            ) VALUES (?, 'ranker', ?, ?, ?, 'active', ?, ?)
+            ,profile_id) VALUES (?, 'ranker', ?, ?, ?, 'active', ?, ?,:musik_profile)
             """,
             (model_version, FEATURE_SCHEMA_VERSION, str(path), digest, now, now),
         )
@@ -402,6 +403,12 @@ def train_ranker(*, force: bool = False, artifact_path: Path | None = None) -> d
     }
     settings = get_settings()
     path = artifact_path or (settings.data_dir / "models" / "ranker.json")
+    if artifact_path is None and settings.multi_user:
+        profile_id = active_profile.get()
+        if profile_id is None:
+            with connect() as conn:
+                profile_id = conn.profile_id
+        path = settings.data_dir / "models" / "profiles" / profile_id / "ranker.json"
     write_model_atomic(path, payload)
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     _activate_model(model_version, path, digest)

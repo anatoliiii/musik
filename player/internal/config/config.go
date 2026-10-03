@@ -8,6 +8,8 @@ import (
 
 type Config struct {
 	DBPath               string
+	DatabaseURL          string
+	DataDir              string
 	ThemesDir            string
 	Library              string
 	Addr                 string
@@ -39,13 +41,20 @@ type Config struct {
 	MobileBitrate        string // e.g. 160k — Android / LTE stream profile
 	MobileFormat         string // aac | mp3
 	CORSOrigins          []string
+	MultiUser            bool
+	OIDCIssuer           string
+	OIDCClientID         string
+	OIDCClientSecret     string
 }
 
 func Load() Config {
 	root := findRoot()
 	db := env("MUSIK_DB_PATH", filepath.Join(root, "data", "db", "musik.db"))
+	dataDir := env("MUSIK_DATA_DIR", filepath.Dir(filepath.Dir(db)))
 	return Config{
 		DBPath:               db,
+		DatabaseURL:          env("MUSIK_DATABASE_URL", ""),
+		DataDir:              dataDir,
 		ThemesDir:            env("MUSIK_THEMES", filepath.Join(filepath.Dir(filepath.Dir(db)), "themes")),
 		Library:              env("MUSIK_LIBRARY", filepath.Join(root, "data", "music")),
 		Addr:                 env("MUSIK_PLAYER_ADDR", ":8787"),
@@ -77,7 +86,20 @@ func Load() Config {
 		MobileBitrate:        env("MUSIK_MOBILE_BITRATE", "160k"),
 		MobileFormat:         stringsToLower(env("MUSIK_MOBILE_FORMAT", "aac")),
 		CORSOrigins:          splitCSV(env("MUSIK_CORS_ORIGINS", "")),
+		MultiUser:            envBool("MUSIK_MULTI_USER", false),
+		OIDCIssuer:           env("MUSIK_OIDC_ISSUER", ""),
+		OIDCClientID:         env("MUSIK_OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:     env("MUSIK_OIDC_CLIENT_SECRET", ""),
 	}
+}
+
+// DataRoot keeps caches and worker logs independent of the selected database.
+// The fallback preserves the historical layout for callers building Config by hand.
+func (c Config) DataRoot() string {
+	if c.DataDir != "" {
+		return c.DataDir
+	}
+	return filepath.Dir(filepath.Dir(c.DBPath))
 }
 
 func stringsToLower(s string) string {

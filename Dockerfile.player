@@ -13,8 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 WORKDIR /app
 COPY --from=build /musik-player /usr/local/bin/musik-player
 ENV MUSIK_PLAYER_ADDR=:8787 \
+    MUSIK_DATA_DIR=/data \
     MUSIK_WORKER_AUTOSTART=0 \
-    MUSIK_DB_PATH=/data/db/musik.db \
     MUSIK_LIBRARY=/music \
     MUSIK_WORKER_URL=http://worker:8790 \
     MUSIK_ROOT=/app

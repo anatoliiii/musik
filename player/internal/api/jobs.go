@@ -40,9 +40,11 @@ func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ensureWorkerBeforeEnqueue()
-	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": kind})
+	payload := map[string]any{"profile_id": s.Store.DB.ProfileID}
+	body, _ := json.Marshal(payload)
+	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": kind, "payload": payload})
 	if err != nil {
-		id, e2 := s.Store.EnqueueJob(kind, "")
+		id, e2 := s.Store.EnqueueJob(kind, string(body))
 		if e2 != nil {
 			writeErr(w, 503, "enqueue_failed", err.Error())
 			return

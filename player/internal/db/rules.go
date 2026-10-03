@@ -84,7 +84,7 @@ func (s *Store) CreateRadioRule(rule RadioRule) (RadioRule, error) {
 INSERT INTO radio_rules(
   rule_id, target_type, action, scope, target_key, strength,
   session_id, context_id, expires_at, created_at
-) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
 		rule.ID, rule.TargetType, rule.Action, rule.Scope, rule.TargetKey, rule.Strength,
 		nullStr(rule.SessionID), nullStr(rule.ContextID), nullStr(rule.ExpiresAt), rule.CreatedAt)
 	return rule, err
@@ -100,7 +100,7 @@ UPDATE radio_rules SET
   strength = CASE WHEN ? > 0 THEN ? ELSE strength END,
   expires_at = CASE WHEN ? THEN ? ELSE expires_at END,
   archived_at = CASE WHEN ? THEN NULL ELSE archived_at END
-WHERE rule_id = ?`,
+WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `,
 		rule.Strength, rule.Strength,
 		rule.ExpiresAt != "", nullStr(rule.ExpiresAt),
 		rule.ArchivedAt == "undo",
@@ -111,14 +111,14 @@ WHERE rule_id = ?`,
 
 func (s *Store) ArchiveRadioRule(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = ? WHERE rule_id = ? AND archived_at IS NULL`, now, id)
+	_, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = ? WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ? AND archived_at IS NULL) `, now, id)
 	return err
 }
 
 func (s *Store) UndoLastRadioRule() (*RadioRule, error) {
 	var id string
 	err := s.DB.QueryRow(`
-SELECT rule_id FROM radio_rules
+SELECT rule_id FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules
 WHERE archived_at IS NOT NULL
 ORDER BY archived_at DESC LIMIT 1`).Scan(&id)
 	if err == sql.ErrNoRows {
@@ -127,7 +127,7 @@ ORDER BY archived_at DESC LIMIT 1`).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE rule_id = ?`, id); err != nil {
+	if _, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `, id); err != nil {
 		return nil, err
 	}
 	return s.GetRadioRule(id)
@@ -138,7 +138,7 @@ func (s *Store) GetRadioRule(id string) (*RadioRule, error) {
 SELECT rule_id, target_type, action, scope, target_key, strength,
        COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
        created_at, COALESCE(archived_at,'')
-FROM radio_rules WHERE rule_id = ?`, id)
+FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules WHERE rule_id = ?`, id)
 	return scanRadioRule(row)
 }
 
@@ -147,7 +147,7 @@ func (s *Store) ListRadioRules(includeExpired bool) ([]RadioRule, error) {
 SELECT rule_id, target_type, action, scope, target_key, strength,
        COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
        created_at, COALESCE(archived_at,'')
-FROM radio_rules`
+FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules`
 	if !includeExpired {
 		q += ` WHERE archived_at IS NULL`
 	}
