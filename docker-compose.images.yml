@@ -1,14 +1,5 @@
-# Same stack as docker-compose.yml, but from prebuilt images (GitHub Actions →
-# GHCR, see .github/workflows/images.yml) — nothing is compiled locally:
-#
-#   cp .env.example .env        # set MUSIK_PASSWORD, MUSIK_API_TOKEN, MUSIK_SESSION_SECRET, MUSIK_LIBRARY
-#   docker compose -f docker-compose.images.yml pull
-#   docker compose -f docker-compose.images.yml up -d
-#
-# Pin a build with MUSIK_IMAGE_TAG (a short commit sha or a v* tag); default: latest.
-# MUSIK_IMAGE_OWNER selects whose images to run (a fork publishes its own); default: torwin-job.
-# The worker image includes CPU torch for CLAP; a GPU host can compute embeddings
-# separately and copy data/db + data/cache/embeddings over (see README).
+# Prebuilt CI images; configure .env, then run scripts/update-compose.sh.
+# Branch tags: branch-home, branch-pr-multiuser-postgres-mobile.
 services:
   player:
     image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-player:${MUSIK_IMAGE_TAG:-latest}
@@ -17,6 +8,7 @@ services:
     env_file: .env
     environment:
       MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
+      MUSIK_SCHEMA_MANAGED: "1"
       MUSIK_DATA_DIR: /data
       MUSIK_THEMES: /data/themes
       MUSIK_LIBRARY: /music
@@ -26,7 +18,14 @@ services:
     volumes:
       - musik-data:/data
       - ${MUSIK_LIBRARY:-./data/music}:/music
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8787/api/health]
+      interval: 5s
+      timeout: 3s
+      retries: 24
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       worker:
         condition: service_healthy
     restart: unless-stopped
@@ -37,6 +36,7 @@ services:
     environment:
       MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
       MUSIK_LIBRARY: /music
+      MUSIK_SCHEMA_MANAGED: "1"
       MUSIK_DATA_DIR: /data
       MUSIK_EMBEDDINGS_CACHE: /data/cache/embeddings
       MUSIK_ARTWORK_CACHE: /data/cache/artwork
@@ -46,6 +46,9 @@ services:
     volumes:
       - musik-data:/data
       - ${MUSIK_LIBRARY:-./data/music}:/music:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
@@ -58,5 +61,37 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  migrate:
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-migrate:${MUSIK_IMAGE_TAG:-latest}
+    env_file: .env
+    environment:
+      MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
+      MUSIK_DATA_DIR: /data
+      MUSIK_WRITERS_STOPPED: ${MUSIK_WRITERS_STOPPED:-0}
+    volumes:
+      - musik-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    restart: "no"
+
+  postgres:
+    image: postgres:17-bookworm
+    profiles: [postgres]
+    environment:
+      POSTGRES_DB: ${MUSIK_POSTGRES_DB:-musik}
+      POSTGRES_USER: ${MUSIK_POSTGRES_USER:-musik}
+      POSTGRES_PASSWORD: ${MUSIK_POSTGRES_PASSWORD:-}
+    volumes:
+      - musik-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
+  musik-postgres:
   musik-data:

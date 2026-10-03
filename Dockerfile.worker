@@ -28,4 +28,4 @@ ENV MUSIK_LIBRARY=/music \
     MUSIK_ROOT=/app
 # Do not EXPOSE publicly in compose — only on internal network
 VOLUME ["/data", "/music"]
-CMD ["sh", "-c", "musik db migrate && exec musik worker"]
+CMD ["sh", "-c", "exec musik worker"]

@@ -280,6 +280,16 @@ def init_db(db_path: Path | None = None) -> None:
     settings = get_settings() if db_path is None else None
     path = db_path or settings.db_path
     database_url = settings.database_url if settings is not None else None
+    import os
+    if os.environ.get("MUSIK_SCHEMA_MANAGED") == "1":
+        from sqlalchemy import text
+        from musik.db.orm import engine_for
+        from musik.db.migrations import LATEST_SCHEMA_VERSION
+        with engine_for(database_url, path).connect() as connection:
+            revision = connection.scalar(text("SELECT version_num FROM alembic_version"))
+        if revision != f"musik_{LATEST_SCHEMA_VERSION}":
+            raise RuntimeError("database must be prepared by the migrate service")
+        return
     migrate_database(database_url, path)
 
 

@@ -1,5 +1,6 @@
 services:
   player:
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-player:${MUSIK_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: Dockerfile.player
@@ -8,6 +9,7 @@ services:
     env_file: .env
     environment:
       MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
+      MUSIK_SCHEMA_MANAGED: "1"
       MUSIK_DATA_DIR: /data
       MUSIK_THEMES: /data/themes
       MUSIK_LIBRARY: /music
@@ -17,12 +19,20 @@ services:
     volumes:
       - musik-data:/data
       - ${MUSIK_LIBRARY:-./data/music}:/music
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8787/api/health]
+      interval: 5s
+      timeout: 3s
+      retries: 24
     depends_on:
+      migrate:
+        condition: service_completed_successfully
       worker:
         condition: service_healthy
     restart: unless-stopped
 
   worker:
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-worker:${MUSIK_IMAGE_TAG:-local}
     build:
       context: .
       dockerfile: Dockerfile.worker
@@ -30,6 +40,7 @@ services:
     environment:
       MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
       MUSIK_LIBRARY: /music
+      MUSIK_SCHEMA_MANAGED: "1"
       MUSIK_DATA_DIR: /data
       MUSIK_EMBEDDINGS_CACHE: /data/cache/embeddings
       MUSIK_ARTWORK_CACHE: /data/cache/artwork
@@ -39,6 +50,9 @@ services:
     volumes:
       - musik-data:/data
       - ${MUSIK_LIBRARY:-./data/music}:/music:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     healthcheck:
       test:
         - CMD
@@ -52,5 +66,40 @@ services:
     # no ports: — internal only
     restart: unless-stopped
 
+  migrate:
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-migrate:${MUSIK_IMAGE_TAG:-local}
+    build:
+      context: .
+      dockerfile: Dockerfile.migrate
+    env_file: .env
+    environment:
+      MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
+      MUSIK_DATA_DIR: /data
+      MUSIK_WRITERS_STOPPED: ${MUSIK_WRITERS_STOPPED:-0}
+    volumes:
+      - musik-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+        required: false
+    restart: "no"
+
+  postgres:
+    image: postgres:17-bookworm
+    profiles: [postgres]
+    environment:
+      POSTGRES_DB: ${MUSIK_POSTGRES_DB:-musik}
+      POSTGRES_USER: ${MUSIK_POSTGRES_USER:-musik}
+      POSTGRES_PASSWORD: ${MUSIK_POSTGRES_PASSWORD:-}
+    volumes:
+      - musik-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
 volumes:
+  musik-postgres:
   musik-data:
