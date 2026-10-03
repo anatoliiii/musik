@@ -80,7 +80,7 @@ func TestOIDCVerifiedFlow(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			start, binding, err := client.Begin("invitation")
+			start, binding, err := client.BeginWithData("invitation", "trusted-link-state")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -88,12 +88,15 @@ func TestOIDCVerifiedFlow(t *testing.T) {
 			state := parsed.Query().Get("state")
 			nonce = parsed.Query().Get("nonce")
 			challenge = parsed.Query().Get("code_challenge")
+			if parsed.Query().Get("prompt") != "login" {
+				t.Fatal("identity-link flow did not require the provider to prompt again")
+			}
 			if _, err := client.Complete(ctx, state, "wrong-browser", "code"); err != ErrOIDCFlow {
 				t.Fatalf("foreign browser accepted: %v", err)
 			}
 			identity, err := client.Complete(ctx, state, binding, "code")
 			if scenario == "valid" {
-				if err != nil || identity.Subject != "subject" || identity.Invitation != "invitation" || !identity.EmailVerified {
+				if err != nil || identity.Subject != "subject" || identity.Invitation != "invitation" || identity.FlowData != "trusted-link-state" || !identity.EmailVerified {
 					t.Fatalf("identity=%#v error=%v", identity, err)
 				}
 			} else if err == nil {

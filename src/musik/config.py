@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     player_reload_url: str = "http://127.0.0.1:8787/api/reload"
     # Same token as Go player — sent as Bearer on reload callback
     api_token: str = ""
+    multi_user: bool = False
     # Library folder watcher (musik watch)
     watch_debounce_sec: float = 45.0
     watch_clusters: bool = True

@@ -152,11 +152,11 @@ SELECT %s AS slice_key,
        COALESCE(SUM(i.outcome='superseded'), 0),
        COALESCE(SUM(i.outcome='abandoned'), 0),
        COALESCE(SUM(EXISTS(
-           SELECT 1 FROM listening_history h
+           SELECT 1 FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
            WHERE h.impression_id=i.impression_id AND h.action='like'
        )), 0),
        COUNT(DISTINCT CASE WHEN i.played_at IS NOT NULL THEN NULLIF(t.artist,'') END)
-FROM recommendation_impressions i
+FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i
 JOIN tracks t ON t.id=i.track_id
 WHERE i.legacy=0
   AND i.source NOT IN ('manual', 'legacy')
@@ -211,7 +211,7 @@ func (s *Store) baselineStatus() (BaselineStatus, error) {
 SELECT COALESCE(MIN(played_at), ''),
        COALESCE(julianday('now') - julianday(MIN(played_at)), 0),
        COUNT(*)
-FROM recommendation_impressions
+FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
 WHERE legacy=0 AND source NOT IN ('manual','legacy')
   AND COALESCE(mode, '') != 'share' AND played_at IS NOT NULL`,
 	).Scan(&started, &elapsed, &status.EligibleImpressions)

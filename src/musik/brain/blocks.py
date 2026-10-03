@@ -45,7 +45,7 @@ def blocked_track_ids() -> set[int]:
             rules = conn.execute(
                 """
                 SELECT target_type, target_key
-                FROM radio_rules
+                FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules
                 WHERE action = 'block'
                   AND scope = 'global'
                   AND archived_at IS NULL

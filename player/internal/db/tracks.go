@@ -16,8 +16,8 @@ SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.alb
        COALESCE(ts.last_played_at,'')
 FROM tracks t
 JOIN features f ON f.track_id = t.id
-LEFT JOIN rec_stats rs ON rs.track_id = t.id
-LEFT JOIN track_stats ts ON ts.track_id = t.id
+LEFT JOIN (SELECT * FROM rec_stats WHERE profile_id=:musik_profile) rs ON rs.track_id = t.id
+LEFT JOIN (SELECT * FROM track_stats WHERE profile_id=:musik_profile) ts ON ts.track_id = t.id
 WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
   AND f.status = 'ready' AND f.embedding IS NOT NULL
 ORDER BY t.id`)

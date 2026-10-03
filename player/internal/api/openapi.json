@@ -3,7 +3,8 @@
   "info": {
     "title": "musik API",
     "version": "1.0.0",
-    "description": "Local CLAP-powered music player API. Single-owner auth via password cookie or Bearer token."
+    "description": "Music player API. Legacy single-user password/token auth or invite-gated multi-user OIDC with revocable sessions. In multi-user mode personal endpoints resolve the active profile from the server session; state-changing requests require X-CSRF-Token. Shared password and bearer token authentication are disabled in multi-user mode.",
+    "x-musik-schema-version": 7
   },
   "servers": [
     {
@@ -20,6 +21,12 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "musik_session"
+      },
+      "csrfToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-CSRF-Token",
+        "description": "Required together with the session cookie for multi-user state changes."
       }
     },
     "schemas": {
@@ -139,8 +146,12 @@
       "Interval": {
         "type": "object",
         "properties": {
-          "low": { "type": "number" },
-          "high": { "type": "number" }
+          "low": {
+            "type": "number"
+          },
+          "high": {
+            "type": "number"
+          }
         }
       },
       "MetricSlice": {
@@ -155,25 +166,63 @@
           "sufficient_sample"
         ],
         "properties": {
-          "dimension": { "type": "string" },
-          "value": { "type": "string" },
-          "impressions": { "type": "integer" },
-          "played": { "type": "integer" },
-          "finished": { "type": "integer" },
-          "partial": { "type": "integer" },
-          "early_skips": { "type": "integer" },
-          "likes": { "type": "integer" },
-          "superseded": { "type": "integer" },
-          "abandoned": { "type": "integer" },
-          "unique_artists": { "type": "integer" },
-          "finish_rate": { "type": "number" },
-          "early_skip_rate": { "type": "number" },
-          "likes_per_100_played": { "type": "number" },
-          "artist_diversity": { "type": "number" },
-          "finish_interval_95": { "$ref": "#/components/schemas/Interval" },
-          "early_skip_interval_95": { "$ref": "#/components/schemas/Interval" },
-          "like_interval_95": { "$ref": "#/components/schemas/Interval" },
-          "sufficient_sample": { "type": "boolean" }
+          "dimension": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "impressions": {
+            "type": "integer"
+          },
+          "played": {
+            "type": "integer"
+          },
+          "finished": {
+            "type": "integer"
+          },
+          "partial": {
+            "type": "integer"
+          },
+          "early_skips": {
+            "type": "integer"
+          },
+          "likes": {
+            "type": "integer"
+          },
+          "superseded": {
+            "type": "integer"
+          },
+          "abandoned": {
+            "type": "integer"
+          },
+          "unique_artists": {
+            "type": "integer"
+          },
+          "finish_rate": {
+            "type": "number"
+          },
+          "early_skip_rate": {
+            "type": "number"
+          },
+          "likes_per_100_played": {
+            "type": "number"
+          },
+          "artist_diversity": {
+            "type": "number"
+          },
+          "finish_interval_95": {
+            "$ref": "#/components/schemas/Interval"
+          },
+          "early_skip_interval_95": {
+            "$ref": "#/components/schemas/Interval"
+          },
+          "like_interval_95": {
+            "$ref": "#/components/schemas/Interval"
+          },
+          "sufficient_sample": {
+            "type": "boolean"
+          }
         }
       },
       "BaselineStatus": {
@@ -186,24 +235,98 @@
           "minimum_impressions"
         ],
         "properties": {
-          "ready": { "type": "boolean" },
-          "started_at": { "type": "string" },
-          "observed_days": { "type": "integer" },
-          "eligible_algorithmic_impressions": { "type": "integer" },
-          "minimum_days": { "type": "integer", "minimum": 14 },
-          "minimum_impressions": { "type": "integer", "minimum": 300 }
+          "ready": {
+            "type": "boolean"
+          },
+          "started_at": {
+            "type": "string"
+          },
+          "observed_days": {
+            "type": "integer"
+          },
+          "eligible_algorithmic_impressions": {
+            "type": "integer"
+          },
+          "minimum_days": {
+            "type": "integer",
+            "minimum": 14
+          },
+          "minimum_impressions": {
+            "type": "integer",
+            "minimum": 300
+          }
         }
       },
       "RecommendationMetrics": {
         "type": "object",
-        "required": ["window_days", "baseline", "overall", "breakdowns"],
+        "required": [
+          "window_days",
+          "baseline",
+          "overall",
+          "breakdowns"
+        ],
         "properties": {
-          "window_days": { "type": "integer" },
-          "baseline": { "$ref": "#/components/schemas/BaselineStatus" },
-          "overall": { "$ref": "#/components/schemas/MetricSlice" },
+          "window_days": {
+            "type": "integer"
+          },
+          "baseline": {
+            "$ref": "#/components/schemas/BaselineStatus"
+          },
+          "overall": {
+            "$ref": "#/components/schemas/MetricSlice"
+          },
           "breakdowns": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/MetricSlice" }
+            "items": {
+              "$ref": "#/components/schemas/MetricSlice"
+            }
+          }
+        }
+      },
+      "ListeningProfile": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "is_default"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ProfileName": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      },
+      "InvitationRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254
+          },
+          "ttl_hours": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 168,
+            "default": 24
           }
         }
       }
@@ -730,13 +853,36 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "window": { "type": "string", "enum": ["90d"] },
-                    "outcomes": { "$ref": "#/components/schemas/RecommendationMetrics" },
-                    "latency_ms": { "type": "object" },
-                    "last_policy": { "type": "object" },
-                    "recent_requests": { "type": "array", "items": { "type": "object" } },
-                    "training_runs": { "type": "array", "items": { "type": "object" } },
-                    "explore": { "type": "object" }
+                    "window": {
+                      "type": "string",
+                      "enum": [
+                        "90d"
+                      ]
+                    },
+                    "outcomes": {
+                      "$ref": "#/components/schemas/RecommendationMetrics"
+                    },
+                    "latency_ms": {
+                      "type": "object"
+                    },
+                    "last_policy": {
+                      "type": "object"
+                    },
+                    "recent_requests": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "training_runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "explore": {
+                      "type": "object"
+                    }
                   }
                 }
               }
@@ -813,8 +959,12 @@
               "schema": {
                 "type": "object",
                 "properties": {
-                  "explore_lo": { "type": "number" },
-                  "explore_hi": { "type": "number" }
+                  "explore_lo": {
+                    "type": "number"
+                  },
+                  "explore_hi": {
+                    "type": "number"
+                  }
                 }
               }
             }
@@ -856,7 +1006,9 @@
             "description": "If 1, serve the original artwork instead of a JPEG thumbnail.",
             "schema": {
               "type": "integer",
-              "enum": [1]
+              "enum": [
+                1
+              ]
             }
           }
         ],
@@ -1064,208 +1216,529 @@
     "/api/contexts": {
       "get": {
         "summary": "List taste contexts",
-        "responses": { "200": { "description": "Contexts" } }
+        "responses": {
+          "200": {
+            "description": "Contexts"
+          }
+        }
       },
       "post": {
         "summary": "Create taste context",
-        "responses": { "200": { "description": "Created context" } }
+        "responses": {
+          "200": {
+            "description": "Created context"
+          }
+        }
       }
     },
     "/api/contexts/{id}": {
       "get": {
         "summary": "Get taste context",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Context" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Context"
+          }
+        }
       },
       "patch": {
         "summary": "Update taste context",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Updated context" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated context"
+          }
+        }
       },
       "delete": {
         "summary": "Archive taste context",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Archived" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived"
+          }
+        }
       }
     },
     "/api/contexts/{id}/activate": {
       "post": {
         "summary": "Activate context on a session",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Active context ids" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active context ids"
+          }
+        }
       }
     },
     "/api/contexts/{id}/deactivate": {
       "post": {
         "summary": "Deactivate context on a session",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Active context ids" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Active context ids"
+          }
+        }
       }
     },
     "/api/session/contexts": {
       "post": {
         "summary": "Replace active session contexts",
-        "responses": { "200": { "description": "Active context ids" } }
+        "responses": {
+          "200": {
+            "description": "Active context ids"
+          }
+        }
       }
     },
     "/api/rules": {
       "get": {
         "summary": "List radio rules",
-        "responses": { "200": { "description": "Rules" } }
+        "responses": {
+          "200": {
+            "description": "Rules"
+          }
+        }
       },
       "post": {
         "summary": "Create radio rule",
-        "responses": { "200": { "description": "Created rule" } }
+        "responses": {
+          "200": {
+            "description": "Created rule"
+          }
+        }
       }
     },
     "/api/rules/{id}": {
       "patch": {
         "summary": "Update radio rule",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Updated rule" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated rule"
+          }
+        }
       },
       "delete": {
         "summary": "Archive radio rule",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Archived" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived"
+          }
+        }
       }
     },
     "/api/rules/undo": {
       "post": {
         "summary": "Undo last archived radio rule",
-        "responses": { "200": { "description": "Restored rule" } }
+        "responses": {
+          "200": {
+            "description": "Restored rule"
+          }
+        }
       }
     },
     "/api/playlists": {
       "get": {
         "summary": "List user and smart playlists",
-        "responses": { "200": { "description": "Playlists" } }
+        "responses": {
+          "200": {
+            "description": "Playlists"
+          }
+        }
       },
       "post": {
         "summary": "Create user or smart playlist",
-        "responses": { "200": { "description": "Created playlist" } }
+        "responses": {
+          "200": {
+            "description": "Created playlist"
+          }
+        }
       }
     },
     "/api/playlists/import": {
       "post": {
         "summary": "Import M3U or JSON playlist",
-        "responses": { "200": { "description": "Imported playlist" } }
+        "responses": {
+          "200": {
+            "description": "Imported playlist"
+          }
+        }
       }
     },
     "/api/playlists/preview": {
       "post": {
         "summary": "Preview smart playlist rule",
-        "responses": { "200": { "description": "Matching tracks" } }
+        "responses": {
+          "200": {
+            "description": "Matching tracks"
+          }
+        }
       }
     },
     "/api/playlists/from-favorites": {
       "post": {
         "summary": "Copy favorites into a playlist",
-        "responses": { "200": { "description": "Created playlist" } }
+        "responses": {
+          "200": {
+            "description": "Created playlist"
+          }
+        }
       }
     },
     "/api/playlists/from-later": {
       "post": {
         "summary": "Copy Listen Later into a playlist",
-        "responses": { "200": { "description": "Created playlist" } }
+        "responses": {
+          "200": {
+            "description": "Created playlist"
+          }
+        }
       }
     },
     "/api/playlists/{id}": {
       "get": {
         "summary": "Get playlist",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Playlist" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Playlist"
+          }
+        }
       },
       "patch": {
         "summary": "Update playlist",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Updated playlist" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated playlist"
+          }
+        }
       },
       "delete": {
         "summary": "Archive or delete playlist",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Archived" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Archived"
+          }
+        }
       }
     },
     "/api/playlists/{id}/tracks": {
       "post": {
         "summary": "Add playlist track",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Added item" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Added item"
+          }
+        }
       }
     },
     "/api/playlists/{id}/tracks/{item_id}": {
       "delete": {
         "summary": "Remove playlist item",
         "parameters": [
-          { "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } },
-          { "name": "item_id", "in": "path", "required": true, "schema": { "type": "string" } }
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ],
-        "responses": { "200": { "description": "Removed" } }
+        "responses": {
+          "200": {
+            "description": "Removed"
+          }
+        }
       }
     },
     "/api/playlists/{id}/reorder": {
       "post": {
         "summary": "Reorder playlist items",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Updated playlist" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated playlist"
+          }
+        }
       }
     },
     "/api/playlists/{id}/duplicate": {
       "post": {
         "summary": "Duplicate playlist",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Copied playlist" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Copied playlist"
+          }
+        }
       }
     },
     "/api/playlists/{id}/from-queue": {
       "post": {
         "summary": "Append current queue to playlist",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Updated playlist" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated playlist"
+          }
+        }
       }
     },
     "/api/playlists/{id}/play": {
       "post": {
         "summary": "Play playlist from a position",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Playback session" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Playback session"
+          }
+        }
       }
     },
     "/api/playlists/{id}/radio": {
       "post": {
         "summary": "Start radio from playlist seed",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Radio session" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Radio session"
+          }
+        }
       }
     },
     "/api/playlists/{id}/export": {
       "get": {
         "summary": "Export playlist as JSON or M3U",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-        "responses": { "200": { "description": "Export body" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Export body"
+          }
+        }
       }
     },
     "/api/tags": {
       "get": {
         "summary": "List custom tags",
-        "responses": { "200": { "description": "Tags" } }
+        "responses": {
+          "200": {
+            "description": "Tags"
+          }
+        }
       },
       "post": {
         "summary": "Create custom tag",
-        "responses": { "200": { "description": "Created tag" } }
+        "responses": {
+          "200": {
+            "description": "Created tag"
+          }
+        }
       }
     },
     "/api/tags/{id}/tracks": {
       "post": {
         "summary": "Tag a track",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Tagged" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Tagged"
+          }
+        }
       },
       "delete": {
         "summary": "Remove tag from a track",
-        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
-        "responses": { "200": { "description": "Removed" } }
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Removed"
+          }
+        }
       }
     },
     "/manifest.webmanifest": {
@@ -1275,6 +1748,403 @@
         "responses": {
           "200": {
             "description": "Web app manifest"
+          }
+        }
+      }
+    },
+    "/api/profiles": {
+      "get": {
+        "summary": "List the caller profiles",
+        "responses": {
+          "200": {
+            "description": "List the caller profiles",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ListeningProfile"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create an owned profile",
+        "responses": {
+          "200": {
+            "description": "Create an owned profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListeningProfile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileName"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/profiles/{profile_id}": {
+      "patch": {
+        "summary": "Rename an owned profile",
+        "responses": {
+          "200": {
+            "description": "Rename an owned profile"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProfileName"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "summary": "Soft-delete an owned non-last profile",
+        "responses": {
+          "200": {
+            "description": "Soft-delete an owned non-last profile"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/profiles/{profile_id}/activate": {
+      "post": {
+        "summary": "Switch the current server session profile",
+        "responses": {
+          "200": {
+            "description": "Switch the current server session profile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListeningProfile"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "profile_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/admin/invitations": {
+      "post": {
+        "summary": "Create an invite and return its secret once",
+        "responses": {
+          "200": {
+            "description": "Create an invite and return its secret once"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/InvitationRequest"
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "summary": "List invitation metadata without secrets",
+        "responses": {
+          "200": {
+            "description": "List invitation metadata without secrets"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/invitations/{id}": {
+      "delete": {
+        "summary": "Revoke an unused invitation",
+        "responses": {
+          "200": {
+            "description": "Revoke an unused invitation"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "get": {
+        "summary": "Get invitation metadata without secrets",
+        "responses": {
+          "200": {
+            "description": "Get invitation metadata without secrets"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/auth/oidc/default/start": {
+      "get": {
+        "summary": "Start OIDC Authorization Code with PKCE",
+        "responses": {
+          "302": {
+            "description": "Start OIDC Authorization Code with PKCE"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "invitation",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/api/auth/oidc/default/callback": {
+      "get": {
+        "summary": "Verify OIDC response and establish server session",
+        "responses": {
+          "302": {
+            "description": "Verify OIDC response and establish server session"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "security": []
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "summary": "List local accounts and status",
+        "responses": {
+          "200": {
+            "description": "List local accounts and status"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}": {
+      "patch": {
+        "summary": "Change account status or administrator role",
+        "responses": {
+          "200": {
+            "description": "Change account status or administrator role"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "active",
+                      "disabled"
+                    ]
+                  },
+                  "admin": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/oidc/default/link": {
+      "post": {
+        "summary": "Start an authenticated OIDC identity link",
+        "responses": {
+          "200": {
+            "description": "Start an authenticated OIDC identity link",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "authorization_url"
+                  ],
+                  "properties": {
+                    "authorization_url": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Access, CSRF or invitation rejected"
           }
         }
       }

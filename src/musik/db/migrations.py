@@ -648,6 +648,10 @@ def _identity_foundation(conn: sqlite3.Connection) -> None:
     # existing personal tables need profile-scoped repositories before cutover.
     conn.executescript(IDENTITY_SCHEMA_SQL)
 
+def _profile_ownership(conn: sqlite3.Connection) -> None:
+    from musik.db.profile_migration import migrate_profiles
+    migrate_profiles(conn)
+
 
 MIGRATIONS = (
     Migration(1, "baseline", _baseline),
@@ -656,6 +660,7 @@ MIGRATIONS = (
     Migration(4, "playlists_contexts_queue", _playlists_contexts_queue),
     Migration(5, "ranker_and_explore", _ranker_and_explore),
     Migration(6, "identity_foundation", _identity_foundation),
+    Migration(7, "profile_ownership", _profile_ownership),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

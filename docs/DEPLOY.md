@@ -1,6 +1,7 @@
 # Deploy musik
 
-Один владелец: пароль для UI, Bearer-токен для API. Worker не публикуется наружу.
+По умолчанию musik работает для одного владельца: пароль для UI, Bearer-токен
+для API. Worker не публикуется наружу.
 
 ## Auth (fail-closed)
 
@@ -16,6 +17,35 @@
 | `MUSIK_CORS_ORIGINS` | список Origin через запятую для cross-origin (Flutter web); пусто = same-origin |
 
 Login: не больше 5 попыток / IP / минуту (`429`).
+
+### Multi-user через OIDC
+
+Multi-user режим использует только OIDC и требует HTTPS. Не задавай в нём
+`MUSIK_PASSWORD`, `MUSIK_API_TOKEN` или `MUSIK_AUTH_DISABLED`; CORS оставь
+same-origin. В OIDC-клиенте зарегистрируй точный callback:
+`https://music.example.com/api/auth/oidc/default/callback`.
+
+```dotenv
+MUSIK_MULTI_USER=1
+MUSIK_PUBLIC_BASE_URL=https://music.example.com
+MUSIK_OIDC_ISSUER=https://identity.example.com/realms/music
+MUSIK_OIDC_CLIENT_ID=musik
+MUSIK_OIDC_CLIENT_SECRET=...
+```
+
+После обычного шага `musik db migrate` создай первое приглашение администратора
+на остановленной или уже мигрированной базе:
+
+```bash
+musik-player admin bootstrap --db data/db/musik.db \
+  --issuer "$MUSIK_OIDC_ISSUER" --ttl 1h
+```
+
+Команда один раз выведет секрет приглашения. Открой его по адресу
+`https://music.example.com/api/auth/oidc/default/start?invitation=<secret>`.
+После первого входа этот владелец становится администратором и приглашает
+остальных из раздела «Профиль». Секреты приглашений хранятся в базе только в
+виде хеша; сам секрет показывается при создании один раз.
 
 ## Docker Compose (рекомендуется)
 

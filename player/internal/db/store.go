@@ -9,24 +9,24 @@ import (
 )
 
 type Store struct {
-	DB *sql.DB
+	DB *Connection
 }
 
-const SupportedSchemaVersion = 6
+const SupportedSchemaVersion = 7
 
 func mondayZeroWeekday(day time.Weekday) int {
 	return (int(day) + 6) % 7
 }
 
 type TrackRow struct {
-	ID          int64
-	Path        string
-	Title       string
-	Artist      string
-	Album       string
-	Duration    float64
-	FileMD5     string
-	CreatedAt   string
+	ID           int64
+	Path         string
+	Title        string
+	Artist       string
+	Album        string
+	Duration     float64
+	FileMD5      string
+	CreatedAt    string
 	ArtworkPath  string
 	ClusterID    int
 	Embedding    []byte
@@ -60,7 +60,7 @@ func Open(path string) (*Store, error) {
 	// request behind reloads and mix queries, so the home shelves stayed empty.
 	db.SetMaxOpenConns(8)
 	db.SetMaxIdleConns(4)
-	s := &Store{DB: db}
+	s := &Store{DB: &Connection{DB: db}}
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -78,9 +78,17 @@ func Open(path string) (*Store, error) {
 			version, SupportedSchemaVersion,
 		)
 	}
+	if err := db.QueryRow(`SELECT value FROM installation_state WHERE key='legacy_profile_id'`).Scan(&s.DB.ProfileID); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("read installation profile: %w", err)
+	}
 	// Truncate WAL so it does not grow unbounded across restarts.
 	_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s, nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }
+
+func (s *Store) ForProfile(profileID string) *Store {
+	return &Store{DB: &Connection{DB: s.DB.DB, ProfileID: profileID}}
+}

@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 from musik.config import get_settings
+from musik.db.scoped_connection import ProfileConnection, active_profile
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -250,7 +251,11 @@ def utcnow() -> str:
 def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
     path = db_path or get_settings().db_path
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, factory=ProfileConnection)
+    selected = active_profile.get()
+    if selected is None:
+        selected = conn.execute("SELECT value FROM installation_state WHERE key='legacy_profile_id'").fetchone()[0]
+    conn.profile_id = selected
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

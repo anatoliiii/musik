@@ -13,6 +13,8 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 
 ## Auth (один владелец)
 
+Этот раздел описывает legacy-режим для одного владельца.
+
 | | |
 |--|--|
 | UI | пароль `MUSIK_PASSWORD` → `POST /api/auth/login` → httpOnly cookie `musik_session` |
@@ -30,6 +32,23 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 | POST | `/api/auth/login` | `{ "password": "…" }` → cookie, TTL ~14 дней |
 | POST | `/api/auth/logout` | сброс cookie |
 | GET | `/api/auth/me` | `{ok, auth_enabled}` |
+
+## Multi-user через OIDC
+
+Режим включается через `MUSIK_MULTI_USER=1`, HTTPS `MUSIK_PUBLIC_BASE_URL` и
+`MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
+`MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
+запрещены. Пользователи входят по OIDC-приглашению; старые личные данные после
+миграции остаются в профиле первого администратора. Подробности первого запуска
+описаны в [DEPLOY.md](DEPLOY.md).
+
+Для изменяющих запросов обязательны cookie-сессия, `X-CSRF-Token` и тот же
+`Origin`, что у публичного HTTPS URL. `GET /api/auth/me` возвращает учётку,
+роли и список профилей; `/api/profiles` управляет только профилями вошедшего
+пользователя. Администраторы управляют приглашениями и статусами учёток через
+`/api/admin/*`. Явная привязка другого OIDC-входа начинается через
+`POST /api/auth/oidc/default/link`. Shared password и Bearer token не являются
+резервным способом входа в этом режиме.
 
 ## Core
 

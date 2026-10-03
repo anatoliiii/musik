@@ -2,15 +2,12 @@ openapi: 3.0.3
 info:
   title: musik API
   version: 1.0.0
-  description: >-
-    Current local CLAP-powered player API. Single-owner auth uses a password
-    cookie or Bearer token. The Python worker owns database migrations; the Go
-    player requires an exactly supported PRAGMA user_version. Radio current/queue
-    items carry request_id/impression_id/source; events are idempotent by event_id.
-    Context, radio-rule and user/smart playlist endpoints are part of the
-    current API. Radio uses a single queue-core orchestrator, optional learned
-    ranker, and gated Thompson exploration within UI bounds.
-  x-musik-schema-version: 5
+  description: Music player API. Legacy single-user password/token auth or invite-gated
+    multi-user OIDC with revocable sessions. In multi-user mode personal endpoints
+    resolve the active profile from the server session; state-changing requests require
+    X-CSRF-Token. Shared password and bearer token authentication are disabled in
+    multi-user mode.
+  x-musik-schema-version: 7
 servers:
 - url: http://127.0.0.1:8787
 components:
@@ -22,6 +19,12 @@ components:
       type: apiKey
       in: cookie
       name: musik_session
+    csrfToken:
+      type: apiKey
+      in: header
+      name: X-CSRF-Token
+      description: Required together with the session cookie for multi-user state
+        changes.
   schemas:
     Error:
       type: object
@@ -49,17 +52,18 @@ components:
           type: string
         impression_id:
           type: string
-          pattern: '^[0-9a-f]{32}$'
+          pattern: ^[0-9a-f]{32}$
         request_id:
           type: string
-          pattern: '^[0-9a-f]{32}$'
+          pattern: ^[0-9a-f]{32}$
         source:
           type: string
         passport:
           $ref: '#/components/schemas/TrackPassport'
     TrackPassport:
       type: object
-      description: Technical card of the file; only on GET /api/tracks/{id}. Fields are omitted when unknown.
+      description: Technical card of the file; only on GET /api/tracks/{id}. Fields
+        are omitted when unknown.
       properties:
         format:
           type: string
@@ -79,20 +83,32 @@ components:
           type: string
         mode:
           type: string
-          enum: [major, minor]
+          enum:
+          - major
+          - minor
     PlaybackEvent:
       type: object
-      required: [type, event_id, track_id, session_id]
+      required:
+      - type
+      - event_id
+      - track_id
+      - session_id
       properties:
         type:
           type: string
-          enum: [track_start, progress, track_end, skip, like, dislike]
+          enum:
+          - track_start
+          - progress
+          - track_end
+          - skip
+          - like
+          - dislike
         event_id:
           type: string
           minLength: 1
         impression_id:
           type: string
-          pattern: '^[0-9a-f]{32}$'
+          pattern: ^[0-9a-f]{32}$
         track_id:
           type: integer
         session_id:
@@ -109,7 +125,44 @@ components:
           type: number
         reason:
           type: string
-          enum: [completed, skipped, next, '']
+          enum:
+          - completed
+          - skipped
+          - next
+          - ''
+    ListeningProfile:
+      type: object
+      required:
+      - id
+      - name
+      - is_default
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        is_default:
+          type: boolean
+    ProfileName:
+      type: object
+      required:
+      - name
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 128
+    InvitationRequest:
+      type: object
+      properties:
+        email:
+          type: string
+          maxLength: 254
+        ttl_hours:
+          type: integer
+          minimum: 1
+          maximum: 168
+          default: 24
 security:
 - bearerAuth: []
 - cookieAuth: []
@@ -191,9 +244,9 @@ paths:
       summary: Albums
       responses:
         '200':
-          description: >-
-            {albums, count}. Each album: artist, album, tracks, cover_track_id, artwork,
-            and game=true when its files live under a "Steam OST" or "GOG OST" folder.
+          description: '{albums, count}. Each album: artist, album, tracks, cover_track_id,
+            artwork, and game=true when its files live under a "Steam OST" or "GOG
+            OST" folder.'
   /api/tracks/{id}:
     get:
       summary: Track by id
@@ -412,7 +465,8 @@ paths:
       summary: Recommendation latency and 90-day outcome baseline
       responses:
         '200':
-          description: 90-day outcomes, latency, last policy, training runs and explore/bandit state
+          description: 90-day outcomes, latency, last policy, training runs and explore/bandit
+            state
   /listen/{token}:
     get:
       security: []
@@ -469,9 +523,8 @@ paths:
   /api/artwork/{id}:
     get:
       summary: Track artwork
-      description: >-
-        JPEG thumbnails at 96, 256 or 640 px (other `w` values snap to nearest).
-        Omit `w` to get 640. Pass `full=1` for the original embedded file.
+      description: JPEG thumbnails at 96, 256 or 640 px (other `w` values snap to
+        nearest). Omit `w` to get 640. Pass `full=1` for the original embedded file.
       parameters:
       - name: id
         in: path
@@ -490,7 +543,8 @@ paths:
         description: If 1, serve the original artwork instead of a JPEG thumbnail.
         schema:
           type: integer
-          enum: [1]
+          enum:
+          - 1
       responses:
         '200':
           description: Artwork image (image/jpeg thumbnail, or original for full=1)
@@ -618,3 +672,237 @@ paths:
       responses:
         '200':
           description: Web app manifest
+  /api/profiles:
+    get:
+      summary: List the caller profiles
+      responses:
+        '200':
+          description: List the caller profiles
+          content:
+            application/json:
+              schema:
+                type: array
+                items: &id001
+                  $ref: '#/components/schemas/ListeningProfile'
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+    post:
+      summary: Create an owned profile
+      responses:
+        '200':
+          description: Create an owned profile
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileName'
+  /api/profiles/{profile_id}:
+    patch:
+      summary: Rename an owned profile
+      responses:
+        '200':
+          description: Rename an owned profile
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfileName'
+      parameters: &id002
+      - name: profile_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      summary: Soft-delete an owned non-last profile
+      responses:
+        '200':
+          description: Soft-delete an owned non-last profile
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters: *id002
+  /api/profiles/{profile_id}/activate:
+    post:
+      summary: Switch the current server session profile
+      responses:
+        '200':
+          description: Switch the current server session profile
+          content:
+            application/json:
+              schema: *id001
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters: *id002
+  /api/admin/invitations:
+    post:
+      summary: Create an invite and return its secret once
+      responses:
+        '200':
+          description: Create an invite and return its secret once
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InvitationRequest'
+    get:
+      summary: List invitation metadata without secrets
+      responses:
+        '200':
+          description: List invitation metadata without secrets
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+  /api/admin/invitations/{id}:
+    delete:
+      summary: Revoke an unused invitation
+      responses:
+        '200':
+          description: Revoke an unused invitation
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+    get:
+      summary: Get invitation metadata without secrets
+      responses:
+        '200':
+          description: Get invitation metadata without secrets
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+  /api/auth/oidc/default/start:
+    get:
+      summary: Start OIDC Authorization Code with PKCE
+      responses:
+        '302':
+          description: Start OIDC Authorization Code with PKCE
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters:
+      - name: invitation
+        in: query
+        schema:
+          type: string
+      security: []
+  /api/auth/oidc/default/callback:
+    get:
+      summary: Verify OIDC response and establish server session
+      responses:
+        '302':
+          description: Verify OIDC response and establish server session
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters:
+      - name: state
+        in: query
+        required: true
+        schema:
+          type: string
+      - name: code
+        in: query
+        required: true
+        schema:
+          type: string
+      security: []
+  /api/admin/users:
+    get:
+      summary: List local accounts and status
+      responses:
+        '200':
+          description: List local accounts and status
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+  /api/admin/users/{id}:
+    patch:
+      summary: Change account status or administrator role
+      responses:
+        '200':
+          description: Change account status or administrator role
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected
+      parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status:
+                  type: string
+                  enum:
+                  - active
+                  - disabled
+                admin:
+                  type: boolean
+  /api/auth/oidc/default/link:
+    post:
+      summary: Start an authenticated OIDC identity link
+      responses:
+        '200':
+          description: Start an authenticated OIDC identity link
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - authorization_url
+                properties:
+                  authorization_url:
+                    type: string
+                    format: uri
+        '401':
+          description: Sign-in required
+        '403':
+          description: Access, CSRF or invitation rejected

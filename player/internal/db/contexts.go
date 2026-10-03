@@ -9,24 +9,24 @@ import (
 )
 
 type TasteContext struct {
-	ID               string   `json:"context_id"`
-	Kind             string   `json:"kind"`
-	Name             string   `json:"name"`
-	Icon             string   `json:"icon,omitempty"`
-	Influence        float64  `json:"influence"`
-	LearningEnabled  bool     `json:"learning_enabled"`
-	Seeds            ContextSeeds `json:"seeds"`
-	CreatedAt        string   `json:"created_at"`
-	UpdatedAt        string   `json:"updated_at"`
-	ArchivedAt       string   `json:"archived_at,omitempty"`
-	PositiveSamples  int      `json:"positive_samples"`
-	HasVector        bool     `json:"has_vector"`
+	ID              string       `json:"context_id"`
+	Kind            string       `json:"kind"`
+	Name            string       `json:"name"`
+	Icon            string       `json:"icon,omitempty"`
+	Influence       float64      `json:"influence"`
+	LearningEnabled bool         `json:"learning_enabled"`
+	Seeds           ContextSeeds `json:"seeds"`
+	CreatedAt       string       `json:"created_at"`
+	UpdatedAt       string       `json:"updated_at"`
+	ArchivedAt      string       `json:"archived_at,omitempty"`
+	PositiveSamples int          `json:"positive_samples"`
+	HasVector       bool         `json:"has_vector"`
 }
 
 type ContextSeeds struct {
-	SchemaVersion int      `json:"schema_version"`
-	Tracks        []int64  `json:"tracks,omitempty"`
-	Artists       []string `json:"artists,omitempty"`
+	SchemaVersion int                `json:"schema_version"`
+	Tracks        []int64            `json:"tracks,omitempty"`
+	Artists       []string           `json:"artists,omitempty"`
 	Albums        []ContextAlbumSeed `json:"albums,omitempty"`
 }
 
@@ -95,7 +95,7 @@ func (s *Store) CreateTasteContext(ctx TasteContext) (TasteContext, error) {
 INSERT INTO taste_contexts(
   context_id, kind, name, icon, influence, learning_enabled,
   seeds_schema_version, seeds_json, created_at, updated_at
-) VALUES (?,?,?,?,?,?,?,?,?,?)`,
+,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
 		ctx.ID, ctx.Kind, ctx.Name, nullStr(ctx.Icon), ctx.Influence, learning,
 		seedsVer, seedsJSON, ctx.CreatedAt, ctx.UpdatedAt)
 	return ctx, err
@@ -132,7 +132,7 @@ UPDATE taste_contexts SET
   seeds_schema_version = CASE WHEN ? THEN ? ELSE seeds_schema_version END,
   seeds_json = CASE WHEN ? THEN ? ELSE seeds_json END,
   updated_at = ?
-WHERE context_id = ? AND archived_at IS NULL`,
+WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived_at IS NULL) `,
 		ctx.Name, ctx.Icon, ctx.Influence, ctx.Influence, learning,
 		seedsJSON.Valid, seedsVer, seedsJSON.Valid, seedsJSON, now, ctx.ID)
 	return err
@@ -142,7 +142,7 @@ func (s *Store) ArchiveTasteContext(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.Exec(`
 UPDATE taste_contexts SET archived_at = ?, updated_at = ?
-WHERE context_id = ? AND archived_at IS NULL`, now, now, id)
+WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived_at IS NULL) `, now, now, id)
 	return err
 }
 
@@ -151,8 +151,8 @@ func (s *Store) GetTasteContext(id string) (*TasteContext, error) {
 SELECT c.context_id, c.kind, c.name, COALESCE(c.icon,''), c.influence, c.learning_enabled,
        c.seeds_schema_version, c.seeds_json, c.created_at, c.updated_at, COALESCE(c.archived_at,''),
        COALESCE(s.positive_samples,0), s.positive_vector
-FROM taste_contexts c
-LEFT JOIN taste_context_states s ON s.context_id = c.context_id
+FROM (SELECT * FROM taste_contexts WHERE profile_id=:musik_profile) c
+LEFT JOIN (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) s ON s.context_id = c.context_id
 WHERE c.context_id = ?`, id)
 	return scanTasteContext(row)
 }
@@ -162,8 +162,8 @@ func (s *Store) ListTasteContexts(includeArchived bool) ([]TasteContext, error) 
 SELECT c.context_id, c.kind, c.name, COALESCE(c.icon,''), c.influence, c.learning_enabled,
        c.seeds_schema_version, c.seeds_json, c.created_at, c.updated_at, COALESCE(c.archived_at,''),
        COALESCE(s.positive_samples,0), s.positive_vector
-FROM taste_contexts c
-LEFT JOIN taste_context_states s ON s.context_id = c.context_id`
+FROM (SELECT * FROM taste_contexts WHERE profile_id=:musik_profile) c
+LEFT JOIN (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) s ON s.context_id = c.context_id`
 	if !includeArchived {
 		q += ` WHERE c.archived_at IS NULL`
 	}
@@ -230,8 +230,8 @@ func (s *Store) UpsertTasteContextState(state TasteContextState) error {
 INSERT INTO taste_context_states(
   context_id, positive_vector, embedding_dim, negative_prototypes_json,
   positive_samples, negative_samples, model_version, updated_at
-) VALUES (?,?,?,?,?,?,?,?)
-ON CONFLICT(context_id) DO UPDATE SET
+,profile_id) VALUES (?,?,?,?,?,?,?,?,:musik_profile)
+ON CONFLICT(profile_id,context_id) DO UPDATE SET
   positive_vector=excluded.positive_vector,
   embedding_dim=excluded.embedding_dim,
   negative_prototypes_json=excluded.negative_prototypes_json,
@@ -251,7 +251,7 @@ func (s *Store) LoadTasteContextState(id string) (*TasteContextState, error) {
 	err := s.DB.QueryRow(`
 SELECT context_id, positive_vector, embedding_dim, COALESCE(negative_prototypes_json,''),
        positive_samples, negative_samples, model_version, updated_at
-FROM taste_context_states WHERE context_id = ?`, id).Scan(
+FROM (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) AS taste_context_states WHERE context_id = ?`, id).Scan(
 		&state.ContextID, &vector, &dim, &state.NegativesJSON,
 		&state.PositiveSamples, &state.NegativeSamples, &state.ModelVersion, &state.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -276,7 +276,7 @@ func (s *Store) SetSessionContexts(sessionID string, contextIDs []string) error 
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
 UPDATE session_contexts SET deactivated_at = ?
-WHERE session_id = ? AND deactivated_at IS NULL`, now, sessionID); err != nil {
+WHERE session_contexts.profile_id=:musik_profile AND ( session_id = ? AND deactivated_at IS NULL) `, now, sessionID); err != nil {
 		return err
 	}
 	for _, id := range contextIDs {
@@ -285,14 +285,14 @@ WHERE session_id = ? AND deactivated_at IS NULL`, now, sessionID); err != nil {
 			continue
 		}
 		if _, err := tx.Exec(`
-INSERT INTO session_contexts(session_id, context_id, activated_at)
-VALUES (?,?,?)`, sessionID, id, now); err != nil {
+INSERT INTO session_contexts(session_id, context_id, activated_at,profile_id)
+VALUES (?,?,?,:musik_profile)`, sessionID, id, now); err != nil {
 			return err
 		}
 	}
 	payload, _ := json.Marshal(contextIDs)
 	if _, err := tx.Exec(`
-UPDATE play_sessions SET active_contexts_json = ? WHERE id = ?`, string(payload), sessionID); err != nil {
+UPDATE play_sessions SET active_contexts_json = ? WHERE play_sessions.profile_id=:musik_profile AND ( id = ?) `, string(payload), sessionID); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -300,7 +300,7 @@ UPDATE play_sessions SET active_contexts_json = ? WHERE id = ?`, string(payload)
 
 func (s *Store) ActiveSessionContexts(sessionID string) ([]string, error) {
 	rows, err := s.DB.Query(`
-SELECT context_id FROM session_contexts
+SELECT context_id FROM (SELECT * FROM session_contexts WHERE profile_id=:musik_profile) AS session_contexts
 WHERE session_id = ? AND deactivated_at IS NULL
 ORDER BY activated_at`, sessionID)
 	if err != nil {
@@ -324,7 +324,7 @@ func (s *Store) AttachRequestContexts(requestID string, contextIDs []string) err
 			continue
 		}
 		if _, err := s.DB.Exec(`
-INSERT OR IGNORE INTO request_contexts(request_id, context_id) VALUES (?,?)`,
+INSERT OR IGNORE INTO request_contexts(request_id, context_id,profile_id) VALUES (?,?,:musik_profile)`,
 			requestID, id); err != nil {
 			return err
 		}

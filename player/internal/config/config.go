@@ -39,6 +39,10 @@ type Config struct {
 	MobileBitrate        string // e.g. 160k — Android / LTE stream profile
 	MobileFormat         string // aac | mp3
 	CORSOrigins          []string
+	MultiUser            bool
+	OIDCIssuer           string
+	OIDCClientID         string
+	OIDCClientSecret     string
 }
 
 func Load() Config {
@@ -77,6 +81,10 @@ func Load() Config {
 		MobileBitrate:        env("MUSIK_MOBILE_BITRATE", "160k"),
 		MobileFormat:         stringsToLower(env("MUSIK_MOBILE_FORMAT", "aac")),
 		CORSOrigins:          splitCSV(env("MUSIK_CORS_ORIGINS", "")),
+		MultiUser:            envBool("MUSIK_MULTI_USER", false),
+		OIDCIssuer:           env("MUSIK_OIDC_ISSUER", ""),
+		OIDCClientID:         env("MUSIK_OIDC_CLIENT_ID", ""),
+		OIDCClientSecret:     env("MUSIK_OIDC_CLIENT_SECRET", ""),
 	}
 }
 

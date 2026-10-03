@@ -71,7 +71,7 @@ def _track_created_at() -> dict[int, str]:
 def _rec_completed() -> dict[int, int]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT track_id, completed FROM rec_stats"
+            "SELECT track_id, completed FROM (SELECT * FROM rec_stats WHERE profile_id=:musik_profile) AS rec_stats"
         ).fetchall()
     return {int(r["track_id"]): int(r["completed"]) for r in rows}
 
@@ -105,13 +105,13 @@ def _top_track_ids(
 def _save_tips(kind: str, tips: list[dict[str, Any]]) -> int:
     now = utcnow()
     with connect() as conn:
-        conn.execute("DELETE FROM discover_tips WHERE kind = ?", (kind,))
+        conn.execute("DELETE FROM discover_tips WHERE discover_tips.profile_id=:musik_profile AND ( kind = ?) ", (kind,))
         for tip in tips:
             conn.execute(
                 """
                 INSERT INTO discover_tips(
                     kind, artist, album, score, track_ids_json, explanation, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ,profile_id) VALUES (?, ?, ?, ?, ?, ?, ?,:musik_profile)
                 """,
                 (
                     kind,
@@ -139,7 +139,7 @@ def rebuild_discover_tips(
     index = load_index()
     if index.size == 0:
         with connect() as conn:
-            conn.execute("DELETE FROM discover_tips")
+            conn.execute("DELETE FROM discover_tips WHERE discover_tips.profile_id=:musik_profile ")
         return {"new_album": 0, "resurfaced": 0, "reason": "empty index"}
 
     taste = _taste_vector(index)

@@ -475,13 +475,16 @@ func TestLatestPoliciesAndTrainingRuns(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at) VALUES ('ranker-v2','ranker',1,'/test/ranker.json','hash','active',datetime('now'))`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.DB.Exec(`
 INSERT INTO training_runs(
   run_id, model_version, model_type, feature_schema_version, train_from, train_until,
   positive_count, negative_count, metrics_schema_version, metrics_json, status, created_at
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
 		NewID(), "ranker-v2", "linear", 1, "2026-01-01", "2026-02-01",
-		12, 8, 1, `{"auc":0.71}`, "published",
+		12, 8, 1, `{"auc":0.71}`, "completed",
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +496,7 @@ INSERT INTO training_runs(
 		t.Fatalf("policy=%+v", policies[0])
 	}
 	runs, err := store.ListTrainingRuns(3)
-	if err != nil || len(runs) != 1 || runs[0].Status != "published" {
+	if err != nil || len(runs) != 1 || runs[0].Status != "completed" {
 		t.Fatalf("runs=%v err=%v", runs, err)
 	}
 	if runs[0].Metrics["auc"] != 0.71 {

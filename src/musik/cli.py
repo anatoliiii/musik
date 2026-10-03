@@ -310,20 +310,17 @@ def db_rebuild_transitions(
     path: Optional[Path] = typer.Option(None, "--path", help="Путь к SQLite"),
 ) -> None:
     """Пересобрать transition_stats из event log."""
-    import sqlite3
-
     from musik.db.migrations import migrate_db
+    from musik.db.schema import connect
 
     db_path = path or get_settings().db_path
     migrate_db(db_path)
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("DELETE FROM transition_stats")
+    with connect(db_path) as conn:
+        conn.execute("DELETE FROM transition_stats WHERE transition_stats.profile_id=:musik_profile ")
         rows = conn.execute(
             """
             SELECT track_id, action, COALESCE(reason,''), COALESCE(source,''), ts, COALESCE(session_id,'')
-            FROM listening_history
+            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
             WHERE action IN ('track_end','skip','finish')
             ORDER BY session_id, ts
             """
@@ -354,8 +351,8 @@ def db_rebuild_transitions(
                     INSERT INTO transition_stats(
                       from_id, to_id, manual_count, radio_count, finished_count,
                       partial_count, skip_count, decayed_weight, updated_at
-                    ) VALUES (?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(from_id, to_id) DO UPDATE SET
+                    ,profile_id) VALUES (?,?,?,?,?,?,?,?,?,:musik_profile)
+                    ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
                       manual_count = manual_count + excluded.manual_count,
                       radio_count = radio_count + excluded.radio_count,
                       finished_count = finished_count + excluded.finished_count,
@@ -370,8 +367,6 @@ def db_rebuild_transitions(
             prev[session] = track_id
         conn.commit()
         console.print(f"Rebuilt {n} transition edges")
-    finally:
-        conn.close()
 
 
 @app.command("lyrics")

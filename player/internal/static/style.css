@@ -1775,6 +1775,12 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
   background-size: var(--bg-size, auto);
 }
 .login-gate[hidden] { display: none; }
+#oidc-login[hidden], #login-submit[hidden], #login-password[hidden],
+#account-box[hidden], #invitation-box[hidden], #profile-switch[hidden],
+#invitation-result[hidden] { display: none; }
+#account-box form, #invitation-box form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 16px 0; }
+#account-box label, #invitation-box label { display: grid; gap: 6px; }
+#invitation-url { width: 100%; }
 .login-card {
   width: min(420px, 100%);
   display: flex;
@@ -2245,3 +2251,18 @@ body.locked .mini-player { visibility: hidden; pointer-events: none; }
 html.theme-light .lib-tools select {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='%23100c0a' d='M1 1.2h10L6 6.8z'/%3E%3C/svg%3E");
 }
+
+.admin-list { display: grid; gap: .55rem; margin: .65rem 0 1rem; }
+.admin-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: .55rem .8rem;
+  padding: .7rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.admin-row strong { min-width: 8rem; }
+.admin-row > span { flex: 1 1 12rem; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.admin-row select { color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .45rem; }
+.admin-row label { display: flex; align-items: center; gap: .35rem; }

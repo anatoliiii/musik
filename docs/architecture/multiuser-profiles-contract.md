@@ -1,14 +1,19 @@
-# Multi-user identity and profile contract (proposal)
+# Multi-user identity and profile contract
 
-Status: implementation started. Schema version 6 adds the identity, invitation,
-profile and revocable-session tables. The first repository methods create and
-list owned profiles and enforce ownership when switching a session's active
-profile. Multi-user login and personal-data repositories are not enabled yet;
-existing requests retain single-user behavior. Invitation consumption and user
-provisioning are now atomic, session secrets are stored as hashes and revocable,
-and an OIDC client implements discovery, PKCE and verified ID-token handling.
-The OIDC client is tested with a TLS test provider; production HTTP routes and
-personal-data cutover remain pending.
+Status: implemented on the `design/multiuser-profiles-auth` branch. Schema
+version 7 creates local users, roles, verified OIDC identities, hashed invites
+and revocable sessions, then assigns legacy personal rows to one disabled
+installation owner and its default profile. The first admin activates that
+owner through a one-time CLI invitation, preserving the existing profile data.
+The HTTP layer resolves an owned active profile from each session, applies
+profile-scoped Go and worker queries, and requires CSRF protection for writes.
+OIDC discovery, PKCE, token verification, invitation-only provisioning and
+explicit identity linking are wired to the UI. Shared password and API-token
+authentication are rejected in multi-user mode.
+
+The integration suite currently runs on SQLite. PostgreSQL conformance remains
+part of the independent database-portability branch before the branches are
+combined.
 
 This contract separates a person who can sign in (`User`) from listening state (`Profile`). One user may own multiple independent profiles. Identity providers authenticate users; they do not own musik data or define profile semantics.
 
@@ -67,6 +72,8 @@ Existing library/playback URLs remain stable. They resolve the active profile fr
 - `POST /api/profiles/{profile_id}/activate` changes the current authenticated session's active profile and returns the selected profile. It does not accept an owner ID.
 - `DELETE /api/profiles/{profile_id}` soft-deletes a non-last profile owned by the caller; deleting the last profile is rejected. Default-profile reassignment is transactional.
 - `POST /api/admin/invitations` creates a single-use, expiring invitation and returns its secret once; `GET` and `DELETE /api/admin/invitations/{id}` list/revoke invitations. Delivery is out of scope initially; the administrator transmits the secret through their chosen channel. Responses never reveal whether an arbitrary email already has an account.
+- `GET /api/admin/users` and `PATCH /api/admin/users/{id}` let administrators review accounts, disable sessions and assign the local admin role while preserving at least one active administrator.
+- `POST /api/auth/oidc/default/link` starts an explicit, CSRF-protected flow from an authenticated session. The callback binds the verified identity to that same live session; email is not used to merge identities.
 - OIDC callback consumes an invitation atomically before provisioning a user. A failed or expired invitation creates no account or session.
 - OIDC routes are provider-named start/callback routes. Tokens and authorization codes are never returned to browser JavaScript. Exact route spelling is finalized with the OpenAPI update before implementation.
 - API error envelope stays `{ "error": string, "code": string }`; use stable codes `auth_required`, `profile_not_found`, `profile_limit`, `profile_required`, and `provider_unavailable`.
@@ -96,4 +103,4 @@ Every protected endpoint derives `UserID` and active `ProfileID` from request co
 - Resolved: `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` do not work in multi-user mode; they remain compatibility options only for single-user deployments.
 - Resolved: the first PostgreSQL release includes a verified SQLite-to-PostgreSQL data transfer; the import is offline and keeps the SQLite source intact.
 - Initial administrator bootstrap via one-time CLI invitation is the proposed contract.
-- Profile limit and last-profile deletion behavior: no limit or a configurable per-user cap? The data model supports either; deleting the last profile is currently proposed as forbidden.
+- Resolved: there is no profile-count limit in the first release; deleting a user's last active profile is rejected.

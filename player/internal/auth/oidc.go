@@ -21,10 +21,11 @@ type OIDCIdentity struct {
 	Issuer, Subject, Name, Email string
 	EmailVerified                bool
 	Invitation                   string
+	FlowData                     string
 }
 type oidcFlow struct {
-	binding, nonce, verifier, invitation string
-	expires                              time.Time
+	binding, nonce, verifier, invitation, data string
+	expires                                    time.Time
 }
 type OIDCClient struct {
 	config   oauth2.Config
@@ -72,6 +73,12 @@ func oidcRandom() (string, error) {
 // Begin returns the redirect and a browser binding to keep in an HttpOnly
 // cookie. State, nonce, PKCE and invitation remain in server memory.
 func (c *OIDCClient) Begin(invitation string) (string, string, error) {
+	return c.BeginWithData(invitation, "")
+}
+
+// BeginWithData keeps trusted application state server-side and returns it
+// only after the corresponding OIDC response has been verified.
+func (c *OIDCClient) BeginWithData(invitation, data string) (string, string, error) {
 	state, err := oidcRandom()
 	if err != nil {
 		return "", "", err
@@ -99,8 +106,12 @@ func (c *OIDCClient) Begin(invitation string) (string, string, error) {
 	if len(c.flows) >= 1024 {
 		return "", "", errors.New("OIDC flow capacity reached")
 	}
-	c.flows[state] = oidcFlow{binding: binding, nonce: nonce, verifier: verifier, invitation: invitation, expires: now.Add(5 * time.Minute)}
-	return c.config.AuthCodeURL(state, oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)), binding, nil
+	c.flows[state] = oidcFlow{binding: binding, nonce: nonce, verifier: verifier, invitation: invitation, data: data, expires: now.Add(5 * time.Minute)}
+	options := []oauth2.AuthCodeOption{oidc.Nonce(nonce), oauth2.S256ChallengeOption(verifier)}
+	if data != "" {
+		options = append(options, oauth2.SetAuthURLParam("prompt", "login"))
+	}
+	return c.config.AuthCodeURL(state, options...), binding, nil
 }
 
 func (c *OIDCClient) Complete(ctx context.Context, state, binding, code string) (OIDCIdentity, error) {
@@ -135,5 +146,5 @@ func (c *OIDCClient) Complete(ctx context.Context, state, binding, code string) 
 	if err := verified.Claims(&claims); err != nil {
 		return OIDCIdentity{}, err
 	}
-	return OIDCIdentity{Issuer: verified.Issuer, Subject: verified.Subject, Name: claims.Name, Email: claims.Email, EmailVerified: claims.EmailVerified, Invitation: flow.invitation}, nil
+	return OIDCIdentity{Issuer: verified.Issuer, Subject: verified.Subject, Name: claims.Name, Email: claims.Email, EmailVerified: claims.EmailVerified, Invitation: flow.invitation, FlowData: flow.data}, nil
 }

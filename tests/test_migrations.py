@@ -161,3 +161,33 @@ def test_identity_schema_enforces_profile_and_oidc_ownership(tmp_path) -> None:
             "INSERT INTO external_identities(issuer, subject, user_id, created_at) "
             "VALUES ('https://other.test', 'subject-1', 'user-b', 'now')"
         )
+
+
+def test_profile_migration_scopes_unique_event_keys_per_profile(tmp_path) -> None:
+    path = tmp_path / "profile-unique.db"
+    migrate_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        legacy_profile = conn.execute(
+            "SELECT value FROM installation_state WHERE key='legacy_profile_id'"
+        ).fetchone()[0]
+        conn.execute(
+            "INSERT INTO users(id,status,display_name,created_at,updated_at) "
+            "VALUES ('user-b','active','B','now','now')"
+        )
+        conn.execute(
+            "INSERT INTO profiles(id,owner_user_id,name,is_default,created_at,updated_at) "
+            "VALUES ('profile-b','user-b','Main',1,'now','now')"
+        )
+        conn.execute("INSERT INTO tracks(path,created_at,updated_at) VALUES ('/a.flac','now','now')")
+        track_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+        for profile in (legacy_profile, "profile-b"):
+            conn.execute(
+                """INSERT INTO listening_history(
+                       profile_id,track_id,ts,action,event_id,event_schema_version
+                   ) VALUES (?,?,'now','track_start','same-client-event',1)""",
+                (profile, track_id),
+            )
+        assert conn.execute(
+            "SELECT count(*) FROM listening_history WHERE event_id='same-client-event'"
+        ).fetchone()[0] == 2

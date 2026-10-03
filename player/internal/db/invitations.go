@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,6 +17,8 @@ import (
 
 var ErrInvitationInvalid = errors.New("invitation invalid")
 var ErrIdentityUnknown = errors.New("identity unknown")
+var ErrIdentityAlreadyLinked = errors.New("identity already linked")
+var ErrSessionInvalid = errors.New("session invalid")
 
 type VerifiedIdentity struct {
 	Issuer        string
@@ -29,6 +32,10 @@ func secretHash(secret string) string {
 	h := sha256.Sum256([]byte(secret))
 	return hex.EncodeToString(h[:])
 }
+
+// SessionFingerprint binds a pending OIDC link flow to the exact authenticated
+// browser session without retaining the raw session secret in OIDC state.
+func SessionFingerprint(token string) string { return secretHash(token) }
 
 func randomSecret() (string, error) {
 	b := make([]byte, 32)
@@ -82,9 +89,10 @@ func (s *Store) AcceptInvitation(ctx context.Context, secret string, identity Ve
 		email = strings.ToLower(strings.TrimSpace(identity.Email))
 	}
 	var inviteID string
-	err = tx.QueryRowContext(ctx, `SELECT id FROM invitations WHERE secret_hash=? AND consumed_at IS NULL
+	var targetUser sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT id,target_user_id FROM invitations WHERE secret_hash=? AND consumed_at IS NULL
  AND revoked_at IS NULL AND expires_at>? AND (issuer IS NULL OR issuer=?) AND (email IS NULL OR email=?)`,
-		secretHash(secret), now, identity.Issuer, email).Scan(&inviteID)
+		secretHash(secret), now, identity.Issuer, email).Scan(&inviteID, &targetUser)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", Profile{}, ErrInvitationInvalid
 	}
@@ -93,14 +101,34 @@ func (s *Store) AcceptInvitation(ctx context.Context, secret string, identity Ve
 	}
 	userID := uuid.NewString()
 	p := Profile{ID: uuid.NewString(), Name: "Main", IsDefault: true}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO users(id,status,display_name,created_at,updated_at) VALUES (?,'active',?,?,?)`, userID, identity.DisplayName, now, now); err != nil {
-		return "", Profile{}, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO user_roles(user_id,role) VALUES (?,'user')`, userID); err != nil {
-		return "", Profile{}, err
-	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO profiles(id,owner_user_id,name,is_default,created_at,updated_at) VALUES (?,?,?,1,?,?)`, p.ID, userID, p.Name, now, now); err != nil {
-		return "", Profile{}, err
+	if targetUser.Valid {
+		userID = targetUser.String
+		result, err := tx.ExecContext(ctx, `UPDATE users SET status='active',display_name=?,updated_at=?
+		 WHERE id=? AND status='disabled' AND id=(SELECT value FROM installation_state WHERE key='legacy_user_id')
+		 AND NOT EXISTS(SELECT 1 FROM external_identities WHERE user_id=?)`, identity.DisplayName, now, userID, userID)
+		if err != nil {
+			return "", Profile{}, err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return "", Profile{}, err
+		}
+		if n != 1 {
+			return "", Profile{}, ErrInvitationInvalid
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT id,name FROM profiles WHERE owner_user_id=? AND is_default=1 AND deleted_at IS NULL`, userID).Scan(&p.ID, &p.Name); err != nil {
+			return "", Profile{}, err
+		}
+	} else {
+		if _, err = tx.ExecContext(ctx, `INSERT INTO users(id,status,display_name,created_at,updated_at) VALUES (?,'active',?,?,?)`, userID, identity.DisplayName, now, now); err != nil {
+			return "", Profile{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO user_roles(user_id,role) VALUES (?,'user')`, userID); err != nil {
+			return "", Profile{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO profiles(id,owner_user_id,name,is_default,created_at,updated_at) VALUES (?,?,?,1,?,?)`, p.ID, userID, p.Name, now, now); err != nil {
+			return "", Profile{}, err
+		}
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO external_identities(issuer,subject,user_id,created_at) VALUES (?,?,?,?)`, identity.Issuer, identity.Subject, userID, now); err != nil {
 		return "", Profile{}, ErrInvitationInvalid
@@ -120,6 +148,44 @@ func (s *Store) AcceptInvitation(ctx context.Context, secret string, identity Ve
 		return "", Profile{}, err
 	}
 	return userID, p, nil
+}
+
+// BootstrapInvitation is CLI-only. It activates the pending installation owner
+// after OIDC verification; its existing profile retains all legacy data.
+func (s *Store) BootstrapInvitation(ctx context.Context, issuer string, ttl time.Duration) (string, error) {
+	if issuer == "" || ttl <= 0 {
+		return "", ErrInvitationInvalid
+	}
+	secret, err := randomSecret()
+	if err != nil {
+		return "", err
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback()
+	var owner string
+	err = tx.QueryRowContext(ctx, `SELECT u.id FROM users u JOIN installation_state i ON i.value=u.id AND i.key='legacy_user_id'
+	 WHERE u.status='disabled' AND NOT EXISTS(SELECT 1 FROM external_identities WHERE user_id=u.id)
+	 AND NOT EXISTS(SELECT 1 FROM users a JOIN user_roles r ON r.user_id=a.id WHERE a.status='active' AND r.role='admin')`).Scan(&owner)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrInvitationInvalid
+	}
+	if err != nil {
+		return "", err
+	}
+	now := time.Now().UTC()
+	if _, err = tx.ExecContext(ctx, `UPDATE invitations SET revoked_at=? WHERE target_user_id=? AND consumed_at IS NULL AND revoked_at IS NULL`, now.Format(time.RFC3339), owner); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO invitations(id,secret_hash,issuer,created_at,expires_at,target_user_id) VALUES (?,?,?,?,?,?)`, uuid.NewString(), secretHash(secret), issuer, now.Format(time.RFC3339), now.Add(ttl).Format(time.RFC3339), owner); err != nil {
+		return "", err
+	}
+	if err = tx.Commit(); err != nil {
+		return "", err
+	}
+	return secret, nil
 }
 
 func (s *Store) IssueUserSession(ctx context.Context, userID string, ttl time.Duration) (string, string, error) {
@@ -173,6 +239,49 @@ func (s *Store) IdentityUser(ctx context.Context, issuer, subject string) (strin
 	return userID, err
 }
 
+// LinkExternalIdentity adds a verified OIDC identity only to the user whose
+// still-live session started the flow. The identity is never merged by email.
+func (s *Store) LinkExternalIdentity(ctx context.Context, sessionToken, userID, issuer, subject string) error {
+	if sessionToken == "" || userID == "" || issuer == "" || subject == "" {
+		return ErrSessionInvalid
+	}
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	now := time.Now().UTC().Format(time.RFC3339)
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM auth_sessions s JOIN users u ON u.id=s.user_id
+		WHERE s.token_hash=? AND s.user_id=? AND s.revoked_at IS NULL AND s.expires_at>? AND u.status='active'`,
+		secretHash(sessionToken), userID, now).Scan(&active); err != nil {
+		return err
+	}
+	if active != 1 {
+		return ErrSessionInvalid
+	}
+	var existing string
+	err = tx.QueryRowContext(ctx, `SELECT user_id FROM external_identities WHERE issuer=? AND subject=?`, issuer, subject).Scan(&existing)
+	if err == nil {
+		if existing == userID {
+			return tx.Commit()
+		}
+		return ErrIdentityAlreadyLinked
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO external_identities(issuer,subject,user_id,created_at) VALUES (?,?,?,?)`, issuer, subject, userID, now); err != nil {
+		// A concurrent link may have claimed the unique (issuer, subject) key.
+		var claimedBy string
+		if lookupErr := tx.QueryRowContext(ctx, `SELECT user_id FROM external_identities WHERE issuer=? AND subject=?`, issuer, subject).Scan(&claimedBy); lookupErr == nil {
+			return ErrIdentityAlreadyLinked
+		}
+		return err
+	}
+	return tx.Commit()
+}
+
 func (s *Store) RevokeInvitation(ctx context.Context, adminID, invitationID string) error {
 	result, err := s.DB.ExecContext(ctx, `UPDATE invitations SET revoked_at=?
 	 WHERE id=? AND consumed_at IS NULL AND revoked_at IS NULL AND EXISTS
@@ -188,4 +297,30 @@ func (s *Store) RevokeInvitation(ctx context.Context, adminID, invitationID stri
 		return ErrInvitationInvalid
 	}
 	return nil
+}
+
+func (s *Store) BootstrapReady(ctx context.Context) (bool, error) {
+	var n int
+	err := s.DB.QueryRowContext(ctx, `SELECT (SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.status='active' AND r.role='admin')
+	 + (SELECT count(*) FROM invitations WHERE target_user_id IS NOT NULL AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at>?)`, time.Now().UTC().Format(time.RFC3339)).Scan(&n)
+	return n > 0, err
+}
+
+func (s *Store) ValidUserCSRF(ctx context.Context, token, csrf string) bool {
+	if token == "" || csrf == "" {
+		return false
+	}
+	var stored string
+	err := s.DB.QueryRowContext(ctx, `SELECT csrf_hash FROM auth_sessions WHERE token_hash=? AND revoked_at IS NULL AND expires_at>?`, secretHash(token), time.Now().UTC().Format(time.RFC3339)).Scan(&stored)
+	return err == nil && subtle.ConstantTimeCompare([]byte(stored), []byte(secretHash(csrf))) == 1
+}
+
+func (s *Store) ActivateUserProfile(ctx context.Context, token, userID, profileID string) error {
+	return s.ActivateProfile(ctx, secretHash(token), userID, profileID)
+}
+
+func (s *Store) RadioShareProfile(ctx context.Context, token string) (string, error) {
+	var profileID string
+	err := s.DB.QueryRowContext(ctx, `SELECT s.profile_id FROM radio_shares s JOIN profiles p ON p.id=s.profile_id JOIN users u ON u.id=p.owner_user_id WHERE s.token=? AND s.revoked_at IS NULL AND p.deleted_at IS NULL AND u.status='active'`, token).Scan(&profileID)
+	return profileID, err
 }

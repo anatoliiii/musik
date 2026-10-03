@@ -50,7 +50,7 @@ func TestInvitationIsAtomicAndSingleUse(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT count(*) FROM users`).Scan(&users); err != nil {
 		t.Fatal(err)
 	}
-	if users != 2 {
+	if users != 3 {
 		t.Fatalf("failed consumer left partial user: count=%d", users)
 	}
 	var owner string
@@ -129,5 +129,62 @@ func TestInvitationRestrictionsAndIdentityKeys(t *testing.T) {
 	}
 	if _, _, err := s.UserSession(ctx, token); !errors.Is(err, ErrProfileNotFound) {
 		t.Fatalf("disabled user session accepted: %v", err)
+	}
+}
+
+func TestBootstrapRetainsLegacyOwnerProfile(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	legacyProfile := s.DB.ProfileID
+	secret, err := s.BootstrapInvitation(ctx, "https://issuer.test", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user, p, err := s.AcceptInvitation(ctx, secret, VerifiedIdentity{Issuer: "https://issuer.test", Subject: "admin", DisplayName: "Owner"})
+	if err != nil || p.ID != legacyProfile {
+		t.Fatalf("bootstrap profile=%#v error=%v", p, err)
+	}
+	var n int
+	if err := s.DB.QueryRow(`SELECT count(*) FROM user_roles WHERE user_id=? AND role='admin'`, user).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("admin role=%d %v", n, err)
+	}
+	if _, err := s.BootstrapInvitation(ctx, "https://issuer.test", time.Hour); !errors.Is(err, ErrInvitationInvalid) {
+		t.Fatalf("second bootstrap permitted: %v", err)
+	}
+}
+
+func TestLinkOIDCIdentityRequiresItsLiveSessionAndNeverMerges(t *testing.T) {
+	s, _ := openTestStore(t)
+	ctx := context.Background()
+	owner, _, err := s.CreateUserWithDefaultProfile(ctx, "Owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := s.CreateUserWithDefaultProfile(ctx, "Other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, _, err := s.IssueUserSession(ctx, owner, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkExternalIdentity(ctx, token, owner, "https://issuer.test", "second-subject"); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.IdentityUser(ctx, "https://issuer.test", "second-subject"); err != nil || got != owner {
+		t.Fatalf("linked identity owner=%q err=%v", got, err)
+	}
+	otherToken, _, err := s.IssueUserSession(ctx, other, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkExternalIdentity(ctx, otherToken, other, "https://issuer.test", "second-subject"); !errors.Is(err, ErrIdentityAlreadyLinked) {
+		t.Fatalf("identity collision error=%v", err)
+	}
+	if err := s.RevokeUserSession(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.LinkExternalIdentity(ctx, token, owner, "https://issuer.test", "third-subject"); !errors.Is(err, ErrSessionInvalid) {
+		t.Fatalf("revoked session linked an identity: %v", err)
 	}
 }

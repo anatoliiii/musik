@@ -82,7 +82,7 @@ func (s *Store) RecordOutcomeTransition(fromID, toID int64, outcome, provenance 
 	var prevWeight float64
 	var prevUpdated string
 	_ = s.DB.QueryRow(
-		`SELECT decayed_weight, updated_at FROM transition_stats WHERE from_id = ? AND to_id = ?`,
+		`SELECT decayed_weight, updated_at FROM (SELECT * FROM transition_stats WHERE profile_id=:musik_profile) AS transition_stats WHERE from_id = ? AND to_id = ?`,
 		fromID, toID,
 	).Scan(&prevWeight, &prevUpdated)
 	decayed := DecayTransitionWeight(prevWeight, prevUpdated, now) + delta
@@ -90,8 +90,8 @@ func (s *Store) RecordOutcomeTransition(fromID, toID int64, outcome, provenance 
 INSERT INTO transition_stats(
   from_id, to_id, manual_count, radio_count, finished_count, partial_count,
   skip_count, decayed_weight, updated_at
-) VALUES (?,?,?,?,?,?,?,?,?)
-ON CONFLICT(from_id, to_id) DO UPDATE SET
+,profile_id) VALUES (?,?,?,?,?,?,?,?,?,:musik_profile)
+ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
   manual_count = manual_count + excluded.manual_count,
   radio_count = radio_count + excluded.radio_count,
   finished_count = finished_count + excluded.finished_count,
@@ -105,7 +105,7 @@ ON CONFLICT(from_id, to_id) DO UPDATE SET
 
 func (s *Store) LoadTransitionStatsFrom(fromID int64) (map[int64]float64, error) {
 	rows, err := s.DB.Query(`
-SELECT to_id, decayed_weight, updated_at FROM transition_stats WHERE from_id = ?`, fromID)
+SELECT to_id, decayed_weight, updated_at FROM (SELECT * FROM transition_stats WHERE profile_id=:musik_profile) AS transition_stats WHERE from_id = ?`, fromID)
 	if err != nil {
 		return nil, err
 	}
@@ -128,14 +128,14 @@ SELECT to_id, decayed_weight, updated_at FROM transition_stats WHERE from_id = ?
 }
 
 func (s *Store) RebuildTransitionStats() (int, error) {
-	if _, err := s.DB.Exec(`DELETE FROM transition_stats`); err != nil {
+	if _, err := s.DB.Exec(`DELETE FROM transition_stats WHERE transition_stats.profile_id=:musik_profile `); err != nil {
 		return 0, err
 	}
 	rows, err := s.DB.Query(`
 SELECT h.track_id, h.action, h.reason, COALESCE(h.source,''), h.ts, h.session_id,
        COALESCE(i.outcome,''), COALESCE(i.source,'')
-FROM listening_history h
-LEFT JOIN recommendation_impressions i ON i.impression_id = h.impression_id
+FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
+LEFT JOIN (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i ON i.impression_id = h.impression_id
 WHERE h.action IN ('track_end','skip','finish')
 ORDER BY COALESCE(h.session_id,''), h.ts`)
 	if err != nil {

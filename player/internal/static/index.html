@@ -50,10 +50,11 @@
   <div id="login-gate" class="login-gate" hidden>
     <form id="login-form" class="login-card" autocomplete="current-password">
       <div class="brand">musik</div>
-      <p class="tagline">Введи пароль, чтобы открыть библиотеку</p>
+      <p class="tagline" id="login-tagline">Введи пароль, чтобы открыть библиотеку</p>
       <label class="sr-only" for="login-password">Пароль</label>
       <input id="login-password" type="password" name="password" placeholder="Пароль" required autofocus />
       <button type="submit" class="btn primary" id="login-submit">Войти</button>
+      <a class="btn primary" id="oidc-login" href="/api/auth/oidc/default/start" hidden>Войти через аккаунт</a>
       <p class="login-error" id="login-error" hidden></p>
     </form>
   </div>
@@ -70,6 +71,7 @@
         <button type="button" class="tab" data-view="library">Библиотека</button>
         <button type="button" class="tab" data-view="collections">Плейлисты</button>
         <button type="button" class="tab" data-view="profile">Профиль</button>
+        <select id="profile-switch" aria-label="Активный профиль" hidden></select>
         <button type="button" class="tab" data-view="upload">Загрузка</button>
         <button type="button" class="tab logout-tab" id="btn-logout" title="Выйти из аккаунта" hidden>Выйти</button>
       </nav>
@@ -354,6 +356,35 @@
       <section id="view-profile" class="view">
         <h1 class="page-title">Профиль</h1>
         <p class="sub">Как радио тебя знает и что ставит дальше</p>
+        <div class="panel" id="account-box" hidden>
+          <h2 id="account-display">Аккаунт</h2>
+          <p class="sub">У каждого профиля свои история, любимые треки, плейлисты и настройки радио.</p>
+          <button class="btn" type="button" id="oidc-link">Подключить ещё один OIDC-вход</button>
+          <form id="profile-create-form">
+            <label>Новый профиль <input id="profile-new-name" maxlength="128" required /></label>
+            <button class="btn" type="submit">Создать профиль</button>
+          </form>
+          <form id="profile-rename-form">
+            <label>Название активного профиля <input id="profile-active-name" maxlength="128" required /></label>
+            <button class="btn" type="submit">Переименовать</button>
+            <button class="btn" type="button" id="profile-delete">Удалить профиль</button>
+          </form>
+        </div>
+        <div class="panel" id="invitation-box" hidden>
+          <h2>Пригласить пользователя</h2>
+          <form id="invitation-form">
+            <label>Email (необязательно) <input id="invitation-email" type="email" maxlength="254" /></label>
+            <label>Срок в часах <input id="invitation-hours" type="number" min="1" max="168" value="24" required /></label>
+            <button class="btn" type="submit">Создать приглашение</button>
+          </form>
+          <label id="invitation-result" hidden>Передайте эту ссылку пользователю. Она действует один раз.
+            <input id="invitation-url" type="text" readonly />
+          </label>
+          <h3>Пользователи</h3>
+          <div id="admin-users" class="admin-list" aria-live="polite"></div>
+          <h3>Приглашения</h3>
+          <div id="admin-invitations" class="admin-list" aria-live="polite"></div>
+        </div>
         <div class="panel theme-panel" id="theme-box">
           <div class="panel-kicker">appearance</div>
           <strong>Theme</strong>
