@@ -102,7 +102,7 @@ def _clear_bootstrap_owner(connection, metadata: MetaData) -> None:
     connection.execute(text("DELETE FROM users WHERE id=:id"), {"id": user_id})
 
 
-def transfer_sqlite_to_postgres(source_path: Path, destination_url: str) -> dict[str, Any]:
+def transfer_sqlite_to_postgres(source_path: Path, destination_url: str, *, completion_marker: str | None = None) -> dict[str, Any]:
     """Copy a consistent read-only SQLite snapshot; never mutate the source."""
     source_path = source_path.expanduser().resolve(strict=True)
     if not source_path.is_file():
@@ -206,6 +206,10 @@ def transfer_sqlite_to_postgres(source_path: Path, destination_url: str) -> dict
                     report["tables"][table.name] = {
                         "rows": len(source_rows), "sha256": source_hash,
                     }
+                if completion_marker is not None:
+                    # Commit deployment metadata with the verified import so a
+                    # restart cannot import the same source a second time.
+                    destination.execute(text("INSERT INTO installation_state(key,value) VALUES ('sqlite_import_completed',:source)"), {"source": completion_marker})
         finally:
             destination_engine.dispose()
         return report

@@ -1,0 +1,11 @@
+# PostgreSQL 17 backup tools plus a small migration runtime (no torch/CLAP).
+FROM postgres:17-bookworm
+RUN apt-get update && apt-get install -y --no-install-recommends python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/musik \
+    && /opt/musik/bin/pip install --no-cache-dir 'SQLAlchemy>=2,<3' 'alembic>=1.13,<2' 'psycopg[binary]>=3,<4' 'pydantic-settings>=2,<3' 'numpy>=1.26,<3'
+WORKDIR /app
+COPY src/ /app/src/
+ENV PATH=/opt/musik/bin:$PATH PYTHONPATH=/app/src MUSIK_DATA_DIR=/data
+ENTRYPOINT ["python", "-m", "musik.db.deploy"]
+CMD []

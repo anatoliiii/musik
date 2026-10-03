@@ -1,3 +1,11 @@
+## Обновление контейнеров и PostgreSQL
+
+Для установки из CI-образов используйте `docker-compose.images.yml`, `.env.example`
+и `./scripts/update-compose.sh`. PostgreSQL включается через `COMPOSE_PROFILES=postgres`
+в `.env`; отдельный сервис `migrate` выполняет бэкап, миграцию и первичное приглашение
+администратора. Общий тег ветки задаётся `MUSIK_IMAGE_TAG=branch-main` (или тегом fork).
+Подробные настройки и перенос SQLite: [UPGRADE-v8.md](UPGRADE-v8.md#автоматическое-обновление-через-compose-рекомендуется).
+
 # Deploy musik
 
 Для существующей установки: [пошаговое обновление до схемы v8 и откат](UPGRADE-v8.md).
@@ -85,17 +93,17 @@ Go player никогда не создаёт и не изменяет табли
 
 ### Готовые образы (без сборки)
 
-GitHub Actions (`.github/workflows/images.yml`) собирает образы при каждом push в
-`main`, на теги `v*` и по кнопке: `ghcr.io/<owner>/musik-player` и
-`ghcr.io/<owner>/musik-worker` с тегами `latest`, `sha-<коммит>` и версией тега.
+GitHub Actions (`.github/workflows/images.yml`) собирает полный набор образов при push в
+любую ветку, на теги `v*` и по кнопке: `ghcr.io/<owner>/musik-player` и
+`ghcr.io/<owner>/musik-worker`, `ghcr.io/<owner>/musik-migrate` с тегами ветки
+`branch-<имя>`, `sha-<коммит>` и версией тега; `latest` — только основная ветка.
 Запуск из них — тот же стек, но без Go/torch на сервере:
 
 ```bash
 cp .env.example .env
 # single-user: MUSIK_PASSWORD, MUSIK_API_TOKEN; OIDC: MUSIK_MULTI_USER=1 и OIDC настройки
 # в обоих режимах: MUSIK_SESSION_SECRET, MUSIK_LIBRARY
-docker compose -f docker-compose.images.yml pull
-docker compose -f docker-compose.images.yml up -d
+./scripts/update-compose.sh
 ```
 
 `MUSIK_IMAGE_TAG` закрепляет конкретную сборку, `MUSIK_IMAGE_OWNER` — чьи образы
