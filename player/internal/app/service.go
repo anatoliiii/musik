@@ -114,6 +114,7 @@ func (s *Service) EnsureWorker() {
 	cmd.Env = append(os.Environ(),
 		"MUSIK_ROOT="+projectRoot,
 		"MUSIK_DB_PATH="+s.Cfg.DBPath,
+		"MUSIK_DATABASE_URL=",
 		"MUSIK_LIBRARY="+s.Cfg.Library,
 		"MUSIK_PLAYER_RELOAD_URL=http://127.0.0.1"+normalizeAddr(s.Cfg.Addr)+"/api/reload",
 	)
