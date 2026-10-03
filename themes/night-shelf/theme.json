@@ -1,0 +1,7 @@
+{
+  "id": "night-shelf",
+  "name": "Night Record Shelf",
+  "blurb": "Тёмная полка, тёплый янтарный акцент и типографика IBM Plex / Unbounded.",
+  "swatch": ["#101114", "#e8a33d", "#5fb3a8"],
+  "color": "#101114"
+}
