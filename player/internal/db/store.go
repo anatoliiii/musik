@@ -92,7 +92,7 @@ func OpenDatabase(databaseURL, sqlitePath string) (*Store, error) {
 	sqlDB.SetMaxOpenConns(8)
 	sqlDB.SetMaxIdleConns(4)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
-	s := &Store{DB: &Database{DB: sqlDB, Dialect: dialect}, ORM: orm, Dialect: dialect}
+	s := &Store{DB: &Database{DB: sqlDB, ORM: orm, Dialect: dialect}, ORM: orm, Dialect: dialect}
 	if err := sqlDB.Ping(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
@@ -130,5 +130,6 @@ func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) ForProfile(profileID string) *Store {
 	database := *s.DB
 	database.ProfileID = profileID
-	return &Store{DB: &database, ORM: s.ORM.Session(&gorm.Session{}), Dialect: s.Dialect}
+	database.ORM = s.ORM.Session(&gorm.Session{})
+	return &Store{DB: &database, ORM: database.ORM, Dialect: s.Dialect}
 }

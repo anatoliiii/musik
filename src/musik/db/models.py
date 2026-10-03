@@ -117,4 +117,11 @@ class TrackGenre(Base):
     genre_id: Mapped[int] = mapped_column(ForeignKey("genres.id", ondelete="CASCADE"), primary_key=True)
 
 
-__all__ = ["Base", "Feature", "Genre", "Job", "ListeningHistory", "Playlist", "Track", "TrackGenre"]
+class ScanState(Base):
+    __tablename__ = "scan_state"
+
+    key: Mapped[str] = mapped_column(Text, primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+__all__ = ["Base", "Feature", "Genre", "Job", "ListeningHistory", "Playlist", "ScanState", "Track", "TrackGenre"]
