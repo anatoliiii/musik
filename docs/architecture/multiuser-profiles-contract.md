@@ -1,8 +1,10 @@
 # Multi-user identity and profile contract (proposal)
 
 Status: implementation started. Schema version 6 adds the identity, invitation,
-profile and revocable-session tables. Multi-user login and profile-scoped
-repositories are not enabled yet; existing requests retain single-user behavior.
+profile and revocable-session tables. The first repository methods create and
+list owned profiles and enforce ownership when switching a session's active
+profile. Multi-user login and personal-data repositories are not enabled yet;
+existing requests retain single-user behavior.
 
 This contract separates a person who can sign in (`User`) from listening state (`Profile`). One user may own multiple independent profiles. Identity providers authenticate users; they do not own musik data or define profile semantics.
 

@@ -202,6 +202,38 @@ CREATE TABLE radio_prefs (
  explore_lo REAL NOT NULL DEFAULT 0.10, explore_hi REAL NOT NULL DEFAULT 0.40,
  updated_at TEXT NOT NULL
 );
+CREATE TABLE users (
+ id TEXT PRIMARY KEY, status TEXT NOT NULL CHECK(status IN ('active','disabled')),
+ display_name TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE user_roles (
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ role TEXT NOT NULL CHECK(role IN ('user','admin')), PRIMARY KEY(user_id,role)
+);
+CREATE TABLE external_identities (
+ issuer TEXT NOT NULL, subject TEXT NOT NULL, user_id TEXT NOT NULL REFERENCES users(id),
+ created_at TEXT NOT NULL, PRIMARY KEY(issuer,subject)
+);
+CREATE TABLE profiles (
+ id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL REFERENCES users(id),
+ name TEXT NOT NULL, is_default INTEGER NOT NULL DEFAULT 0 CHECK(is_default IN (0,1)),
+ created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,
+ UNIQUE(id,owner_user_id)
+);
+CREATE UNIQUE INDEX idx_profiles_one_default ON profiles(owner_user_id)
+ WHERE is_default=1 AND deleted_at IS NULL;
+CREATE TABLE auth_sessions (
+ token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id),
+ active_profile_id TEXT NOT NULL, csrf_hash TEXT NOT NULL,
+ created_at TEXT NOT NULL, expires_at TEXT NOT NULL, revoked_at TEXT,
+ FOREIGN KEY(active_profile_id,user_id) REFERENCES profiles(id,owner_user_id)
+);
+CREATE TABLE invitations (
+ id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE,
+ created_by TEXT REFERENCES users(id), issuer TEXT, email TEXT,
+ created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT,
+ revoked_at TEXT, consumed_by TEXT REFERENCES users(id)
+);
 PRAGMA user_version = 6;
 `
 
