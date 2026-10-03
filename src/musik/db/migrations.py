@@ -575,12 +575,87 @@ def _ranker_and_explore(conn: sqlite3.Connection) -> None:
     )
 
 
+IDENTITY_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    id           TEXT PRIMARY KEY,
+    status       TEXT NOT NULL CHECK (status IN ('active', 'disabled')),
+    display_name TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_roles (
+    user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    role    TEXT NOT NULL CHECK (role IN ('user', 'admin')),
+    PRIMARY KEY (user_id, role)
+);
+
+CREATE TABLE IF NOT EXISTS external_identities (
+    issuer     TEXT NOT NULL,
+    subject    TEXT NOT NULL,
+    user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (issuer, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_external_identities_user ON external_identities(user_id);
+
+CREATE TABLE IF NOT EXISTS profiles (
+    id            TEXT PRIMARY KEY,
+    owner_user_id TEXT NOT NULL REFERENCES users(id),
+    name          TEXT NOT NULL,
+    is_default    INTEGER NOT NULL DEFAULT 0 CHECK (is_default IN (0, 1)),
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    deleted_at    TEXT,
+    UNIQUE (id, owner_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_profiles_owner ON profiles(owner_user_id, deleted_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_profiles_one_default
+    ON profiles(owner_user_id) WHERE is_default = 1 AND deleted_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    token_hash        TEXT PRIMARY KEY,
+    user_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    active_profile_id TEXT NOT NULL,
+    csrf_hash         TEXT NOT NULL,
+    created_at        TEXT NOT NULL,
+    expires_at        TEXT NOT NULL,
+    revoked_at        TEXT,
+    FOREIGN KEY (active_profile_id, user_id)
+        REFERENCES profiles(id, owner_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS invitations (
+    id             TEXT PRIMARY KEY,
+    secret_hash    TEXT NOT NULL UNIQUE,
+    created_by     TEXT REFERENCES users(id),
+    issuer         TEXT,
+    email          TEXT,
+    created_at     TEXT NOT NULL,
+    expires_at     TEXT NOT NULL,
+    consumed_at    TEXT,
+    revoked_at     TEXT,
+    consumed_by    TEXT REFERENCES users(id),
+    CHECK (NOT (consumed_at IS NOT NULL AND revoked_at IS NOT NULL))
+);
+CREATE INDEX IF NOT EXISTS idx_invitations_expires ON invitations(expires_at);
+"""
+
+
+def _identity_foundation(conn: sqlite3.Connection) -> None:
+    # Add the identity boundary without enabling multi-user requests yet. The
+    # existing personal tables need profile-scoped repositories before cutover.
+    conn.executescript(IDENTITY_SCHEMA_SQL)
+
+
 MIGRATIONS = (
     Migration(1, "baseline", _baseline),
     Migration(2, "future_data_foundation", _future_data_foundation),
     Migration(3, "recommendation_lifecycle_and_taste", _recommendation_lifecycle_and_taste),
     Migration(4, "playlists_contexts_queue", _playlists_contexts_queue),
     Migration(5, "ranker_and_explore", _ranker_and_explore),
+    Migration(6, "identity_foundation", _identity_foundation),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

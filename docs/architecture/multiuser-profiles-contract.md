@@ -1,6 +1,8 @@
 # Multi-user identity and profile contract (proposal)
 
-Status: design only. No application behavior changes are part of this branch.
+Status: implementation started. Schema version 6 adds the identity, invitation,
+profile and revocable-session tables. Multi-user login and profile-scoped
+repositories are not enabled yet; existing requests retain single-user behavior.
 
 This contract separates a person who can sign in (`User`) from listening state (`Profile`). One user may own multiple independent profiles. Identity providers authenticate users; they do not own musik data or define profile semantics.
 
@@ -82,10 +84,10 @@ Every protected endpoint derives `UserID` and active `ProfileID` from request co
 6. Share-radio playback remains read-only and never writes feedback to the share owner's profile.
 7. These contract cases run on SQLite and PostgreSQL once the independent database-portability workstream is implemented.
 
-## Decisions needed before implementation
+## Decisions and remaining implementation policy
 
 - Resolved: users enter through OIDC only after accepting a valid invite; open JIT registration is disabled.
 - Resolved: `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` do not work in multi-user mode; they remain compatibility options only for single-user deployments.
 - Resolved: the first PostgreSQL release includes a verified SQLite-to-PostgreSQL data transfer; the import is offline and keeps the SQLite source intact.
-- Initial administrator bootstrap via one-time CLI invitation is the proposed contract. Confirm whether this is acceptable before implementation.
+- Initial administrator bootstrap via one-time CLI invitation is the proposed contract.
 - Profile limit and last-profile deletion behavior: no limit or a configurable per-user cap? The data model supports either; deleting the last profile is currently proposed as forbidden.

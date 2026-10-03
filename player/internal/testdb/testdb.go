@@ -202,7 +202,7 @@ CREATE TABLE radio_prefs (
  explore_lo REAL NOT NULL DEFAULT 0.10, explore_hi REAL NOT NULL DEFAULT 0.40,
  updated_at TEXT NOT NULL
 );
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;
 `
 
 func Create(path string) error {

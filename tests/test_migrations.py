@@ -119,3 +119,45 @@ def test_foundation_schema_has_normalized_references_and_versioned_json(tmp_path
             conn.execute(
                 "UPDATE listening_history SET action='finish' WHERE event_id='event-1'"
             )
+
+
+def test_identity_schema_enforces_profile_and_oidc_ownership(tmp_path) -> None:
+    path = tmp_path / "identity.db"
+    migrate_db(path)
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA foreign_keys = ON")
+        conn.execute(
+            "INSERT INTO users(id, status, display_name, created_at, updated_at) "
+            "VALUES ('user-a', 'active', 'A', 'now', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO users(id, status, display_name, created_at, updated_at) "
+            "VALUES ('user-b', 'active', 'B', 'now', 'now')"
+        )
+        conn.execute(
+            "INSERT INTO profiles(id, owner_user_id, name, is_default, created_at, updated_at) "
+            "VALUES ('profile-a', 'user-a', 'Main', 1, 'now', 'now')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO profiles(id, owner_user_id, name, is_default, created_at, updated_at) "
+                "VALUES ('profile-a2', 'user-a', 'Other', 1, 'now', 'now')"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO profiles(id, owner_user_id, name, is_default, created_at, updated_at) "
+                "VALUES ('orphan', 'missing', 'Orphan', 0, 'now', 'now')"
+            )
+        conn.execute(
+            "INSERT INTO external_identities(issuer, subject, user_id, created_at) "
+            "VALUES ('https://issuer.test', 'subject-1', 'user-a', 'now')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO external_identities(issuer, subject, user_id, created_at) "
+                "VALUES ('https://issuer.test', 'subject-1', 'user-b', 'now')"
+            )
+        conn.execute(
+            "INSERT INTO external_identities(issuer, subject, user_id, created_at) "
+            "VALUES ('https://other.test', 'subject-1', 'user-b', 'now')"
+        )
