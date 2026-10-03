@@ -1,0 +1,68 @@
+/* Theme contract
+   A theme is a set of authoring tokens on <html>. Derived tokens below
+   follow them via color-mix, so a custom palette does not need to restate
+   surfaces, borders, or washes.
+
+   Authoring tokens:
+     --bg, --fg, --accent, --accent2, --on-accent
+     --radius, --radius-sm, --radius-pill
+     --font, --display, --brand-font, --mono
+
+   Built-in skins ship in this directory. Another theme is a folder
+   data/themes/<id>/ with theme.json and theme.css; the player reads it
+   from disk, so installing it does not need a rebuild.
+   Browser palettes are inline tokens with data-theme="custom". */
+
+:root {
+  color-scheme: dark;
+  --bg: #100c0a;
+  --fg: #f7f0e8;
+  --accent: #e07a3a;
+  --accent2: #3d8f7a;
+  --on-accent: #fff;
+  --danger: #c45c4a;
+  --radius: 18px;
+  --radius-sm: 12px;
+  --radius-pill: 999px;
+  --font: "Manrope", system-ui, sans-serif;
+  --display: "Syne", "Manrope", sans-serif;
+  --brand-font: var(--display);
+  --mono: "DM Mono", ui-monospace, monospace;
+
+  --bg2: color-mix(in srgb, var(--fg) 6%, var(--bg));
+  --bg-elev: color-mix(in srgb, var(--fg) 4%, var(--bg));
+  --surface: color-mix(in srgb, var(--bg2) 84%, transparent);
+  --surface-strong: color-mix(in srgb, var(--bg2) 94%, transparent);
+  --topbar: color-mix(in srgb, var(--bg) 78%, transparent);
+  --muted: color-mix(in srgb, var(--fg) 58%, var(--bg));
+  --eyebrow: color-mix(in srgb, var(--accent) 48%, var(--fg));
+  --line: color-mix(in srgb, var(--fg) 14%, var(--bg));
+  --line-soft: color-mix(in srgb, var(--fg) 10%, transparent);
+  --tint: color-mix(in srgb, var(--fg) 5%, transparent);
+  --tint-strong: color-mix(in srgb, var(--fg) 16%, transparent);
+  --glow: color-mix(in srgb, var(--accent) 32%, transparent);
+  --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 55%, transparent);
+  --accent-strong: color-mix(in srgb, var(--accent) 70%, black);
+  --accent-bright: color-mix(in srgb, var(--accent) 68%, white);
+  --accent2-soft: color-mix(in srgb, var(--accent2) 18%, transparent);
+  --accent2-line: color-mix(in srgb, var(--accent2) 55%, transparent);
+  --wash-1: color-mix(in srgb, var(--accent) 42%, transparent);
+  --wash-2: color-mix(in srgb, var(--accent2) 36%, transparent);
+  --bg-image:
+    radial-gradient(900px 680px at -12% 12%, var(--wash-1) 0%, transparent 64%),
+    radial-gradient(820px 620px at 112% 8%, var(--wash-2) 0%, transparent 62%),
+    linear-gradient(168deg, var(--bg-elev) 0%, var(--bg) 58%);
+  --bg-size: auto;
+  --shadow: 0 24px 70px color-mix(in srgb, black 28%, transparent);
+  --shadow-pop: 0 12px 36px color-mix(in srgb, black 24%, transparent);
+  --overlay: color-mix(in srgb, black 62%, transparent);
+  --selection: color-mix(in srgb, var(--accent) 55%, transparent);
+  --source-transition: #d6b56a;
+  --source-wildcard: #c98888;
+  --source-resurface: #8aa7d6;
+  --source-new: #8ec9a6;
+  --theme-color: #1a120c;
+}
+
+html.theme-light { color-scheme: light; }

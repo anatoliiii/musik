@@ -122,7 +122,7 @@ def embed(
     settings = get_settings()
     console.print(
         f"[bold]Embedding[/bold] strategy={SEGMENT_STRATEGY} "
-        f"segment={settings.embed_segment_sec:.0f}s × 3 windows → mean"
+        f"spans=3 × {settings.embed_span_sec:.0f}s → windows of {settings.embed_segment_sec:.0f}s → mean"
     )
     def _progress(p: dict) -> None:
         msg = p.get("message") or ""

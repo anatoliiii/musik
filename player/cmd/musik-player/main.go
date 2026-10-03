@@ -23,7 +23,10 @@ func main() {
 	if !cfg.AuthEnabled() && !cfg.AuthDisabled {
 		log.Fatal("auth required: set MUSIK_PASSWORD and/or MUSIK_API_TOKEN (or MUSIK_AUTH_DISABLED=1 for local open mode)")
 	}
-	log.Printf("musik-player db=%s addr=%s", cfg.DBPath, cfg.Addr)
+	log.Printf("musik-player db=%s addr=%s themes=%s", cfg.DBPath, cfg.Addr, cfg.ThemesDir)
+	if err := os.MkdirAll(cfg.ThemesDir, 0o755); err != nil {
+		log.Printf("themes dir: %v", err)
+	}
 
 	store, err := db.Open(cfg.DBPath)
 	if err != nil {

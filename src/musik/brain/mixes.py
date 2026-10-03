@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from musik.brain.blocks import blocked_track_ids
 from musik.brain.generators import (
     PlaylistBuild,
     _forbidden_rows,
@@ -131,7 +132,7 @@ def generate_for_you(
         explore_ratio=explore_ratio,
     )
     if len(ranked) < min(size, index.size):
-        used = {int(item["row"]) for item in ranked}
+        used = {int(item["row"]) for item in ranked} | pack_forbidden
         ranked.extend(
             rank_index(
                 index,
@@ -205,7 +206,7 @@ def generate_weekday(
         explore_ratio=explore_ratio,
     )
     if len(ranked) < min(size, index.size):
-        used = {int(item["row"]) for item in ranked}
+        used = {int(item["row"]) for item in ranked} | forbidden
         ranked.extend(
             rank_index(
                 index,
@@ -348,7 +349,7 @@ def generate_mix_pack(
 ) -> dict[str, Any]:
     """Build and persist the full VK-style shelf set (25–50 tracks)."""
     results: dict[str, Any] = {}
-    reserved: set[int] = set()
+    reserved: set[int] = set(blocked_track_ids())
 
     def reserve(build: PlaylistBuild) -> None:
         reserved.update(

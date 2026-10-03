@@ -8,6 +8,7 @@ services:
     env_file: .env
     environment:
       MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_THEMES: /data/themes
       MUSIK_LIBRARY: /music
       MUSIK_WORKER_URL: http://worker:8790
       MUSIK_WORKER_AUTOSTART: "0"

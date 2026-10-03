@@ -4,10 +4,33 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#101114" />
+  <script>
+    (function () {
+      try {
+        var saved = JSON.parse(localStorage.getItem("musik_theme") || "null");
+        if (saved && saved.id === "omarchy") { saved.id = "retro"; localStorage.setItem("musik_theme", JSON.stringify(saved)); }
+        if (!saved || !saved.id || saved.id === "ember") return;
+        var root = document.documentElement;
+        if (/^[a-z][a-z0-9-]{0,31}$/.test(saved.id)) root.dataset.theme = saved.id;
+        else if (saved.tokens) {
+          root.dataset.theme = "custom";
+          Object.keys(saved.tokens).forEach(function (key) {
+            var value = saved.tokens[key];
+            if (key.slice(0, 2) === "--" && typeof value === "string" && value.length < 180 && !/[;{}]|url\s*\(|expression\s*\(/i.test(value)) root.style.setProperty(key, value);
+          });
+          if (saved.scheme === "light") root.classList.add("theme-light");
+        }
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta && saved.color) meta.setAttribute("content", saved.color);
+      } catch (e) {}
+    })();
+  </script>
   <link rel="manifest" href="/manifest.webmanifest" />
   <title>musik</title>
-  <link rel="stylesheet" href="/fonts.css?v=25b38b046e" />
-  <link rel="stylesheet" href="/style.css?v=586e439651" />
+  <link rel="stylesheet" href="/fonts.css?v=e54fa79d7a" />
+  <link rel="stylesheet" href="/themes/base.css" />
+  <link rel="stylesheet" href="/style.css?v=c0fdfbcbaa" />
+  <script>try { var savedTheme=JSON.parse(localStorage.getItem("musik_theme")||"null"); if(savedTheme&&savedTheme.id&&savedTheme.id!=="ember"&&/^[a-z][a-z0-9-]{0,31}$/.test(savedTheme.id)) document.write('<link rel="stylesheet" href="/themes/'+savedTheme.id+'.css?v=retro4">'); } catch(e) {};</script>
   <link rel="stylesheet" href="/redesign.css?v=668d8d6fbe" />
 </head>
 <body>
@@ -355,6 +378,38 @@
       <section id="view-profile" class="view">
         <h1 class="page-title">Профиль</h1>
         <p class="sub">Как радио тебя знает и что ставит дальше</p>
+        <div class="panel theme-panel" id="theme-box">
+          <div class="panel-kicker">appearance</div>
+          <strong>Theme</strong>
+          <p class="sub">A custom palette stays in this browser. Drop a finished theme in a folder next to the database: data/themes, or /data/themes in Docker. Refresh the page — no rebuild.</p>
+          <div id="theme-list" class="theme-list"></div>
+          <form id="theme-form" class="theme-form">
+            <label>Name
+              <input id="theme-name" type="text" maxlength="32" placeholder="Night" required />
+            </label>
+            <div class="theme-colors">
+              <label>Background <input id="theme-bg" type="color" value="#100c0a" /></label>
+              <label>Text <input id="theme-fg" type="color" value="#f7f0e8" /></label>
+              <label>Accent <input id="theme-accent" type="color" value="#e07a3a" /></label>
+              <label>Second <input id="theme-accent2" type="color" value="#3d8f7a" /></label>
+            </div>
+            <label>Corners <span id="theme-radius-val">18</span>
+              <input id="theme-radius" type="range" min="0" max="28" value="18" />
+            </label>
+            <label>Font
+              <select id="theme-font">
+                <option value="ember">Manrope / Syne</option>
+                <option value="grotesk">Space Grotesk</option>
+                <option value="pixel">Pixel</option>
+                <option value="system">System</option>
+              </select>
+            </label>
+            <div class="theme-form-actions">
+              <button type="button" class="btn" id="theme-preview">Preview</button>
+              <button type="submit" class="btn primary">Save theme</button>
+            </div>
+          </form>
+        </div>
         <div id="profile-box" class="panel"></div>
         <div id="monitor-box" class="panel monitor-panel"></div>
         <div id="contexts-box" class="panel"></div>
@@ -450,6 +505,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=4880cac5b9"></script>
+  <script src="/app.js?v=938472d708"></script>
 </body>
 </html>

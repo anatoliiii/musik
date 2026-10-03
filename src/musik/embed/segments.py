@@ -12,8 +12,15 @@ import librosa
 import numpy as np
 
 # Strategy id — bump when windowing changes so cache invalidates.
-SEGMENT_STRATEGY = "clap_3x30_v1"
-DEFAULT_SEGMENT_SEC = 30.0
+SEGMENT_STRATEGY = "clap_3x30_v2"
+# Three listening points per track, 30s each — unchanged.
+DEFAULT_SPAN_SEC = 30.0
+# A span is fed to the model in chunks of its own input length (max_length_s=10
+# for larger_clap_music_and_speech). Handing the model a longer window is not
+# "more listening": it crops it to a RANDOM 10s chunk
+# (truncation="rand_trunc"), so the other 20s were decoded for nothing and the
+# resulting vector differed on every recomputation.
+DEFAULT_SEGMENT_SEC = 10.0
 DEFAULT_SR = 48_000
 
 logger = logging.getLogger(__name__)
@@ -26,32 +33,68 @@ class SegmentWindow:
     duration_sec: float
 
 
-def plan_windows(duration_sec: float, segment_sec: float = DEFAULT_SEGMENT_SEC) -> list[SegmentWindow]:
+def plan_spans(duration_sec: float, span_sec: float = DEFAULT_SPAN_SEC) -> list[tuple[str, float]]:
     """
-    Plan up to three non-identical windows.
+    The three listening points: start / middle (centered) / end.
 
-    - short track (<= segment): whole file once
-    - otherwise: start, middle (centered), end
+    - short track (<= span): the whole file once
     - drop duplicates when offsets collapse on short songs
     """
     if duration_sec <= 0:
         return []
 
-    if duration_sec <= segment_sec + 0.05:
-        return [SegmentWindow("full", 0.0, duration_sec)]
+    if duration_sec <= span_sec + 0.05:
+        return [("full", 0.0)]
 
     candidates = [
-        SegmentWindow("start", 0.0, segment_sec),
-        SegmentWindow(
-            "middle",
-            max(0.0, duration_sec / 2.0 - segment_sec / 2.0),
-            segment_sec,
-        ),
-        SegmentWindow("end", max(0.0, duration_sec - segment_sec), segment_sec),
+        ("start", 0.0),
+        ("middle", max(0.0, duration_sec / 2.0 - span_sec / 2.0)),
+        ("end", max(0.0, duration_sec - span_sec)),
     ]
+    unique: list[tuple[str, float]] = []
+    for name, offset in candidates:
+        if any(abs(offset - known) < 0.5 for _n, known in unique):
+            continue
+        unique.append((name, offset))
+    return unique
+
+
+def plan_windows(
+    duration_sec: float,
+    segment_sec: float = DEFAULT_SEGMENT_SEC,
+    span_sec: float = DEFAULT_SPAN_SEC,
+) -> list[SegmentWindow]:
+    """
+    Cover each listening point with model-sized windows.
+
+    A 30s span becomes three consecutive 10s windows, so the whole span really
+    reaches the model instead of one randomly cropped chunk of it. Their
+    embeddings are averaged afterwards, exactly as three span embeddings were.
+    """
+    if duration_sec <= 0:
+        return []
+
+    windows: list[SegmentWindow] = []
+    for name, span_offset in plan_spans(duration_sec, span_sec=span_sec):
+        span_len = min(span_sec, max(0.0, duration_sec - span_offset))
+        if span_len < segment_sec:
+            # Track (or tail) shorter than one model window: take what is there.
+            windows.append(SegmentWindow(name, span_offset, span_len))
+            continue
+        count = int(span_len // segment_sec)
+        for index in range(count):
+            offset = span_offset + index * segment_sec
+            label = name if index == 0 else f"{name}+{int(index * segment_sec)}s"
+            windows.append(SegmentWindow(label, offset, segment_sec))
+        # Cover a leftover worth listening to by ending flush with the span.
+        leftover = span_len - count * segment_sec
+        if leftover >= segment_sec / 2.0:
+            windows.append(
+                SegmentWindow(f"{name}+tail", span_offset + span_len - segment_sec, segment_sec)
+            )
 
     unique: list[SegmentWindow] = []
-    for win in candidates:
+    for win in windows:
         if any(abs(win.offset_sec - u.offset_sec) < 0.5 for u in unique):
             continue
         unique.append(win)
@@ -71,9 +114,21 @@ def _ffprobe_duration(path: Path) -> float:
             str(path),
         ],
         timeout=30,
-        stderr=subprocess.STDOUT,
+        # NOT merged into stdout: a damaged file makes the decoder print e.g.
+        # "[mp3float @ 0x...] Header missing" while still reporting a correct
+        # duration, and that line would end up in the value being parsed.
+        stderr=subprocess.DEVNULL,
     )
-    return float(out.decode().strip())
+    return _parse_ffprobe_number(out)
+
+
+def _parse_ffprobe_number(raw: bytes) -> float:
+    """Last non-empty line of ffprobe output as a float."""
+    lines = [line.strip() for line in raw.decode(errors="replace").splitlines()]
+    for line in reversed(lines):
+        if line:
+            return float(line)
+    raise ValueError("ffprobe returned no value")
 
 
 def audio_duration(path: Path) -> float:
@@ -140,15 +195,22 @@ def load_segment_audio(
     *,
     sample_rate: int = DEFAULT_SR,
     segment_sec: float = DEFAULT_SEGMENT_SEC,
+    span_sec: float = DEFAULT_SPAN_SEC,
 ) -> list[tuple[SegmentWindow, np.ndarray]]:
     """Load mono float32 arrays for each planned window."""
     duration = audio_duration(path)
-    windows = plan_windows(duration, segment_sec=segment_sec)
+    windows = plan_windows(duration, segment_sec=segment_sec, span_sec=span_sec)
     out: list[tuple[SegmentWindow, np.ndarray]] = []
+    max_samples = int(sample_rate * segment_sec)
     for win in windows:
         y = _load_window(path, win, sample_rate=sample_rate)
         if y is None or y.size == 0:
             continue
+        # Decoders may hand back a few samples more than asked; keep windows at
+        # exactly the requested length so the batch needs no padding and the
+        # extractor has nothing to crop.
+        if max_samples and y.size > max_samples:
+            y = y[:max_samples]
         out.append((win, y))
     if not out:
         raise RuntimeError(f"не удалось декодировать аудио: {path}")

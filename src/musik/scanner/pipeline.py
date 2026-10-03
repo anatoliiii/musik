@@ -21,10 +21,8 @@ from musik.db import (
     upsert_track,
 )
 from musik.scanner.audio_params import (
-    compute_bpm,
+    compute_audio_params,
     compute_fingerprint,
-    compute_key_mode,
-    compute_lufs,
 )
 from musik.scanner.hashing import file_md5
 from musik.scanner.tags import read_tags
@@ -70,9 +68,13 @@ def _process_one(path: Path, *, extract_audio: bool) -> tuple[str, dict | None, 
         mode = None
         if extract_audio:
             fingerprint = compute_fingerprint(path)
-            lufs = compute_lufs(path, max_seconds=settings.analysis_seconds)
-            bpm = compute_bpm(path, max_seconds=settings.analysis_seconds)
-            key_name, mode = compute_key_mode(path, max_seconds=min(45.0, settings.analysis_seconds))
+            params = compute_audio_params(
+                path,
+                max_seconds=settings.analysis_seconds,
+                key_seconds=min(45.0, settings.analysis_seconds),
+            )
+            lufs, bpm = params.lufs, params.bpm
+            key_name, mode = params.key, params.mode
 
         payload = {
             "path": str(path.resolve()),

@@ -10,10 +10,32 @@ const WEEKDAY_RU = {
   weekday_sun: "вс",
 };
 
+function randomId() {
+  // crypto.randomUUID() exists only in a secure context: over http on a LAN
+  // address — the setup docs/DEPLOY.md recommends for phones — it is undefined,
+  // and every event threw a TypeError. getRandomValues works there, so the
+  // fallback keeps the randomness and only formats the UUID by hand.
+  if (globalThis.crypto?.randomUUID) {
+    return crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i += 1) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40; // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80; // RFC 4122 variant
+  const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join("-");
+}
+
 function clientId() {
   let id = localStorage.getItem("musik_client_id");
   if (!id) {
-    id = crypto.randomUUID();
+    id = randomId();
     localStorage.setItem("musik_client_id", id);
   }
   return id;
@@ -203,6 +225,7 @@ function setView(name, nav = NAV_OF_VIEW[name]) {
   if (name === "library") loadLibrary().catch(console.error);
   if (name === "collections") loadPlaylists().catch(console.error);
   if (name === "profile") {
+    loadInstalledThemes();
     loadProfile().catch(console.error);
     loadShares().catch(console.error);
     loadContexts().catch(console.error);
@@ -1024,7 +1047,7 @@ async function postEvent(type, extra = {}) {
   const audio = $("audio");
   const body = {
     type,
-    event_id: extra.event_id || crypto.randomUUID(),
+    event_id: extra.event_id || randomId(),
     track_id: current?.id,
     session_id: sessionId,
     impression_id: extra.impression_id || current?.impression_id,
@@ -2851,14 +2874,18 @@ async function hideNow(targetType, preset) {
     target_type: targetType,
     action: "block",
     scope: preset === "session" ? "session" : "global",
-    session_id: preset === "session" ? sessionId : undefined,
+    session_id: sessionId || undefined,
     preset,
     track_id: current.id,
     artist: current.artist,
     album: current.album,
   };
-  await api("/api/rules", { method: "POST", body: JSON.stringify(body) });
+  const data = await api("/api/rules", { method: "POST", body: JSON.stringify(body) });
   toast(targetType === "artist" ? "Артист скрыт" : "Трек скрыт");
+  if (data.playback) applyPlayPayload(data.playback);
+  loadSimilarRecs().catch(() => {});
+  loadMixes().catch(() => {});
+  if ($("rules-box")) loadRules().catch(() => {});
 }
 
 async function loadContexts() {
@@ -2928,8 +2955,8 @@ async function loadRules() {
   const actionLabel = { block: "скрыто", downrank: "реже", cooldown: "пауза" };
   const targetLabel = { track: "трек", artist: "артист", album: "альбом", genre: "жанр", cluster: "похожее" };
   box.innerHTML = `<div class="panel-kicker">фильтр</div>
-    <strong>Скрыто из радио</strong>
-    <p class="sub">Временный запрет. Дизлайк — это отдельно: он учит вкус, а это просто «не сейчас».</p>
+    <strong>Скрыто</strong>
+    <p class="sub">Не попадает в радио, миксы, сгенерированные плейлисты и рекомендации, пока запрет не кончится.</p>
     <button type="button" class="btn" id="btn-rule-undo">Вернуть последнее</button>
     ${items.map((r) => `
       <div class="collection-item">
@@ -3316,7 +3343,385 @@ async function startFromLibrary() {
   }
 }
 
+const THEME_ACTIVE_KEY = "musik_theme";
+const THEME_CUSTOM_KEY = "musik_custom_themes";
+const THEME_TOKEN_KEYS = [
+  "--bg", "--fg", "--accent", "--accent2", "--on-accent",
+  "--radius", "--radius-sm", "--radius-pill",
+  "--font", "--display", "--brand-font", "--mono",
+];
+const FONT_PRESETS = {
+  ember: {
+    "--font": '"Manrope", system-ui, sans-serif',
+    "--display": '"Syne", "Manrope", sans-serif',
+    "--brand-font": '"Syne", "Manrope", sans-serif',
+    "--mono": '"DM Mono", ui-monospace, monospace',
+  },
+  grotesk: {
+    "--font": '"Space Grotesk", "Manrope", system-ui, sans-serif',
+    "--display": '"Space Grotesk", "Manrope", sans-serif',
+    "--brand-font": '"Space Grotesk", "Manrope", sans-serif',
+    "--mono": '"DM Mono", "Manrope", ui-monospace, monospace',
+  },
+  pixel: {
+    "--font": '"Manrope", system-ui, sans-serif',
+    "--display": '"Manrope", system-ui, sans-serif',
+    "--brand-font": '"Press Start 2P", "Manrope", sans-serif',
+    "--mono": '"DM Mono", ui-monospace, monospace',
+  },
+  system: {
+    "--font": "system-ui, sans-serif",
+    "--display": "system-ui, sans-serif",
+    "--brand-font": "system-ui, sans-serif",
+    "--mono": "ui-monospace, monospace",
+  },
+};
+const THEME_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
+let installedThemes = [
+  { id: "ember", name: "Ember", blurb: "Warm", swatch: ["#100c0a", "#e07a3a", "#3d8f7a"], color: "#1a120c", installed: true },
+  { id: "retro", name: "Retro", blurb: "Acid pixel", swatch: ["#080a0c", "#d6ff3f", "#ff4f9a"], color: "#080a0c", installed: true },
+];
+
+function hexLuma(hex) {
+  const n = String(hex || "").replace("#", "");
+  if (n.length !== 6) return 0;
+  const ch = [0, 2, 4].map((i) => parseInt(n.slice(i, i + 2), 16) / 255);
+  const f = (c) => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+  return 0.2126 * f(ch[0]) + 0.7152 * f(ch[1]) + 0.0722 * f(ch[2]);
+}
+
+function safeThemeValue(value) {
+  return typeof value === "string" && value.length > 0 && value.length < 180 && !/[;{}]|url\s*\(|expression\s*\(/i.test(value);
+}
+
+function readCustomThemes() {
+  try {
+    const list = JSON.parse(localStorage.getItem(THEME_CUSTOM_KEY) || "[]");
+    return Array.isArray(list) ? list.filter((t) => t && t.id && t.tokens) : [];
+  } catch {
+    return [];
+  }
+}
+
+function readActiveTheme() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(THEME_ACTIVE_KEY) || "null");
+    if (saved && saved.id === "omarchy") {
+      saved.id = "retro";
+      localStorage.setItem(THEME_ACTIVE_KEY, JSON.stringify(saved));
+    }
+    return saved;
+  } catch {
+    return null;
+  }
+}
+
+let appliedThemeId = readActiveTheme()?.id || "ember";
+
+function radiusTokens(px) {
+  const r = Math.max(0, Math.min(28, Number(px) || 0));
+  return {
+    "--radius": `${r}px`,
+    "--radius-sm": `${Math.round(r * 0.66)}px`,
+    "--radius-pill": r < 4 ? "0px" : "999px",
+  };
+}
+
+function fontPresetId(tokens) {
+  const brand = tokens["--brand-font"] || "";
+  const font = tokens["--font"] || "";
+  if (brand.includes("Press Start")) return "pixel";
+  if (font.includes("Space Grotesk")) return "grotesk";
+  if (font.startsWith("system-ui")) return "system";
+  return "ember";
+}
+
+function fillThemeForm(theme) {
+  if (!theme?.tokens || !$("theme-bg")) return;
+  const tokens = theme.tokens;
+  $("theme-name").value = theme.name || "";
+  $("theme-bg").value = tokens["--bg"] || "#100c0a";
+  $("theme-fg").value = tokens["--fg"] || "#f7f0e8";
+  $("theme-accent").value = tokens["--accent"] || "#e07a3a";
+  $("theme-accent2").value = tokens["--accent2"] || "#3d8f7a";
+  const radius = parseInt(tokens["--radius"], 10);
+  if (Number.isFinite(radius)) {
+    $("theme-radius").value = String(radius);
+    $("theme-radius-val").textContent = String(radius);
+  }
+  $("theme-font").value = fontPresetId(tokens);
+}
+
+function tokensFromForm() {
+  const bg = $("theme-bg").value;
+  const fg = $("theme-fg").value;
+  const accent = $("theme-accent").value;
+  const accent2 = $("theme-accent2").value;
+  const preset = FONT_PRESETS[$("theme-font").value] || FONT_PRESETS.ember;
+  return {
+    "--bg": bg,
+    "--fg": fg,
+    "--accent": accent,
+    "--accent2": accent2,
+    "--on-accent": hexLuma(accent) > 0.45 ? "#090b08" : "#ffffff",
+    ...radiusTokens($("theme-radius").value),
+    ...preset,
+  };
+}
+
+function ensureThemeStylesheet(id) {
+  if (!THEME_ID_RE.test(id) || id === "ember") return;
+  const href = `/themes/${id}.css?v=retro3`;
+  if ([...document.querySelectorAll('link[rel="stylesheet"]')].some((link) => link.getAttribute("href") === href)) return;
+  const link = document.createElement("link");
+  link.rel = "stylesheet";
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+function applyTheme(theme, { persist = true } = {}) {
+  const root = document.documentElement;
+  THEME_TOKEN_KEYS.forEach((key) => root.style.removeProperty(key));
+  root.classList.remove("theme-light");
+  root.style.colorScheme = "";
+  const id = theme?.id || "ember";
+  appliedThemeId = id;
+  if (id === "ember") delete root.dataset.theme;
+  else if (theme.installed && THEME_ID_RE.test(id)) {
+    root.dataset.theme = id;
+    ensureThemeStylesheet(id);
+  } else {
+    root.dataset.theme = "custom";
+    const tokens = theme.tokens || {};
+    THEME_TOKEN_KEYS.forEach((key) => {
+      if (safeThemeValue(tokens[key])) root.style.setProperty(key, tokens[key]);
+    });
+    const scheme = hexLuma(tokens["--bg"]) > 0.55 ? "light" : "dark";
+    if (scheme === "light") {
+      root.classList.add("theme-light");
+      root.style.colorScheme = "light";
+    }
+    theme = { ...theme, scheme };
+  }
+  const meta = document.querySelector('meta[name="theme-color"]');
+  const color = theme?.color || theme?.tokens?.["--bg"] || "#1a120c";
+  if (meta) meta.setAttribute("content", color);
+  if (persist) {
+    const stored = { id, color };
+    if (!theme?.installed && id !== "ember") {
+      stored.tokens = theme.tokens;
+      stored.scheme = theme.scheme;
+    }
+    localStorage.setItem(THEME_ACTIVE_KEY, JSON.stringify(stored));
+  }
+  renderThemeList();
+  syncRetroField();
+}
+
+let retroField = null;
+
+function syncRetroField() {
+  if (document.documentElement.dataset.theme === "retro") startRetroField();
+  else stopRetroField();
+}
+
+function stopRetroField() {
+  if (!retroField) return;
+  cancelAnimationFrame(retroField.raf);
+  retroField.canvas.remove();
+  window.removeEventListener("resize", retroField.resize);
+  document.removeEventListener("visibilitychange", retroField.onHide);
+  window.removeEventListener("pointermove", retroField.onMove);
+  retroField = null;
+}
+
+function startRetroField() {
+  if (retroField || window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  const canvas = document.createElement("canvas");
+  canvas.className = "retro-field";
+  canvas.setAttribute("aria-hidden", "true");
+  document.body.prepend(canvas);
+  const ctx = canvas.getContext("2d");
+  const colors = ["#d6ff3f", "#ff4f9a", "#62d9ff", "#ffb23e"];
+  let dots = [];
+  let w = 0;
+  let h = 0;
+  let glowX = 0;
+  let glowY = 0;
+  let aimX = 0;
+  let aimY = 0;
+  const resize = () => {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    aimX = glowX = w * 0.62;
+    aimY = glowY = h * 0.16;
+    const count = Math.min(78, Math.max(28, Math.floor(w * h / 22000)));
+    dots = Array.from({ length: count }, () => {
+      const s = Math.random() < 0.82 ? 2 : 4;
+      return {
+        x: Math.random() * w,
+        y: Math.random() * h,
+        vx: (Math.random() - 0.5) * (s === 2 ? 0.35 : 0.18),
+        vy: (Math.random() - 0.5) * 0.22,
+        s,
+        a: 0.18 + Math.random() * 0.55,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        blink: Math.random() < 0.35 ? 400 + Math.random() * 900 : 0,
+      };
+    });
+  };
+  const onMove = (event) => {
+    aimX = event.clientX;
+    aimY = event.clientY;
+  };
+  const step = (now) => {
+    if (!retroField) return;
+    if (document.hidden) {
+      retroField.raf = requestAnimationFrame(step);
+      return;
+    }
+    glowX += (aimX - glowX) * 0.04;
+    glowY += (aimY - glowY) * 0.04;
+    ctx.clearRect(0, 0, w, h);
+    const glow = ctx.createRadialGradient(glowX, glowY, 0, glowX, glowY, Math.min(w, h) * 0.42);
+    glow.addColorStop(0, "rgba(214,255,63,0.09)");
+    glow.addColorStop(1, "rgba(214,255,63,0)");
+    ctx.fillStyle = glow;
+    ctx.fillRect(0, 0, w, h);
+    for (const dot of dots) {
+      dot.x += dot.vx;
+      dot.y += dot.vy;
+      if (dot.x < 0 || dot.x > w) dot.vx *= -1;
+      if (dot.y < 0 || dot.y > h) dot.vy *= -1;
+      const on = !dot.blink || Math.floor(now / dot.blink) % 2 === 0;
+      ctx.globalAlpha = on ? dot.a : 0.04;
+      ctx.fillStyle = dot.color;
+      ctx.fillRect(Math.round(dot.x / 2) * 2, Math.round(dot.y / 2) * 2, dot.s, dot.s);
+    }
+    ctx.globalAlpha = 1;
+    retroField.raf = requestAnimationFrame(step);
+  };
+  retroField = { canvas, raf: 0, resize, onMove, onHide: () => {} };
+  window.addEventListener("resize", resize);
+  window.addEventListener("pointermove", onMove);
+  resize();
+  retroField.raf = requestAnimationFrame(step);
+}
+
+async function loadInstalledThemes() {
+  try {
+    const data = await api("/api/themes");
+    if (!Array.isArray(data.themes) || !data.themes.length) return;
+    installedThemes = data.themes.filter((theme) => theme && THEME_ID_RE.test(theme.id)).map((theme) => ({
+      id: theme.id,
+      name: theme.name,
+      blurb: theme.blurb,
+      swatch: theme.swatch,
+      color: theme.color,
+      installed: true,
+    }));
+    installedThemes.forEach((theme) => ensureThemeStylesheet(theme.id));
+    renderThemeList();
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+function renderThemeList() {
+  const box = $("theme-list");
+  if (!box) return;
+  const activeId = appliedThemeId || "ember";
+  const cards = [
+    ...installedThemes.map((theme) => ({ ...theme, builtin: true })),
+    ...readCustomThemes().map((theme) => ({
+      ...theme,
+      blurb: "Custom",
+      swatch: [theme.tokens["--bg"], theme.tokens["--accent"], theme.tokens["--accent2"]],
+      builtin: false,
+    })),
+  ];
+  box.replaceChildren();
+  cards.forEach((theme) => {
+    const row = document.createElement("div");
+    row.className = "theme-card-row";
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "theme-card" + (theme.id === activeId ? " active" : "");
+    btn.setAttribute("aria-pressed", theme.id === activeId ? "true" : "false");
+    const swatch = document.createElement("span");
+    swatch.className = "theme-swatches";
+    (theme.swatch || []).forEach((color) => {
+      const bit = document.createElement("i");
+      bit.style.background = safeThemeValue(color) ? color : "transparent";
+      swatch.appendChild(bit);
+    });
+    const name = document.createElement("strong");
+    name.textContent = theme.name || "Theme";
+    const blurb = document.createElement("span");
+    blurb.textContent = theme.blurb || "";
+    btn.append(swatch, name, blurb);
+    btn.onclick = () => {
+      if (theme.tokens) fillThemeForm(theme);
+      applyTheme(theme);
+    };
+    row.appendChild(btn);
+    if (!theme.builtin) {
+      const del = document.createElement("button");
+      del.type = "button";
+      del.className = "theme-delete";
+      del.textContent = "×";
+      del.title = "Delete theme";
+      del.setAttribute("aria-label", `Delete theme ${theme.name || ""}`);
+      del.onclick = () => deleteCustomTheme(theme.id);
+      row.appendChild(del);
+    }
+    box.appendChild(row);
+  });
+}
+
+function deleteCustomTheme(id) {
+  const next = readCustomThemes().filter((theme) => theme.id !== id);
+  localStorage.setItem(THEME_CUSTOM_KEY, JSON.stringify(next));
+  if (readActiveTheme()?.id === id) applyTheme({ id: "ember" });
+  else renderThemeList();
+}
+
+function saveCustomTheme(event) {
+  event.preventDefault();
+  const name = $("theme-name").value.trim();
+  if (!name) return;
+  const tokens = tokensFromForm();
+  const theme = {
+    id: `custom:${Date.now().toString(36)}`,
+    name,
+    tokens,
+    color: tokens["--bg"],
+  };
+  const list = readCustomThemes();
+  list.push(theme);
+  localStorage.setItem(THEME_CUSTOM_KEY, JSON.stringify(list.slice(-12)));
+  applyTheme(theme);
+  toast("Theme saved");
+}
+
+function wireTheme() {
+  renderThemeList();
+  loadInstalledThemes();
+  const radius = $("theme-radius");
+  const radiusVal = $("theme-radius-val");
+  if (radius && radiusVal) {
+    radius.oninput = () => { radiusVal.textContent = radius.value; };
+  }
+  $("theme-preview")?.addEventListener("click", () => {
+    const tokens = tokensFromForm();
+    applyTheme({ id: "custom:preview", name: "Preview", tokens, color: tokens["--bg"] }, { persist: false });
+  });
+  $("theme-form")?.addEventListener("submit", saveCustomTheme);
+  syncRetroField();
+}
+
 function wire() {
+  wireTheme();
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
     b.onclick = () => {
       if (b.dataset.libDefault) libTab = b.dataset.libDefault;

@@ -229,6 +229,17 @@
         }
       }
     },
+    "/api/themes": {
+      "get": {
+        "security": [],
+        "summary": "Built-in themes plus theme packages from the themes directory",
+        "responses": {
+          "200": {
+            "description": "Theme catalog"
+          }
+        }
+      }
+    },
     "/api/auth/login": {
       "post": {
         "security": [],

@@ -48,6 +48,7 @@ type routeDescriptor struct {
 
 var apiRoutes = []routeDescriptor{
 	{"GET", "/api/health", (*Server).handleHealth},
+	{"GET", "/api/themes", (*Server).handleThemes},
 	{"GET", "/api/openapi.json", (*Server).handleOpenAPI},
 	{"GET", "/api/auth/me", (*Server).handleAuthMe},
 	{"POST", "/api/auth/login", (*Server).handleAuthLogin},

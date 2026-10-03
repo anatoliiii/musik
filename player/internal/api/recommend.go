@@ -59,8 +59,12 @@ func (s *Server) handleSimilar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hits := recommend.SimilarTracks(s.Idx, id, 10)
+	blocks := s.globalBlocks()
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
+		if blocks != nil && blocks.HardBlocked(h.ID) {
+			continue
+		}
 		out = append(out, map[string]any{
 			"id": h.ID, "artist": h.Artist, "title": h.Title, "cosine": h.Cosine,
 		})
@@ -77,8 +81,12 @@ func (s *Server) handleSimilarArtists(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hits := recommend.SimilarArtists(s.Idx, artist, 12)
+	blocks := s.globalBlocks()
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
+		if blocks != nil && blocks.BlocksArtist(h.Artist) {
+			continue
+		}
 		out = append(out, artistHitJSON(h))
 	}
 	writeJSON(w, map[string]any{"seed": artist, "artists": out})
@@ -94,8 +102,12 @@ func (s *Server) handleSimilarAlbums(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hits := recommend.SimilarAlbums(s.Idx, artist, album, 12)
+	blocks := s.globalBlocks()
 	out := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
+		if blocks != nil && blocks.BlocksAlbum(h.Artist, h.Album) {
+			continue
+		}
 		out = append(out, albumHitJSON(h))
 	}
 	writeJSON(w, map[string]any{
@@ -165,8 +177,12 @@ func (s *Server) handleRecommendSeed(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "type", "type must be track|artist|album")
 		return
 	}
+	blocks := s.globalBlocks()
 	tracks := make([]map[string]any, 0, len(hits))
 	for _, h := range hits {
+		if blocks != nil && blocks.HardBlocked(h.ID) {
+			continue
+		}
 		tracks = append(tracks, trackHitJSON(h))
 	}
 	writeJSON(w, map[string]any{"ok": true, "seed": seed, "tracks": tracks})
@@ -187,16 +203,26 @@ func (s *Server) handleRecommendFavorites(w http.ResponseWriter, _ *http.Request
 		})
 		return
 	}
+	blocks := s.globalBlocks()
 	tracks := make([]map[string]any, 0, len(mix.Tracks))
 	for _, h := range mix.Tracks {
+		if blocks != nil && blocks.HardBlocked(h.ID) {
+			continue
+		}
 		tracks = append(tracks, trackHitJSON(h))
 	}
 	artists := make([]map[string]any, 0, len(mix.Artists))
 	for _, h := range mix.Artists {
+		if blocks != nil && blocks.BlocksArtist(h.Artist) {
+			continue
+		}
 		artists = append(artists, artistHitJSON(h))
 	}
 	albums := make([]map[string]any, 0, len(mix.Albums))
 	for _, h := range mix.Albums {
+		if blocks != nil && blocks.BlocksAlbum(h.Artist, h.Album) {
+			continue
+		}
 		albums = append(albums, albumHitJSON(h))
 	}
 	writeJSON(w, map[string]any{

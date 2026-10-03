@@ -24,6 +24,26 @@ func (s *Server) handlePlaylistsList(w http.ResponseWriter, r *http.Request) {
 	if list == nil {
 		list = []db.UserPlaylist{}
 	}
+	if blocks := s.globalBlocks(); blocks != nil {
+		for i := range list {
+			if !generatedPlaylist(&list[i]) {
+				continue
+			}
+			items, err := s.Store.ListPlaylistItems(list[i].ID)
+			if err != nil {
+				writeErr(w, 500, "db", err.Error())
+				return
+			}
+			n := 0
+			for _, item := range items {
+				if item.TrackID != 0 && blocks.HardBlocked(item.TrackID) {
+					continue
+				}
+				n++
+			}
+			list[i].TrackCount = n
+		}
+	}
 	writeJSON(w, map[string]any{"playlists": list})
 }
 
@@ -67,6 +87,7 @@ func (s *Server) handlePlaylistGet(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "not_found", "playlist not found")
 		return
 	}
+	s.omitBlockedPlaylist(pl)
 	writeJSON(w, pl)
 }
 
@@ -265,6 +286,11 @@ func (s *Server) handlePlaylistPlay(w http.ResponseWriter, r *http.Request) {
 		pl, _ = s.Store.GetUserPlaylist(id)
 	}
 	ids := resolvedTrackIDs(pl)
+	if generatedPlaylist(pl) {
+		if blocks := s.globalBlocks(); blocks != nil {
+			ids = blocks.FilterIDs(ids)
+		}
+	}
 	if len(ids) == 0 {
 		writeErr(w, 404, "play", "нет доступных треков")
 		return

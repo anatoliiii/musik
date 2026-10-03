@@ -27,6 +27,18 @@ func IsFixedMode(mode string) bool {
 	}
 }
 
+// GeneratedMixKind is a shelf the worker builds. Manual and saved lists are not.
+func GeneratedMixKind(kind string) bool {
+	switch kind {
+	case "for_you", "daily", "new_releases", "weekly",
+		"weekday_mon", "weekday_tue", "weekday_wed", "weekday_thu",
+		"weekday_fri", "weekday_sat", "weekday_sun":
+		return true
+	default:
+		return false
+	}
+}
+
 func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err error) {
 	if len(spec.TrackIDs) > 0 {
 		for _, id := range spec.TrackIDs {
@@ -248,11 +260,24 @@ func (e *Engine) Back(sess *Session) error {
 	return nil
 }
 
+func (e *Engine) pickAllowedStart(sess *Session, seed *int64) int64 {
+	startID := e.PickStart(sess, seed)
+	eval := e.sessionRules(sess)
+	if eval == nil || !eval.HardBlocked(startID) {
+		return startID
+	}
+	e.applyHardBlocks(sess)
+	if id := e.Builder.PickRandom(sess.Exclude); id != 0 {
+		return id
+	}
+	return 0
+}
+
 func (e *Engine) StartRadio(seed *int64) *Session {
 	sess := e.NewSession("radio")
 	sess.Lock()
 	e.SeedRadioExclude(sess)
-	startID := e.PickStart(sess, seed)
+	startID := e.pickAllowedStart(sess, seed)
 	sess.Current = startID
 	sess.Prev = 0
 	e.ExcludeTrack(sess, startID)
@@ -269,7 +294,7 @@ func (e *Engine) StartRadio(seed *int64) *Session {
 func (e *Engine) StartSession(seed *int64) *Session {
 	sess := e.NewSession("session")
 	sess.Lock()
-	startID := e.PickStart(sess, seed)
+	startID := e.pickAllowedStart(sess, seed)
 	sess.Current = startID
 	sess.Prev = 0
 	source := "radio_start"

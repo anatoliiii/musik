@@ -69,7 +69,21 @@ func (s *Server) handleRulesCreate(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "rule", err.Error())
 		return
 	}
-	writeJSON(w, created)
+	if created.Action == "block" && s.Play != nil {
+		s.Play.HideBlocked()
+	}
+	var playback any
+	if req.SessionID != "" && s.Play != nil {
+		if sess := s.Play.Get(req.SessionID); sess != nil {
+			sess.Lock()
+			playback = s.playResponse(sess)
+			sess.Unlock()
+		}
+	}
+	writeJSON(w, struct {
+		db.RadioRule
+		Playback any `json:"playback,omitempty"`
+	}{RadioRule: created, Playback: playback})
 }
 
 func (s *Server) handleRulePatch(w http.ResponseWriter, r *http.Request) {

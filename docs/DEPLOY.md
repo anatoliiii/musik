@@ -41,6 +41,24 @@ Volumes: `musik-data` → SQLite + кэши; библиотека RO из `MUSIK
 
 Go player никогда не создаёт и не изменяет таблицы.
 
+### Готовые образы (без сборки)
+
+GitHub Actions (`.github/workflows/images.yml`) собирает образы при каждом push в
+`main`, на теги `v*` и по кнопке: `ghcr.io/<owner>/musik-player` и
+`ghcr.io/<owner>/musik-worker` с тегами `latest`, `sha-<коммит>` и версией тега.
+Запуск из них — тот же стек, но без Go/torch на сервере:
+
+```bash
+cp .env.example .env
+# обязательно: MUSIK_PASSWORD, MUSIK_API_TOKEN, MUSIK_SESSION_SECRET, MUSIK_LIBRARY
+docker compose -f docker-compose.images.yml pull
+docker compose -f docker-compose.images.yml up -d
+```
+
+`MUSIK_IMAGE_TAG` закрепляет конкретную сборку, `MUSIK_IMAGE_OWNER` — чьи образы
+брать (форк публикует свои). Новые пакеты GHCR создаются приватными: владельцу
+репозитория нужно один раз включить Public в настройках пакета.
+
 ### Публичный VPS (белый IP)
 
 1. Задай сильные секреты в `.env` (не `AUTH_DISABLED`).
@@ -71,6 +89,25 @@ MUSIK_PUBLIC_BASE_URL=https://music.example.com
 ```
 
 UI **Поделиться** → `…/listen/<token>.mp3`. Отозвать в Профиле. Слушатели не меняют вкус.
+
+## Темы
+
+Плеер читает папку тем с диска при каждом запросе. Новая тема не требует пересборки и перезапуска: положи каталог и обнови страницу.
+
+По умолчанию это `data/themes` рядом с базой (`MUSIK_THEMES`). В Docker каталог — `/data/themes` на томе `musik-data`, не папка проекта:
+
+```bash
+docker compose cp themes/ink player:/data/themes/ink
+```
+
+```text
+data/themes/ink/
+  theme.json
+  theme.css
+  fonts/          # необязательно, только .woff2 / .woff
+```
+
+`theme.json` задаёт `id` (он же имя папки), `name`, `blurb`, `swatch` и `color`. `theme.css` стилизует `html[data-theme="<id>"]`. Готовый пример: `cp -a themes/ink data/themes/`. Папка с тем же `id`, что у встроенной темы, заменяет её файлы. Своя палитра из профиля по-прежнему живёт только в браузере.
 
 ## Makefile
 

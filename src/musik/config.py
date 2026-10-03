@@ -25,8 +25,13 @@ class Settings(BaseSettings):
     workers: int = 4
     embedding_model: str = "clap"
     clap_model: str = "laion/larger_clap_music_and_speech"
-    # Три окна: начало / середина / конец (сек каждое)
-    embed_segment_sec: float = 30.0
+    # Три точки прослушивания: начало / середина / конец (сек каждая)
+    embed_span_sec: float = 30.0
+    # Чем интервал подаётся в модель. Равно входу фич-экстрактора CLAP: всё, что
+    # длиннее, он обрезает до СЛУЧАЙНЫХ 10 с (truncation="rand_trunc"), поэтому
+    # интервал покрывается несколькими такими окнами, а не одним длинным.
+    embed_segment_sec: float = 10.0
+    # Mel-препроцессинг идёт вне лока инференса, поэтому >1 реально параллелит.
     embed_workers: int = 1
     # Доля «дальних» треков в плейлистах (exploration / bandit)
     explore_ratio: float = 0.25

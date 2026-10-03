@@ -197,7 +197,7 @@ func publicPath(r *http.Request) bool {
 	}
 	if r.Method == http.MethodGet {
 		switch p {
-		case "/api/health", "/api/openapi.json", "/api/auth/me", "/manifest.webmanifest":
+		case "/api/health", "/api/openapi.json", "/api/auth/me", "/api/themes", "/manifest.webmanifest":
 			return true
 		}
 		// Share radio stream: token in path is the credential.

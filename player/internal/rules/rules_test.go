@@ -31,4 +31,10 @@ func TestBlockAndDownrankDoNotMixWithMissingTarget(t *testing.T) {
 	if eval.Downrank(2) != 0.8 {
 		t.Fatalf("downrank=%v", eval.Downrank(2))
 	}
+	if !eval.BlocksArtist("A") || eval.BlocksArtist("B") {
+		t.Fatal("artist block key should be the normalized name")
+	}
+	if got := eval.FilterIDs([]int64{1, 2}); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("filter=%v", got)
+	}
 }

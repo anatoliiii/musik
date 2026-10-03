@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/torwin-job/musik/player/internal/playback"
+	"github.com/torwin-job/musik/player/internal/rules"
 )
 
 // Mix shelf definition (VK-style).
@@ -31,6 +32,7 @@ var mixShelf = []struct {
 
 func (s *Server) handleMixes(w http.ResponseWriter, _ *http.Request) {
 	today := playback.TodayWeekdayKind()
+	blocks := s.globalBlocks()
 	out := make([]map[string]any, 0, len(mixShelf))
 	for _, m := range mixShelf {
 		card := map[string]any{
@@ -57,7 +59,7 @@ func (s *Server) handleMixes(w http.ResponseWriter, _ *http.Request) {
 				card["cover_track_id"] = tracks[0].TrackID
 			}
 		} else {
-			id, name, n, coverID, createdAt, err := s.Store.PlaylistMeta(m.Kind)
+			id, name, n, coverID, createdAt, err := s.mixMeta(m.Kind, blocks)
 			if err != nil {
 				writeErr(w, 500, "db", err.Error())
 				return
@@ -153,7 +155,15 @@ func (s *Server) handleMixPlay(w http.ResponseWriter, r *http.Request) {
 		for _, t := range pl.Tracks {
 			ids = append(ids, t.TrackID)
 		}
+		if blocks := s.globalBlocks(); blocks != nil {
+			ids = blocks.FilterIDs(ids)
+		}
 		name = pl.Name
+	}
+
+	if len(ids) == 0 {
+		writeErr(w, 404, "empty", "в этом миксе не осталось треков")
+		return
 	}
 
 	startIdx := 0
@@ -164,4 +174,24 @@ func (s *Server) handleMixPlay(w http.ResponseWriter, r *http.Request) {
 	sess.Lock()
 	defer sess.Unlock()
 	writeJSON(w, s.playResponse(sess))
+}
+
+func (s *Server) mixMeta(kind string, blocks *rules.Evaluator) (id int64, name string, n int, coverID int64, createdAt string, err error) {
+	if blocks == nil || !playback.GeneratedMixKind(kind) {
+		return s.Store.PlaylistMeta(kind)
+	}
+	pl, err := s.Store.LatestPlaylist(kind)
+	if err != nil || pl == nil {
+		return 0, "", 0, 0, "", err
+	}
+	for _, track := range pl.Tracks {
+		if blocks.HardBlocked(track.TrackID) {
+			continue
+		}
+		if coverID == 0 {
+			coverID = track.TrackID
+		}
+		n++
+	}
+	return pl.ID, pl.Name, n, coverID, pl.CreatedAt, nil
 }

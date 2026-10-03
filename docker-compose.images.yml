@@ -6,16 +6,18 @@
 #   docker compose -f docker-compose.images.yml up -d
 #
 # Pin a build with MUSIK_IMAGE_TAG (a short commit sha or a v* tag); default: latest.
+# MUSIK_IMAGE_OWNER selects whose images to run (a fork publishes its own); default: anatoliiii.
 # The worker image includes CPU torch for CLAP; a GPU host can compute embeddings
 # separately and copy data/db + data/cache/embeddings over (see README).
 services:
   player:
-    image: ghcr.io/anatoliiii/musik-player:${MUSIK_IMAGE_TAG:-latest}
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-anatoliiii}/musik-player:${MUSIK_IMAGE_TAG:-latest}
     ports:
       - "8787:8787"   # behind a reverse proxy, prefer "127.0.0.1:8787:8787"
     env_file: .env
     environment:
       MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_THEMES: /data/themes
       MUSIK_LIBRARY: /music
       MUSIK_WORKER_URL: http://worker:8790
       MUSIK_WORKER_AUTOSTART: "0"
@@ -29,7 +31,7 @@ services:
     restart: unless-stopped
 
   worker:
-    image: ghcr.io/anatoliiii/musik-worker:${MUSIK_IMAGE_TAG:-latest}
+    image: ghcr.io/${MUSIK_IMAGE_OWNER:-anatoliiii}/musik-worker:${MUSIK_IMAGE_TAG:-latest}
     env_file: .env
     environment:
       MUSIK_DB_PATH: /data/db/musik.db

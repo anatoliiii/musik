@@ -8,6 +8,7 @@ import (
 
 type Config struct {
 	DBPath               string
+	ThemesDir            string
 	Library              string
 	Addr                 string
 	ExploreRatio         float64
@@ -37,7 +38,7 @@ type Config struct {
 	ShareMaxListeners    int
 	MobileBitrate        string // e.g. 160k — Android / LTE stream profile
 	MobileFormat         string // aac | mp3
-	CORSOrigins []string
+	CORSOrigins          []string
 }
 
 func Load() Config {
@@ -45,6 +46,7 @@ func Load() Config {
 	db := env("MUSIK_DB_PATH", filepath.Join(root, "data", "db", "musik.db"))
 	return Config{
 		DBPath:               db,
+		ThemesDir:            env("MUSIK_THEMES", filepath.Join(filepath.Dir(filepath.Dir(db)), "themes")),
 		Library:              env("MUSIK_LIBRARY", filepath.Join(root, "data", "music")),
 		Addr:                 env("MUSIK_PLAYER_ADDR", ":8787"),
 		ExploreRatio:         envFloat("MUSIK_EXPLORE_RATIO", 0.15),
@@ -74,7 +76,7 @@ func Load() Config {
 		ShareMaxListeners:    envInt("MUSIK_SHARE_MAX_LISTENERS", 4),
 		MobileBitrate:        env("MUSIK_MOBILE_BITRATE", "160k"),
 		MobileFormat:         stringsToLower(env("MUSIK_MOBILE_FORMAT", "aac")),
-		CORSOrigins: splitCSV(env("MUSIK_CORS_ORIGINS", "")),
+		CORSOrigins:          splitCSV(env("MUSIK_CORS_ORIGINS", "")),
 	}
 }
 

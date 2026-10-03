@@ -1,0 +1,15 @@
+/* Install: cp -a themes/ink data/themes/   (folder name must stay ink) */
+html[data-theme="ink"] {
+  --bg: #071018;
+  --fg: #e7f0f7;
+  --accent: #3ee0c5;
+  --accent2: #7aa2ff;
+  --on-accent: #041410;
+  --radius: 14px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  --font: "Manrope", system-ui, sans-serif;
+  --display: "Syne", "Manrope", sans-serif;
+  --brand-font: var(--display);
+  --theme-color: #071018;
+}

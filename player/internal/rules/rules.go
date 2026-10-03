@@ -10,10 +10,10 @@ import (
 )
 
 type Decision struct {
-	Blocked   bool
-	Cooldown  bool
-	Downrank  float64
-	Reasons   []string
+	Blocked  bool
+	Cooldown bool
+	Downrank float64
+	Reasons  []string
 }
 
 type Evaluator struct {
@@ -91,6 +91,9 @@ func (e *Evaluator) Downrank(trackID int64) float64 {
 }
 
 func (e *Evaluator) FilterIDs(ids []int64) []int64 {
+	if e == nil {
+		return ids
+	}
 	out := make([]int64, 0, len(ids))
 	for _, id := range ids {
 		if !e.HardBlocked(id) {
@@ -100,12 +103,50 @@ func (e *Evaluator) FilterIDs(ids []int64) []int64 {
 	return out
 }
 
+// BlocksArtist reports a hard artist block. Recommendations use it for artist
+// cards that are not themselves tracks.
+func (e *Evaluator) BlocksArtist(artist string) bool {
+	if e == nil {
+		return false
+	}
+	key := index.ArtistKey(artist)
+	if key == "" {
+		return false
+	}
+	for _, rule := range e.Rules {
+		if rule.Action == "block" && rule.TargetType == "artist" && rule.TargetKey == key {
+			return true
+		}
+	}
+	return false
+}
+
+// BlocksAlbum reports an artist block or an album block.
+func (e *Evaluator) BlocksAlbum(artist, album string) bool {
+	if e == nil {
+		return false
+	}
+	if e.BlocksArtist(artist) {
+		return true
+	}
+	key := index.AlbumKey(artist, album)
+	if key == "" {
+		return false
+	}
+	for _, rule := range e.Rules {
+		if rule.Action == "block" && rule.TargetType == "album" && rule.TargetKey == key {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Evaluator) keysFor(meta index.Meta) map[string]bool {
 	out := map[string]bool{
-		"track\x00" + index.TrackKey(meta.ID): true,
-		"artist\x00" + index.ArtistKey(meta.Artist): true,
+		"track\x00" + index.TrackKey(meta.ID):                 true,
+		"artist\x00" + index.ArtistKey(meta.Artist):           true,
 		"album\x00" + index.AlbumKey(meta.Artist, meta.Album): true,
-		"cluster\x00" + index.ClusterKey(meta.ClusterID): true,
+		"cluster\x00" + index.ClusterKey(meta.ClusterID):      true,
 	}
 	if meta.FileMD5 != "" {
 		out["song\x00"+meta.FileMD5] = true

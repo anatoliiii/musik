@@ -8,6 +8,7 @@ import (
 	"github.com/torwin-job/musik/player/internal/db"
 	"github.com/torwin-job/musik/player/internal/index"
 	"github.com/torwin-job/musik/player/internal/queue"
+	"github.com/torwin-job/musik/player/internal/rules"
 	"github.com/torwin-job/musik/player/internal/taste"
 )
 
@@ -150,6 +151,102 @@ func (e *Engine) transitionsFrom(currentID int64) map[int64]float64 {
 		out[k] = v
 	}
 	return out
+}
+
+// HideBlocked drops hard-blocked tracks from live radio and generated mixes.
+func (e *Engine) HideBlocked() {
+	e.sessionsMu.RLock()
+	list := make([]*Session, 0, len(e.sessions))
+	for _, sess := range e.sessions {
+		list = append(list, sess)
+	}
+	e.sessionsMu.RUnlock()
+	for _, sess := range list {
+		sess.Lock()
+		e.dropBlockedLocked(sess)
+		sess.Unlock()
+	}
+}
+
+func (e *Engine) dropBlockedLocked(sess *Session) {
+	if sess == nil {
+		return
+	}
+	eval := e.sessionRules(sess)
+	if eval == nil {
+		return
+	}
+	switch sess.Mode {
+	case "radio", "session", "share":
+		e.dropBlockedRadioLocked(sess, eval)
+	default:
+		if GeneratedMixKind(sess.PlaylistKind) && len(sess.DailyIDs) > 0 {
+			e.dropBlockedFixedLocked(sess, eval)
+		}
+	}
+}
+
+func (e *Engine) dropBlockedRadioLocked(sess *Session, eval *rules.Evaluator) {
+	blockedNow := eval.HardBlocked(sess.Current)
+	e.RefreshQueue(sess, sess.Current, "block")
+	if !blockedNow {
+		return
+	}
+	if len(sess.Queue) == 0 {
+		sess.Current = 0
+		sess.CurrentItem = queue.Item{}
+		e.persistLocked(sess)
+		return
+	}
+	next := sess.Queue[0]
+	sess.Queue = append([]queue.Item(nil), sess.Queue[1:]...)
+	sess.Prev = sess.Current
+	sess.Current = next.TrackID
+	sess.CurrentItem = next
+	e.ExcludeTrack(sess, next.TrackID)
+	e.createCurrentImpression(sess, "block", "block")
+	e.persistLocked(sess)
+	e.warm(sess)
+}
+
+func (e *Engine) dropBlockedFixedLocked(sess *Session, eval *rules.Evaluator) {
+	filtered := eval.FilterIDs(sess.DailyIDs)
+	if len(filtered) == len(sess.DailyIDs) {
+		return
+	}
+	cur := sess.Current
+	sess.DailyIDs = filtered
+	if len(filtered) == 0 {
+		sess.DailyPos = 0
+		sess.Current = 0
+		sess.CurrentItem = queue.Item{}
+		sess.Queue = nil
+		e.persistLocked(sess)
+		return
+	}
+	pos := 0
+	found := false
+	for i, id := range filtered {
+		if id == cur {
+			pos = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		if sess.DailyPos >= len(filtered) {
+			pos = len(filtered) - 1
+		} else if sess.DailyPos > 0 {
+			pos = sess.DailyPos
+			if pos >= len(filtered) {
+				pos = len(filtered) - 1
+			}
+		}
+		sess.Current = filtered[pos]
+		sess.CurrentItem = queue.Item{}
+	}
+	sess.DailyPos = pos
+	e.RebuildFixedQueue(sess)
 }
 
 func (e *Engine) RefreshQueue(sess *Session, currentID int64, reason string) {

@@ -41,6 +41,7 @@ def _process_one(
     *,
     model_id: str,
     segment_sec: float,
+    span_sec: float,
     force: bool,
 ) -> tuple[str, int, str | None]:
     """
@@ -61,7 +62,7 @@ def _process_one(
             save_embedding(tid, vec, model_id=model_id)
             return "cache", tid, None
 
-        vec = embed_file(path, model_id=model_id, segment_sec=segment_sec)
+        vec = embed_file(path, model_id=model_id, segment_sec=segment_sec, span_sec=span_sec)
         save_cached(md5, model_id, vec)
         save_embedding(tid, vec, model_id=model_id)
         return "computed", tid, None
@@ -88,6 +89,7 @@ def embed_library(
     ensure_db()
     model_id = model_id or settings.clap_model
     segment_sec = settings.embed_segment_sec
+    span_sec = settings.embed_span_sec
 
     device_name, has_cuda = device_info()
     if not has_cuda:
@@ -101,7 +103,7 @@ def embed_library(
 
     console.print(
         f"[bold]CLAP[/bold] model={model_id} strategy={SEGMENT_STRATEGY} "
-        f"windows=start/middle/end × {segment_sec:.0f}s"
+        f"spans=start/middle/end × {span_sec:.0f}s → windows of {segment_sec:.0f}s"
     )
 
     tracks = list_tracks_needing_embedding(limit=limit, force=force)
@@ -155,6 +157,7 @@ def embed_library(
                     t,
                     model_id=model_id,
                     segment_sec=segment_sec,
+                    span_sec=span_sec,
                     force=force,
                 ): t
                 for t in tracks
