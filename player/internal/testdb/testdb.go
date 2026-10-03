@@ -8,7 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
-	_ "modernc.org/sqlite"
+	_ "github.com/glebarez/go-sqlite"
 )
 
 const Schema = `
@@ -484,6 +484,8 @@ INSERT INTO "sqlite_sequence" VALUES('user_profile_snapshots',0);
 COMMIT;
 PRAGMA foreign_keys = ON;
 PRAGMA user_version = 7;
+CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
+INSERT INTO alembic_version(version_num) VALUES ('musik_7');
 `
 
 func Create(path string) error {

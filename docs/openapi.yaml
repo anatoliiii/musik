@@ -6,7 +6,9 @@ info:
     multi-user OIDC with revocable sessions. In multi-user mode personal endpoints
     resolve the active profile from the server session; state-changing requests require
     X-CSRF-Token. Shared password and bearer token authentication are disabled in
-    multi-user mode.
+    multi-user mode. The Python worker owns Alembic migrations for the selected
+    SQLite or PostgreSQL backend; the Go player validates the migration head.
+    Radio events remain idempotent and profile-scoped.
   x-musik-schema-version: 7
 servers:
 - url: http://127.0.0.1:8787

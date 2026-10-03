@@ -687,15 +687,28 @@ def migrate_connection(conn: sqlite3.Connection) -> int:
 
 
 def migrate_db(db_path: Path) -> int:
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(db_path)
+    return migrate_database(None, db_path)
+
+
+def migrate_database(database_url: str | None, db_path: Path) -> int:
+    """Run the single Alembic history for SQLite or PostgreSQL."""
+    from alembic import command
+    from alembic.config import Config
+
+    from musik.db.orm import engine_for
+
+    if database_url is None:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+    engine = engine_for(database_url, db_path)
+    alembic = Config()
+    alembic.set_main_option("script_location", str(Path(__file__).parent / "alembic"))
     try:
-        conn.execute("PRAGMA foreign_keys = ON")
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA busy_timeout = 5000")
-        return migrate_connection(conn)
-    except Exception:
-        conn.rollback()
-        raise
+        with engine.connect() as connection:
+            alembic.attributes["connection"] = connection
+            command.upgrade(alembic, "head")
+            connection.commit()
+            if connection.dialect.name == "sqlite":
+                return schema_version(connection.connection.driver_connection)
+            return LATEST_SCHEMA_VERSION
     finally:
-        conn.close()
+        alembic.attributes.pop("connection", None)

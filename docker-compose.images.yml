@@ -16,7 +16,8 @@ services:
       - "8787:8787"   # behind a reverse proxy, prefer "127.0.0.1:8787:8787"
     env_file: .env
     environment:
-      MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
+      MUSIK_DATA_DIR: /data
       MUSIK_THEMES: /data/themes
       MUSIK_LIBRARY: /music
       MUSIK_WORKER_URL: http://worker:8790
@@ -34,7 +35,7 @@ services:
     image: ghcr.io/${MUSIK_IMAGE_OWNER:-torwin-job}/musik-worker:${MUSIK_IMAGE_TAG:-latest}
     env_file: .env
     environment:
-      MUSIK_DB_PATH: /data/db/musik.db
+      MUSIK_DATABASE_URL: ${MUSIK_DATABASE_URL:-sqlite:////data/db/musik.db}
       MUSIK_LIBRARY: /music
       MUSIK_DATA_DIR: /data
       MUSIK_EMBEDDINGS_CACHE: /data/cache/embeddings

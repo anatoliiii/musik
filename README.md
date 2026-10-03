@@ -37,8 +37,9 @@
 2. Python-воркер сканирует файлы, читает метаданные и вычисляет аудиопризнаки.
 3. CLAP преобразует звучание каждого трека в числовой вектор. Благодаря этому
    система сравнивает музыку по звуку, даже если жанры и теги заполнены плохо.
-4. Python-мигратор создаёт и обновляет SQLite. Go-сервер проверяет точную версию
-   схемы, отдаёт Web UI и стримит аудиофайлы на телефон или компьютер.
+4. Alembic создаёт и обновляет общую схему SQLite или PostgreSQL. Go-сервер и
+   Python worker проверяют один migration head перед стартом; приложения не
+   выполняют миграции при запуске.
 5. Лайки, пропуски и прослушивания обновляют профиль вкуса. Радио смешивает
    похожие треки, историю, время суток и небольшую долю новых рекомендаций.
 
@@ -46,7 +47,7 @@
 эмбеддингов можно перенести на обычный маломощный сервер.
 
 **Стек:** Python (сканирование, CLAP, фоновые задачи) + Go (API, стриминг,
-рекомендации, Web UI) + SQLite.
+рекомендации, Web UI) + SQLite по умолчанию / PostgreSQL по `MUSIK_DATABASE_URL`.
 
 **Доступ:** пароль для Web UI и Bearer-токен для API.
 
@@ -134,7 +135,7 @@ musik/
 
 | Путь | Что это |
 |------|---------|
-| `data/db/musik.db` | основная SQLite (+ `-wal` / `-shm` при работе) |
+| `data/db/musik.db` | SQLite база по умолчанию (+ `-wal` / `-shm` при работе); PostgreSQL задаётся через `MUSIK_DATABASE_URL` |
 | `data/cache/embeddings/` | CLAP-векторы: `{md5}.{model}.{strategy}.npy` |
 | `data/cache/artwork/` | обложки по hash |
 | `data/music/` | опциональная локальная библиотека по умолчанию |
@@ -150,8 +151,10 @@ musik/
 |------|------|
 | `cli.py` | CLI: `musik scan`, `embed`, `clusters`, `worker`, … |
 | `config.py` | настройки (`MUSIK_*`, пути к DB/cache) |
-| `db/schema.py` | базовая SQLite-схема совместимости |
-| `db/migrations.py` | пронумерованные миграции и `PRAGMA user_version` |
+| `db/schema.py` | SQLite-совместимое описание исходной схемы |
+| `db/alembic/` | общий Alembic head для SQLite и PostgreSQL |
+| `db/transfer.py` | проверенный перенос SQLite → PostgreSQL без изменения источника |
+| `db/migrations.py` | совместимость со старыми SQLite миграциями и запуск Alembic |
 | `db/store.py` | чтение/запись треков, embeddings, jobs |
 | `scanner/` | обход библиотеки, теги, MD5, LUFS/BPM/key |
 | `embed/clap.py` | модель CLAP (GPU/CPU) |
@@ -172,7 +175,7 @@ musik/
 | `cmd/musik-player/main.go` | точка входа |
 | `internal/config/` | env Go-плеера |
 | `internal/auth/` | пароль, cookie, Bearer, rate-limit логина |
-| `internal/db/` | SQLite access и точный schema-version gate; миграций в Go нет |
+| `internal/db/` | GORM для SQLite/PostgreSQL, репозитории и общий schema-version gate; миграций в Go нет |
 | `internal/index/` | матрица эмбеддингов в RAM, `TopK`, `SimsTo`, fused exact scan |
 | `internal/taste/` | EMA-вкус |
 | `internal/queue/` | единое ядро очереди: candidates → features → score → select |
@@ -270,14 +273,15 @@ UI: http://127.0.0.1:8787
 ## Сохранить базу при обновлении
 
 Старую установку **не нужно** поднимать с нуля. Треки, эмбеддинги, история
-прослушиваний, избранное и вкус живут в SQLite и кеше на диске. Новая версия
-приложения только мигрирует схему.
+прослушиваний, избранное и вкус живут в выбранной базе (SQLite по умолчанию,
+PostgreSQL через `MUSIK_DATABASE_URL`) и кеше на диске. Новая версия приложения
+только мигрирует схему.
 
 Не удаляй `data/db/musik.db` и не запускай блок [«Пайплайн данных (с нуля)»](#пайплайн-данных-с-нуля), если хочешь сохранить библиотеку.
 
 ### Что копировать
 
-Останови player и worker, затем сохрани:
+Для SQLite останови player и worker, затем сохрани:
 
 | Путь | Зачем |
 |------|--------|
@@ -288,7 +292,8 @@ UI: http://127.0.0.1:8787
 
 Сами аудиофайлы в базу не входят: путь к ним задаёт `MUSIK_LIBRARY`.
 
-Проверка, что WAL дописан (после остановки процессов):
+Перед резервным копированием PostgreSQL используй `pg_dump` и проверь
+восстановление. WAL SQLite проверь после остановки процессов:
 
 ```bash
 sqlite3 data/db/musik.db 'PRAGMA wal_checkpoint(TRUNCATE);'
@@ -296,7 +301,8 @@ sqlite3 data/db/musik.db 'PRAGMA wal_checkpoint(TRUNCATE);'
 
 ### Как перенести на новую версию
 
-1. Положи старые файлы на те же места (или укажи `MUSIK_DB_PATH` на копию базы).
+1. Восстанови выбранную базу; для SQLite положи старые файлы на те же места
+   (или укажи `MUSIK_DB_PATH` на копию, если `MUSIK_DATABASE_URL` не задан).
 2. В `.env` выставь **ту же папку музыки**, что была раньше (`MUSIK_LIBRARY`).
 3. Обнови схему — треки и история не стираются:
 
@@ -304,8 +310,8 @@ sqlite3 data/db/musik.db 'PRAGMA wal_checkpoint(TRUNCATE);'
    musik db migrate
    ```
 
-   Повторный вызов безопасен. Player стартует только если `PRAGMA user_version`
-   совпадает с поддерживаемой версией (сейчас 5).
+   Повторный вызов безопасен. Player стартует только при поддерживаемом Alembic
+   head; для SQLite также проверяется `PRAGMA user_version` (сейчас 7).
 4. Запусти worker и player как обычно. Scan/embed подхватят уже посчитанное
    по MD5 файла. Пересчитаются только новые или изменённые треки.
 

@@ -16,6 +16,22 @@ jobs:
 
   python:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: musik
+          POSTGRES_PASSWORD: musik-test
+          POSTGRES_DB: musik
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U musik -d musik"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MUSIK_TEST_POSTGRES_URL: postgresql://musik:musik-test@localhost:5432/musik
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,6 +45,22 @@ jobs:
 
   go:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: musik
+          POSTGRES_PASSWORD: musik-test
+          POSTGRES_DB: musik
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U musik -d musik"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      MUSIK_TEST_POSTGRES_URL: postgresql://musik:musik-test@localhost:5432/musik
     defaults:
       run:
         working-directory: player
@@ -37,6 +69,16 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: player/go.mod
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install migration dependencies
+        run: pip install SQLAlchemy alembic 'psycopg[binary]' pydantic pydantic-settings
+      - name: Prepare PostgreSQL schema
+        env:
+          MUSIK_DATABASE_URL: postgresql://musik:musik-test@localhost:5432/musik
+          PYTHONPATH: ../src
+        run: python -c 'import os; from pathlib import Path; from musik.db.migrations import migrate_database; migrate_database(os.environ["MUSIK_DATABASE_URL"], Path("/tmp/musik-ci.sqlite"))'
       - name: Test
         run: go test ./...
       - name: Build

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from musik.config import get_settings
-from musik.db.scoped_connection import ProfileConnection, active_profile
+from musik.db.scoped_connection import active_profile
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -248,17 +247,23 @@ def utcnow() -> str:
 
 
 @contextmanager
-def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
-    path = db_path or get_settings().db_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, factory=ProfileConnection)
+def connect(db_path: Path | None = None) -> Iterator[Any]:
+    """Yield a SQLAlchemy-backed unit of work for the configured database."""
+    from sqlalchemy import text
+    from musik.db.orm import ORMConnection, session_for
+
+    settings = get_settings() if db_path is None else None
+    path = db_path or settings.db_path
+    database_url = settings.database_url if settings is not None else None
+    if database_url is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    session = session_for(database_url, path)
     selected = active_profile.get()
     if selected is None:
-        selected = conn.execute("SELECT value FROM installation_state WHERE key='legacy_profile_id'").fetchone()[0]
-    conn.profile_id = selected
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+        selected = session.execute(
+            text("SELECT value FROM installation_state WHERE key='legacy_profile_id'")
+        ).scalar_one()
+    conn = ORMConnection(session, profile_id=selected)
     try:
         yield conn
         conn.commit()
@@ -270,12 +275,19 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    from musik.db.migrations import migrate_db
+    from musik.db.migrations import migrate_database
 
-    migrate_db(db_path or get_settings().db_path)
+    settings = get_settings() if db_path is None else None
+    path = db_path or settings.db_path
+    database_url = settings.database_url if settings is not None else None
+    migrate_database(database_url, path)
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def row_to_dict(row: Any | None) -> dict[str, Any] | None:
     if row is None:
         return None
-    return dict(row)
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return dict(mapping)
+    keys = row.keys()
+    return {key: row[key] for key in keys}

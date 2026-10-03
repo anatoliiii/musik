@@ -11,18 +11,19 @@ OIDC discovery, PKCE, token verification, invitation-only provisioning and
 explicit identity linking are wired to the UI. Shared password and API-token
 authentication are rejected in multi-user mode.
 
-The integration suite currently runs on SQLite. PostgreSQL conformance remains
-part of the independent database-portability branch before the branches are
-combined.
+SQLite runs the broader API and repository suite. PostgreSQL 17 currently runs
+migration, profile-isolation and verified-transfer integration checks. Full
+behavioral parity against every acceptance case below remains a release gate.
 
 This contract separates a person who can sign in (`User`) from listening state (`Profile`). One user may own multiple independent profiles. Identity providers authenticate users; they do not own musik data or define profile semantics.
 
-## Current boundary
+## Implemented boundary
 
-- `player/internal/auth` supports one configured password and one shared API token. The signed `musik_session` cookie carries expiry, not-before and a random token, but no user identity (`player/internal/auth/auth.go`).
-- `player/internal/api` exposes one global profile and uses a single `db.Store`, taste profile and playback engine (`player/internal/api/server.go`, `player/internal/api/profile.go`).
-- `play_sessions`, playlists, listening history, favorites, later items, radio rules, taste state and contexts have no account or profile owner today (`player/internal/db/*.go`, Python schema/migrations in `src/musik/db/`).
-- No OIDC/Keycloak integration exists in upstream code. The temporary deployment integration is configuration outside this repository and is not a trusted application contract.
+- `player/internal/auth` verifies the configured OIDC provider and issues opaque, revocable server sessions. The authenticated principal carries user, role, and active-profile IDs; the profile ID comes from owned server-side session state.
+- `player/internal/api` exposes profile management, account administration, invitations, OIDC login/link, and the existing playback/library APIs. Cookie-authenticated writes enforce CSRF/Origin checks.
+- The schema includes users, roles, external identities, auth sessions, invitations, profiles, and profile ownership for personal rows. Catalog data and worker jobs remain installation-wide.
+- Multi-user startup fails closed when OIDC or the initial administrator invitation is missing. `MUSIK_PASSWORD`, `MUSIK_API_TOKEN`, and `MUSIK_AUTH_DISABLED` are rejected in this mode.
+- Go and Python repositories use profile-scoped stores. Database portability currently uses GORM/SQLAlchemy-managed connections plus compatibility SQL for repositories not yet converted to mapped ORM operations; this remaining ORM conversion is tracked in the database portability contract.
 
 ## Domain contract
 
@@ -61,7 +62,7 @@ Recommendation feedback and listening events must never update another profile's
 - Existing `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` remain single-user compatibility settings only. Multi-user mode rejects both; the old shared password and bearer token cannot authenticate users or API clients. A future machine-client contract is separate work.
 - Multi-user mode fails closed if OIDC or the initial administrator bootstrap is missing. A bootstrap CLI creates the first administrator invitation; subsequent invitations, provider linking, role assignment and account disabling are admin-controlled operations. Do not rely on Keycloak group names for authorization unless an explicit, documented mapping is configured.
 
-## HTTP/API contract (proposed v1)
+## HTTP/API contract (v1)
 
 Existing library/playback URLs remain stable. They resolve the active profile from the authenticated server session; clients cannot select a data owner by adding `user_id` or `profile_id` to ordinary payloads.
 
@@ -95,12 +96,12 @@ Every protected endpoint derives `UserID` and active `ProfileID` from request co
 4. Invalid issuer, audience, signature, nonce, state, expiry, redirect URI, disabled user and revoked session all fail closed.
 5. Legacy single-user migration preserves every existing row under one owner/default profile, with counts and representative taste/playback behavior reconciled before and after.
 6. Share-radio playback remains read-only and never writes feedback to the share owner's profile.
-7. These contract cases run on SQLite and PostgreSQL once the independent database-portability workstream is implemented.
+7. The same full service contract suite still needs a PostgreSQL fixture before release; the current PostgreSQL checks cover migration, profile isolation and transfer.
 
 ## Decisions and remaining implementation policy
 
 - Resolved: users enter through OIDC only after accepting a valid invite; open JIT registration is disabled.
 - Resolved: `MUSIK_PASSWORD` and `MUSIK_API_TOKEN` do not work in multi-user mode; they remain compatibility options only for single-user deployments.
 - Resolved: the first PostgreSQL release includes a verified SQLite-to-PostgreSQL data transfer; the import is offline and keeps the SQLite source intact.
-- Initial administrator bootstrap via one-time CLI invitation is the proposed contract.
+- Initial administrator bootstrap uses a one-time CLI invitation.
 - Resolved: there is no profile-count limit in the first release; deleting a user's last active profile is rejected.

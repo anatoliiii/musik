@@ -145,16 +145,16 @@ func (s *Store) metricSlices(days int, dimension, expression string) ([]MetricSl
 	query := fmt.Sprintf(`
 SELECT %s AS slice_key,
        COUNT(*),
-       COALESCE(SUM(i.played_at IS NOT NULL), 0),
-       COALESCE(SUM(i.outcome='finished'), 0),
-       COALESCE(SUM(i.outcome='partial'), 0),
-       COALESCE(SUM(i.outcome='early_skip'), 0),
-       COALESCE(SUM(i.outcome='superseded'), 0),
-       COALESCE(SUM(i.outcome='abandoned'), 0),
-       COALESCE(SUM(EXISTS(
+		SUM(CASE WHEN i.played_at IS NOT NULL THEN 1 ELSE 0 END),
+		SUM(CASE WHEN i.outcome='finished' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN i.outcome='partial' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN i.outcome='early_skip' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN i.outcome='superseded' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN i.outcome='abandoned' THEN 1 ELSE 0 END),
+		SUM(CASE WHEN EXISTS(
            SELECT 1 FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
            WHERE h.impression_id=i.impression_id AND h.action='like'
-       )), 0),
+       ) THEN 1 ELSE 0 END),
        COUNT(DISTINCT CASE WHEN i.played_at IS NOT NULL THEN NULLIF(t.artist,'') END)
 FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i
 JOIN tracks t ON t.id=i.track_id

@@ -89,25 +89,29 @@ func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 	if pl.AllowDuplicates {
 		dup = 1
 	}
-	var ruleJSON sql.NullString
-	var ruleVer sql.NullInt64
+	var ruleJSON *string
+	var ruleVer *int64
 	if pl.RuleJSON != "" {
-		ruleJSON = sql.NullString{String: pl.RuleJSON, Valid: true}
-		ruleVer = sql.NullInt64{Int64: int64(pl.RuleSchema), Valid: true}
+		ruleJSON = &pl.RuleJSON
+		version := int64(pl.RuleSchema)
+		ruleVer = &version
 	}
-	res, err := s.DB.Exec(`
-INSERT INTO playlists(
-  kind, name, created_at, type, description, updated_at, cover_track_id,
-  cover_artwork, sort_mode, rule_schema_version, rule_json, allow_duplicates
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
-		pl.Kind, pl.Name, pl.CreatedAt, pl.Type, nullStr(pl.Description), pl.UpdatedAt,
-		nullInt64(pl.CoverTrackID), nullStr(pl.CoverArtwork), pl.SortMode,
-		ruleVer, ruleJSON, dup)
-	if err != nil {
+	var coverTrackID *int64
+	if pl.CoverTrackID > 0 {
+		coverTrackID = &pl.CoverTrackID
+	}
+	record := PlaylistRecord{
+		ProfileID: s.DB.ProfileID, Kind: pl.Kind, Name: pl.Name, CreatedAt: pl.CreatedAt,
+		Type: pl.Type, Description: optionalString(pl.Description), UpdatedAt: &pl.UpdatedAt,
+		CoverTrackID: coverTrackID, CoverArtwork: optionalString(pl.CoverArtwork),
+		SortMode: pl.SortMode, RuleSchemaVersion: ruleVer, RuleJSON: ruleJSON,
+		AllowDuplicates: dup,
+	}
+	if err := s.ORM.Create(&record).Error; err != nil {
 		return pl, err
 	}
-	pl.ID, err = res.LastInsertId()
-	return pl, err
+	pl.ID = record.ID
+	return pl, nil
 }
 
 func (s *Store) UpdateUserPlaylist(pl UserPlaylist) error {
@@ -528,7 +532,7 @@ func (s *Store) scanUserPlaylist(row playlistScanner) (*UserPlaylist, error) {
 }
 
 func compactPlaylistPositions(tx *Tx, playlistID int64) error {
-	rows, err := tx.Query(`SELECT item_id FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) AS playlist_tracks WHERE playlist_id = ? ORDER BY position`, playlistID)
+	rows, err := tx.Query(`SELECT item_id FROM playlist_tracks WHERE playlist_id = ? AND profile_id=:musik_profile ORDER BY position`, playlistID)
 	if err != nil {
 		return err
 	}

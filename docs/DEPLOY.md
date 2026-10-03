@@ -34,7 +34,8 @@ MUSIK_OIDC_CLIENT_SECRET=...
 ```
 
 После обычного шага `musik db migrate` создай первое приглашение администратора
-на остановленной или уже мигрированной базе:
+в той же выбранной базе. Для PostgreSQL передай `MUSIK_DATABASE_URL` в окружении;
+`--db` нужен только для SQLite:
 
 ```bash
 musik-player admin bootstrap --db data/db/musik.db \
@@ -51,7 +52,8 @@ musik-player admin bootstrap --db data/db/musik.db \
 
 ```bash
 cp .env.example .env
-# обязательно: MUSIK_PASSWORD, MUSIK_API_TOKEN, MUSIK_SESSION_SECRET, MUSIK_LIBRARY
+# single-user: MUSIK_PASSWORD, MUSIK_API_TOKEN; OIDC: MUSIK_MULTI_USER=1 и OIDC настройки
+# в обоих режимах: MUSIK_SESSION_SECRET, MUSIK_LIBRARY
 
 make up
 make logs
@@ -59,15 +61,18 @@ make rescan && make mixes
 make smoke
 ```
 
-Volumes: `musik-data` → SQLite + кэши; библиотека RO из `MUSIK_LIBRARY`.
+По умолчанию `MUSIK_DATABASE_URL` указывает на SQLite в томе `musik-data`; кэши
+и темы также хранятся там. Для PostgreSQL задай тот же `MUSIK_DATABASE_URL` для
+player и worker. Worker не публикуется наружу; подключай оба контейнера к одной
+сети с БД.
 
 Порядок старта Compose намеренно строгий:
 
 1. worker выполняет `musik db migrate`;
 2. worker начинает отвечать на `/health`;
 3. только после успешного healthcheck запускается player;
-4. player проверяет, что `PRAGMA user_version` точно совпадает с поддерживаемой
-   версией.
+4. player проверяет общий Alembic migration head; для SQLite дополнительно
+   проверяется `PRAGMA user_version` (схема v7).
 
 Go player никогда не создаёт и не изменяет таблицы.
 
@@ -80,7 +85,8 @@ GitHub Actions (`.github/workflows/images.yml`) собирает образы п
 
 ```bash
 cp .env.example .env
-# обязательно: MUSIK_PASSWORD, MUSIK_API_TOKEN, MUSIK_SESSION_SECRET, MUSIK_LIBRARY
+# single-user: MUSIK_PASSWORD, MUSIK_API_TOKEN; OIDC: MUSIK_MULTI_USER=1 и OIDC настройки
+# в обоих режимах: MUSIK_SESSION_SECRET, MUSIK_LIBRARY
 docker compose -f docker-compose.images.yml pull
 docker compose -f docker-compose.images.yml up -d
 ```
@@ -99,8 +105,9 @@ docker compose -f docker-compose.images.yml up -d
    MUSIK_PUBLIC_BASE_URL=https://music.example.com
    MUSIK_SECURE_COOKIE=1
    ```
-5. Бэкап: копируй `musik.db` (WAL) регулярно.
-6. Play-сессии пишутся в SQLite — переживают рестарт контейнера.
+5. Для SQLite делай согласованный бэкап через `sqlite3 .backup`; для PostgreSQL
+   используй `pg_dump` и регулярно проверяй восстановление.
+6. Play-сессии сохраняются в выбранной СУБД и переживают рестарт контейнера.
 
 ### LAN / телефон
 
@@ -152,17 +159,39 @@ data/themes/ink/
 
 ```bash
 export MUSIK_PASSWORD=… MUSIK_API_TOKEN=…
-export MUSIK_DB_PATH=$PWD/data/db/musik.db MUSIK_LIBRARY=/path/to/music
+export MUSIK_DATABASE_URL="sqlite:///$PWD/data/db/musik.db" MUSIK_LIBRARY=/path/to/music
 musik db migrate
 musik scan && musik embed && musik clusters
 musik worker   # terminal 1
 ./player/bin/musik-player   # terminal 2
 ```
 
-Schema: единственный владелец — пронумерованные Python-миграции
-`src/musik/db/migrations.py`. Повторный `musik db migrate` безопасен. Если база
-старее или новее поддерживаемой версии, player завершает старт и печатает
-команду исправления.
+Schema: единственный владелец — Alembic, запускаемый командой `musik db migrate`.
+Она обновляет существующую SQLite v5 до схемы v7, сохраняет данные в профиле
+владельца установки и создаёт эквивалентную новую схему PostgreSQL; Go player и
+worker проверяют один migration head и сами схему не изменяют. Если база имеет
+неподдерживаемую версию, сервис завершает старт и предлагает выполнить миграцию.
+
+### PostgreSQL и перенос с SQLite
+
+Подготовь пустую PostgreSQL базу и передай SQLite backup после остановки player
+и worker. Команда оставляет исходный файл нетронутым, создаёт согласованный
+snapshot, проверяет SQLite integrity и foreign keys, копирует строки и сравнивает
+число строк и SHA-256 по каждой таблице. Перенос требует SQLite v7 и копирует
+данные существующего владельца/профиля вместе с персональными строками:
+
+```bash
+musik db transfer --source /backup/musik.db \
+  --destination "$MUSIK_TRANSFER_DATABASE_URL" \
+  --report /backup/musik-transfer-report.json
+```
+
+Укажи в `MUSIK_TRANSFER_DATABASE_URL` URL только целевой PostgreSQL, а после
+успешного отчёта переключи `MUSIK_DATABASE_URL` обоих сервисов. Музыкальные и
+обложечные файлы база не переносит: их пути должны быть доступны на новом хосте.
+Для первого OIDC входа после переноса отдельно создай одноразовое приглашение
+администратору через `musik-player admin bootstrap --issuer "$MUSIK_OIDC_ISSUER"`;
+при PostgreSQL достаточно передать ту же `MUSIK_DATABASE_URL`, флаг `--db` не нужен.
 
 Подробнее: [ROADMAP.md](ROADMAP.md) · [API.md](API.md) · [MOBILE.md](MOBILE.md) ·
 **[CAPACITY.md](CAPACITY.md)** (ресурсы под 50k треков).
