@@ -73,7 +73,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install migration dependencies
-        run: pip install SQLAlchemy alembic 'psycopg[binary]' pydantic pydantic-settings
+        run: pip install 'numpy>=2.0.0' SQLAlchemy alembic 'psycopg[binary]' pydantic pydantic-settings
       - name: Prepare PostgreSQL schema
         env:
           MUSIK_DATABASE_URL: postgresql://musik:musik-test@localhost:5432/musik
