@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -184,6 +185,59 @@ func TestPostgreSQLProfilesAreIsolatedWhenConfigured(t *testing.T) {
 	}
 	if len(mainLists) != 1 || len(secondaryLists) != 1 || mainLists[0].Name == secondaryLists[0].Name {
 		t.Fatalf("profile playlists crossed scopes: main=%#v secondary=%#v", mainLists, secondaryLists)
+	}
+}
+
+func TestPostgreSQLOIDCInvitationProvisioningWhenConfigured(t *testing.T) {
+	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL OIDC provisioning test")
+	}
+	store, err := OpenDatabase(databaseURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	var activeAdmins int
+	if err := store.DB.QueryRowContext(ctx, `SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.status='active' AND r.role='admin'`).Scan(&activeAdmins); err != nil {
+		t.Fatal(err)
+	}
+	if activeAdmins != 0 {
+		t.Skip("PostgreSQL OIDC provisioning test requires a fresh database without an active admin")
+	}
+	issuer := "https://idp.example.test/realms/musik"
+	secret, err := store.BootstrapInvitation(ctx, issuer, time.Hour)
+	if err != nil {
+		t.Fatalf("bootstrap invitation: %v", err)
+	}
+	identity := VerifiedIdentity{
+		Issuer: issuer, Subject: "postgres-integration-user",
+		DisplayName: "PostgreSQL integration user", Email: "pg-test@example.test", EmailVerified: true,
+	}
+	userID, profile, err := store.AcceptInvitation(ctx, secret, identity)
+	if err != nil {
+		t.Fatalf("accept bootstrap invitation: %v", err)
+	}
+	if ok, err := store.UserIsAdmin(ctx, userID); err != nil || !ok {
+		t.Fatalf("bootstrapped owner admin = %v, %v", ok, err)
+	}
+	if linkedUser, err := store.IdentityUser(ctx, issuer, identity.Subject); err != nil || linkedUser != userID {
+		t.Fatalf("identity lookup = %q, %v; want %q", linkedUser, err, userID)
+	}
+	token, _, err := store.IssueUserSession(ctx, userID, time.Hour)
+	if err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	gotUser, gotProfile, err := store.UserSession(ctx, token)
+	if err != nil || gotUser != userID || gotProfile.ID != profile.ID {
+		t.Fatalf("session principal = %q/%q, %v; want %q/%q", gotUser, gotProfile.ID, err, userID, profile.ID)
+	}
+	if err := store.RevokeUserSession(ctx, token); err != nil {
+		t.Fatalf("revoke session: %v", err)
+	}
+	if _, _, err := store.UserSession(ctx, token); !errors.Is(err, ErrProfileNotFound) {
+		t.Fatalf("revoked session error = %v, want ErrProfileNotFound", err)
 	}
 }
 
