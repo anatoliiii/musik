@@ -4,7 +4,11 @@ Status: implementation started. Schema version 6 adds the identity, invitation,
 profile and revocable-session tables. The first repository methods create and
 list owned profiles and enforce ownership when switching a session's active
 profile. Multi-user login and personal-data repositories are not enabled yet;
-existing requests retain single-user behavior.
+existing requests retain single-user behavior. Invitation consumption and user
+provisioning are now atomic, session secrets are stored as hashes and revocable,
+and an OIDC client implements discovery, PKCE and verified ID-token handling.
+The OIDC client is tested with a TLS test provider; production HTTP routes and
+personal-data cutover remain pending.
 
 This contract separates a person who can sign in (`User`) from listening state (`Profile`). One user may own multiple independent profiles. Identity providers authenticate users; they do not own musik data or define profile semantics.
 

@@ -92,7 +92,8 @@ func (s *Store) ActivateProfile(ctx context.Context, tokenHash, userID, profileI
 	now := time.Now().UTC().Format(time.RFC3339)
 	result, err := s.DB.ExecContext(ctx, `UPDATE auth_sessions SET active_profile_id=?
 		WHERE token_hash=? AND user_id=? AND revoked_at IS NULL AND expires_at>?
-		AND EXISTS (SELECT 1 FROM profiles WHERE id=? AND owner_user_id=? AND deleted_at IS NULL)`,
+		AND EXISTS (SELECT 1 FROM profiles p JOIN users u ON u.id=p.owner_user_id
+		WHERE p.id=? AND p.owner_user_id=? AND p.deleted_at IS NULL AND u.status='active')`,
 		profileID, tokenHash, userID, now, profileID, userID)
 	if err != nil {
 		return err
