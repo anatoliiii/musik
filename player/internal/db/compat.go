@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"gorm.io/gorm"
 )
 
 // Database is the compatibility boundary for older repository SQL. GORM owns
@@ -13,12 +15,13 @@ import (
 // reads portable while they are moved to mapped models.
 type Database struct {
 	*sql.DB
+	ORM       *gorm.DB
 	Dialect   string
 	ProfileID string
 }
 
 type DatabaseTx struct {
-	*sql.Tx
+	ORM   *gorm.DB
 	owner *Database
 }
 
@@ -287,7 +290,7 @@ func (d *Database) ExecContext(ctx context.Context, query string, args ...any) (
 	}
 	if d.Dialect == "postgres" && insertIDTable.MatchString(query) && !strings.Contains(strings.ToUpper(query), "RETURNING") {
 		var id int64
-		err := d.DB.QueryRowContext(ctx, query+" RETURNING id", bound...).Scan(&id)
+		err := d.ORM.WithContext(ctx).Raw(query+" RETURNING id", bound...).Row().Scan(&id)
 		if err == sql.ErrNoRows {
 			return insertResult{rows: 0, hasID: true}, nil
 		}
@@ -296,7 +299,11 @@ func (d *Database) ExecContext(ctx context.Context, query string, args ...any) (
 		}
 		return insertResult{id: id, rows: 1, hasID: true}, nil
 	}
-	return d.DB.ExecContext(ctx, query, bound...)
+	result := d.ORM.WithContext(ctx).Exec(query, bound...)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return insertResult{rows: result.RowsAffected}, nil
 }
 
 func (d *Database) Query(query string, args ...any) (*sql.Rows, error) {
@@ -308,7 +315,7 @@ func (d *Database) QueryContext(ctx context.Context, query string, args ...any) 
 	if err != nil {
 		return nil, err
 	}
-	return d.DB.QueryContext(ctx, query, bound...)
+	return d.ORM.WithContext(ctx).Raw(query, bound...).Rows()
 }
 
 func (d *Database) QueryRow(query string, args ...any) *sql.Row {
@@ -318,9 +325,9 @@ func (d *Database) QueryRow(query string, args ...any) *sql.Row {
 func (d *Database) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	query, bound, err := adaptQueryProfile(query, args, d.Dialect, d.ProfileID)
 	if err != nil {
-		return d.DB.QueryRowContext(ctx, "SELECT FROM musik_invalid_query")
+		return d.ORM.WithContext(ctx).Raw("SELECT FROM musik_invalid_query").Row()
 	}
-	return d.DB.QueryRowContext(ctx, query, bound...)
+	return d.ORM.WithContext(ctx).Raw(query, bound...).Row()
 }
 
 func (d *Database) Begin() (*DatabaseTx, error) {
@@ -328,12 +335,21 @@ func (d *Database) Begin() (*DatabaseTx, error) {
 }
 
 func (d *Database) BeginTx(ctx context.Context, options *sql.TxOptions) (*DatabaseTx, error) {
-	tx, err := d.DB.BeginTx(ctx, options)
-	if err != nil {
-		return nil, err
+	var tx *gorm.DB
+	if options != nil {
+		tx = d.ORM.WithContext(ctx).Begin(options)
+	} else {
+		tx = d.ORM.WithContext(ctx).Begin()
 	}
-	return &DatabaseTx{Tx: tx, owner: d}, nil
+	if tx.Error != nil {
+		return nil, tx.Error
+	}
+	return &DatabaseTx{ORM: tx, owner: d}, nil
 }
+
+func (tx *DatabaseTx) Commit() error { return tx.ORM.Commit().Error }
+
+func (tx *DatabaseTx) Rollback() error { return tx.ORM.Rollback().Error }
 
 func (tx *DatabaseTx) Exec(query string, args ...any) (sql.Result, error) {
 	return tx.ExecContext(context.Background(), query, args...)
@@ -346,7 +362,7 @@ func (tx *DatabaseTx) ExecContext(ctx context.Context, query string, args ...any
 	}
 	if tx.owner.Dialect == "postgres" && insertIDTable.MatchString(query) && !strings.Contains(strings.ToUpper(query), "RETURNING") {
 		var id int64
-		err := tx.Tx.QueryRowContext(ctx, query+" RETURNING id", bound...).Scan(&id)
+		err := tx.ORM.WithContext(ctx).Raw(query+" RETURNING id", bound...).Row().Scan(&id)
 		if err == sql.ErrNoRows {
 			return insertResult{rows: 0, hasID: true}, nil
 		}
@@ -355,7 +371,11 @@ func (tx *DatabaseTx) ExecContext(ctx context.Context, query string, args ...any
 		}
 		return insertResult{id: id, rows: 1, hasID: true}, nil
 	}
-	return tx.Tx.ExecContext(ctx, query, bound...)
+	result := tx.ORM.WithContext(ctx).Exec(query, bound...)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return insertResult{rows: result.RowsAffected}, nil
 }
 
 func (tx *DatabaseTx) Query(query string, args ...any) (*sql.Rows, error) {
@@ -367,7 +387,7 @@ func (tx *DatabaseTx) QueryContext(ctx context.Context, query string, args ...an
 	if err != nil {
 		return nil, err
 	}
-	return tx.Tx.QueryContext(ctx, query, bound...)
+	return tx.ORM.WithContext(ctx).Raw(query, bound...).Rows()
 }
 
 func (tx *DatabaseTx) QueryRow(query string, args ...any) *sql.Row {
@@ -377,9 +397,9 @@ func (tx *DatabaseTx) QueryRow(query string, args ...any) *sql.Row {
 func (tx *DatabaseTx) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	query, bound, err := adaptQueryProfile(query, args, tx.owner.Dialect, tx.owner.ProfileID)
 	if err != nil {
-		return tx.Tx.QueryRowContext(ctx, "SELECT FROM musik_invalid_query")
+		return tx.ORM.WithContext(ctx).Raw("SELECT FROM musik_invalid_query").Row()
 	}
-	return tx.Tx.QueryRowContext(ctx, query, bound...)
+	return tx.ORM.WithContext(ctx).Raw(query, bound...).Row()
 }
 
 func (tx *DatabaseTx) Prepare(query string) (*DatabaseStatement, error) {
@@ -393,7 +413,7 @@ func (s *DatabaseStatement) Exec(args ...any) (sql.Result, error) {
 	}
 	if s.tx.owner.Dialect == "postgres" && insertIDTable.MatchString(query) && !strings.Contains(strings.ToUpper(query), "RETURNING") {
 		var id int64
-		if err := s.tx.Tx.QueryRow(query+" RETURNING id", bound...).Scan(&id); err != nil {
+		if err := s.tx.ORM.Raw(query+" RETURNING id", bound...).Row().Scan(&id); err != nil {
 			if err == sql.ErrNoRows {
 				return insertResult{rows: 0, hasID: true}, nil
 			}
@@ -401,7 +421,11 @@ func (s *DatabaseStatement) Exec(args ...any) (sql.Result, error) {
 		}
 		return insertResult{id: id, rows: 1, hasID: true}, nil
 	}
-	return s.tx.Tx.Exec(query, bound...)
+	result := s.tx.ORM.Exec(query, bound...)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return insertResult{rows: result.RowsAffected}, nil
 }
 
 func (s *DatabaseStatement) Close() error { return nil }

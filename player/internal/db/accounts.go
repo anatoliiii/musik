@@ -2,9 +2,10 @@ package db
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"time"
+
+	"gorm.io/gorm"
 )
 
 var ErrLastAdmin = errors.New("at least one active administrator is required")
@@ -27,94 +28,114 @@ type Invitation struct {
 }
 
 func (s *Store) ListAccounts(ctx context.Context) ([]Account, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT u.id,u.display_name,u.status,
- (SELECT count(*) FROM user_roles r WHERE r.user_id=u.id AND r.role='admin'),
- (SELECT count(*) FROM profiles p WHERE p.owner_user_id=u.id AND p.deleted_at IS NULL)
- FROM users u ORDER BY u.created_at,u.id`)
+	var users []UserRecord
+	err := s.ORM.WithContext(ctx).Order("created_at, id").Find(&users).Error
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Account{}
-	for rows.Next() {
-		var a Account
-		var admin int
-		if err := rows.Scan(&a.ID, &a.DisplayName, &a.Status, &admin, &a.Profiles); err != nil {
-			return nil, err
-		}
-		a.Admin = admin > 0
-		out = append(out, a)
+	var adminRoles []UserRoleRecord
+	if err := s.ORM.WithContext(ctx).Where("role = ?", "admin").Find(&adminRoles).Error; err != nil {
+		return nil, err
 	}
-	return out, rows.Err()
+	admins := make(map[string]bool, len(adminRoles))
+	for _, role := range adminRoles {
+		admins[role.UserID] = true
+	}
+	var counts []struct {
+		OwnerUserID string `gorm:"column:owner_user_id"`
+		Count       int    `gorm:"column:profile_count"`
+	}
+	if err := s.ORM.WithContext(ctx).Model(&ProfileRecord{}).
+		Select("owner_user_id, count(*) AS profile_count").
+		Where("deleted_at IS NULL").Group("owner_user_id").Scan(&counts).Error; err != nil {
+		return nil, err
+	}
+	profiles := make(map[string]int, len(counts))
+	for _, count := range counts {
+		profiles[count.OwnerUserID] = count.Count
+	}
+	out := make([]Account, 0, len(users))
+	for _, user := range users {
+		out = append(out, Account{
+			ID: user.ID, DisplayName: user.DisplayName, Status: user.Status,
+			Admin: admins[user.ID], Profiles: profiles[user.ID],
+		})
+	}
+	return out, nil
 }
 
 func (s *Store) UpdateAccount(ctx context.Context, adminID, userID, status string, admin *bool) error {
 	if status != "" && status != "active" && status != "disabled" {
 		return errors.New("invalid user status")
 	}
-	tx, err := s.DB.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var permitted int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.id=? AND u.status='active' AND r.role='admin'`, adminID).Scan(&permitted); err != nil {
-		return err
-	}
-	if permitted != 1 {
-		return ErrUserNotFound
-	}
-	var current string
-	if err := tx.QueryRowContext(ctx, `SELECT status FROM users WHERE id=?`, userID).Scan(&current); errors.Is(err, sql.ErrNoRows) {
-		return ErrUserNotFound
-	} else if err != nil {
-		return err
-	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if status != "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE users SET status=?,updated_at=? WHERE id=?`, status, now, userID); err != nil {
+	return s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var adminCount int64
+		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
+			Where("users.id = ? AND users.status = ? AND user_roles.role = ?", adminID, "active", "admin").
+			Count(&adminCount).Error; err != nil {
 			return err
 		}
-	}
-	if admin != nil {
-		if *admin {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO user_roles(user_id,role) VALUES (?,'admin') ON CONFLICT(user_id,role) DO NOTHING`, userID); err != nil {
-				return err
-			}
-		} else {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM user_roles WHERE user_id=? AND role='admin'`, userID); err != nil {
-				return err
-			}
+		if adminCount != 1 {
+			return ErrUserNotFound
 		}
-	}
-	var active int
-	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.status='active' AND r.role='admin'`).Scan(&active); err != nil {
-		return err
-	}
-	if active == 0 {
-		return ErrLastAdmin
-	}
-	if status == "disabled" {
-		if _, err := tx.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at=? WHERE user_id=? AND revoked_at IS NULL`, now, userID); err != nil {
+		var user UserRecord
+		if err := tx.Where("id = ?", userID).Take(&user).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return ErrUserNotFound
+		} else if err != nil {
 			return err
 		}
-	}
-	return tx.Commit()
+		if status != "" {
+			if err := tx.Model(&UserRecord{}).Where("id = ?", userID).
+				Updates(map[string]any{"status": status, "updated_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		if admin != nil {
+			role := UserRoleRecord{UserID: userID, Role: "admin"}
+			if *admin {
+				if err := tx.Where(&role).FirstOrCreate(&role).Error; err != nil {
+					return err
+				}
+			} else if err := tx.Where(&role).Delete(&UserRoleRecord{}).Error; err != nil {
+				return err
+			}
+		}
+		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
+			Where("users.status = ? AND user_roles.role = ?", "active", "admin").Count(&adminCount).Error; err != nil {
+			return err
+		}
+		if adminCount == 0 {
+			return ErrLastAdmin
+		}
+		if status == "disabled" {
+			if err := tx.Model(&AuthSessionRecord{}).Where("user_id = ? AND revoked_at IS NULL", userID).
+				Updates(map[string]any{"revoked_at": now}).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *Store) ListInvitations(ctx context.Context) ([]Invitation, error) {
-	rows, err := s.DB.QueryContext(ctx, `SELECT id,COALESCE(email,''),created_at,expires_at,COALESCE(consumed_at,''),COALESCE(revoked_at,'') FROM invitations ORDER BY created_at DESC,id`)
-	if err != nil {
+	var rows []InvitationRecord
+	if err := s.ORM.WithContext(ctx).Order("created_at DESC, id").Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	out := []Invitation{}
-	for rows.Next() {
-		var i Invitation
-		if err := rows.Scan(&i.ID, &i.Email, &i.CreatedAt, &i.ExpiresAt, &i.ConsumedAt, &i.RevokedAt); err != nil {
-			return nil, err
+	out := make([]Invitation, 0, len(rows))
+	for _, row := range rows {
+		invitation := Invitation{ID: row.ID, CreatedAt: row.CreatedAt, ExpiresAt: row.ExpiresAt}
+		if row.Email != nil {
+			invitation.Email = *row.Email
 		}
-		out = append(out, i)
+		if row.ConsumedAt != nil {
+			invitation.ConsumedAt = *row.ConsumedAt
+		}
+		if row.RevokedAt != nil {
+			invitation.RevokedAt = *row.RevokedAt
+		}
+		out = append(out, invitation)
 	}
-	return out, rows.Err()
+	return out, nil
 }

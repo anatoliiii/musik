@@ -23,7 +23,7 @@ This contract separates a person who can sign in (`User`) from listening state (
 - `player/internal/api` exposes profile management, account administration, invitations, OIDC login/link, and the existing playback/library APIs. Cookie-authenticated writes enforce CSRF/Origin checks.
 - The schema includes users, roles, external identities, auth sessions, invitations, profiles, and profile ownership for personal rows. Catalog data and worker jobs remain installation-wide.
 - Multi-user startup fails closed when OIDC or the initial administrator invitation is missing. `MUSIK_PASSWORD`, `MUSIK_API_TOKEN`, and `MUSIK_AUTH_DISABLED` are rejected in this mode.
-- Go and Python repositories use profile-scoped stores. Database portability currently uses GORM/SQLAlchemy-managed connections plus compatibility SQL for repositories not yet converted to mapped ORM operations; this remaining ORM conversion is tracked in the database portability contract.
+- Go and Python repositories use profile-scoped stores. Their queries execute through GORM/SQLAlchemy-managed sessions; mapped models handle identity and catalog paths while remaining complex queries pass through profile-bound compatibility adapters.
 
 ## Domain contract
 
