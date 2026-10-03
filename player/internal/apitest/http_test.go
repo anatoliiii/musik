@@ -229,6 +229,9 @@ VALUES ('new_album','Artist','Album',1.5,'[11,22]','fresh',?),
 	if status["tracks"].(float64) != 3 {
 		t.Fatalf("status tracks=%v", status["tracks"])
 	}
+	if status["db_backend"] != "sqlite" {
+		t.Fatalf("status db_backend=%v, want sqlite", status["db_backend"])
+	}
 
 	rec = serve(server, jsonReq("GET", "/api/metrics/weekly", ""))
 	if rec.Code != 200 {

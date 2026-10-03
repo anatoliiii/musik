@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -247,13 +246,24 @@ def utcnow() -> str:
 
 
 @contextmanager
-def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
-    path = db_path or get_settings().db_path
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+def connect(db_path: Path | None = None) -> Iterator[Any]:
+    """Yield a SQLAlchemy-backed unit of work for the selected database.
+
+    Passing an explicit path is retained for isolated SQLite fixtures and the
+    legacy SQLite migration runner. Normal runtime calls follow MUSIK_DATABASE_URL.
+    """
+    from musik.db.orm import ORMConnection, session_for
+
+    if db_path is None:
+        settings = get_settings()
+        path = settings.db_path
+        database_url = settings.database_url
+    else:
+        path = db_path
+        database_url = None
+    if database_url is None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    conn = ORMConnection(session_for(database_url, path))
     try:
         yield conn
         conn.commit()
@@ -265,12 +275,16 @@ def connect(db_path: Path | None = None) -> Iterator[sqlite3.Connection]:
 
 
 def init_db(db_path: Path | None = None) -> None:
-    from musik.db.migrations import migrate_db
+    from musik.db.migrations import migrate_database, migrate_db
 
-    migrate_db(db_path or get_settings().db_path)
+    if db_path is not None:
+        migrate_db(db_path)
+        return
+    settings = get_settings()
+    migrate_database(settings.database_url, settings.db_path)
 
 
-def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
+def row_to_dict(row: Any | None) -> dict[str, Any] | None:
     if row is None:
         return None
     return dict(row)

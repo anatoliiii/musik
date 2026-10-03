@@ -87,8 +87,8 @@ func (s *Service) EnsureWorker() {
 		log.Printf("worker already up at %s", s.Cfg.WorkerURL)
 		return
 	}
-	dataDir := filepath.Dir(filepath.Dir(s.Cfg.DBPath))
-	projectRoot := filepath.Dir(dataDir)
+	dataDir := s.Cfg.DataRoot()
+	projectRoot := filepath.Dir(filepath.Dir(filepath.Dir(s.Cfg.DBPath)))
 	if root := os.Getenv("MUSIK_ROOT"); root != "" {
 		projectRoot = root
 	}
@@ -111,13 +111,23 @@ func (s *Service) EnsureWorker() {
 		cmd = exec.Command(python, "-m", "musik", "worker")
 	}
 	cmd.Dir = projectRoot
-	cmd.Env = append(os.Environ(),
+	cmd.Env = make([]string, 0, len(os.Environ())+8)
+	for _, entry := range os.Environ() {
+		if strings.HasPrefix(entry, "MUSIK_DB_PATH=") || strings.HasPrefix(entry, "MUSIK_DATABASE_URL=") {
+			continue
+		}
+		cmd.Env = append(cmd.Env, entry)
+	}
+	cmd.Env = append(cmd.Env,
 		"MUSIK_ROOT="+projectRoot,
-		"MUSIK_DB_PATH="+s.Cfg.DBPath,
-		"MUSIK_DATABASE_URL=",
 		"MUSIK_LIBRARY="+s.Cfg.Library,
 		"MUSIK_PLAYER_RELOAD_URL=http://127.0.0.1"+normalizeAddr(s.Cfg.Addr)+"/api/reload",
 	)
+	if s.Cfg.DatabaseURL != "" {
+		cmd.Env = append(cmd.Env, "MUSIK_DATABASE_URL="+s.Cfg.DatabaseURL)
+	} else {
+		cmd.Env = append(cmd.Env, "MUSIK_DB_PATH="+s.Cfg.DBPath)
+	}
 	if s.Cfg.APIToken != "" {
 		cmd.Env = append(cmd.Env, "MUSIK_API_TOKEN="+s.Cfg.APIToken)
 	}

@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -24,6 +25,83 @@ func openTestStore(t *testing.T) (*Store, string) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store, path
+}
+
+func TestPostgreSQLQueryAdapterPreservesBindPositions(t *testing.T) {
+	got, args, err := adaptQuery("SELECT ?, datetime('now', ?), '?' -- ?\n", []any{7, "-3 days"}, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "SELECT $1, (CURRENT_TIMESTAMP + CAST($2 AS INTERVAL)), '?' -- ?\n"
+	if got != want {
+		t.Fatalf("adaptQuery = %q, want %q", got, want)
+	}
+	if len(args) != 2 || args[0] != 7 || args[1] != "-3 days" {
+		t.Fatalf("bound arguments changed: %#v", args)
+	}
+}
+
+func TestPostgreSQLIgnoreBecomesConflictDoNothing(t *testing.T) {
+	got, _, err := adaptQuery("INSERT OR IGNORE INTO request_contexts(request_id) VALUES (?)", []any{"id"}, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "INSERT INTO request_contexts(request_id) VALUES ($1) ON CONFLICT DO NOTHING" {
+		t.Fatalf("adaptQuery = %q", got)
+	}
+}
+
+func TestPostgreSQLMetricTimeExpressionsArePortable(t *testing.T) {
+	got, _, err := adaptQuery(`SELECT CAST(strftime('%H', i.played_at) AS INTEGER), date(i.queued_at), julianday('now') - julianday(MIN(played_at))`, nil, "postgres")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `SELECT CAST(EXTRACT(HOUR FROM CAST(i.played_at AS TIMESTAMPTZ)) AS INTEGER), CAST(CAST(i.queued_at AS TIMESTAMPTZ) AS DATE), EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - CAST(MIN(played_at) AS TIMESTAMPTZ))) / 86400.0`
+	if got != want {
+		t.Fatalf("adaptQuery = %q, want %q", got, want)
+	}
+}
+
+func TestPostgreSQLStoreWhenConfigured(t *testing.T) {
+	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
+	if databaseURL == "" {
+		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL conformance smoke test")
+	}
+	store, err := OpenDatabase(databaseURL, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if store.Dialect != "postgres" {
+		t.Fatalf("database dialect = %q, want postgres", store.Dialect)
+	}
+	if _, err := store.OutcomeMetrics(7); err != nil {
+		t.Fatalf("PostgreSQL metrics query failed: %v", err)
+	}
+
+	payload := `{"test":true}`
+	id, err := store.EnqueueJob("gorm-smoke-"+NewID(), payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	job, err := store.GetJob(id)
+	if err != nil || job == nil || job.Payload != payload {
+		t.Fatalf("ORM job roundtrip = %#v, %v", job, err)
+	}
+	if _, err := store.DB.Exec(`DELETE FROM jobs WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+
+	playlist, err := store.CreateUserPlaylist(UserPlaylist{Name: "gorm-smoke-" + NewID()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if playlist.ID == 0 {
+		t.Fatal("GORM create did not return the PostgreSQL playlist ID")
+	}
+	if _, err := store.DB.Exec(`DELETE FROM playlists WHERE id = ?`, playlist.ID); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMondayZeroWeekday(t *testing.T) {

@@ -1,32 +1,41 @@
 package db
 
 import (
-	"database/sql"
 	"fmt"
+	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 
-	_ "modernc.org/sqlite"
+	gormpostgres "gorm.io/driver/postgres"
+	gorm "gorm.io/gorm"
+	"gorm.io/gorm/logger"
+
+	"github.com/glebarez/sqlite"
 )
 
 type Store struct {
-	DB *sql.DB
+	DB      *Database
+	ORM     *gorm.DB
+	Dialect string
 }
 
 const SupportedSchemaVersion = 5
+const SupportedSchemaRevision = "musik_5"
 
 func mondayZeroWeekday(day time.Weekday) int {
 	return (int(day) + 6) % 7
 }
 
 type TrackRow struct {
-	ID          int64
-	Path        string
-	Title       string
-	Artist      string
-	Album       string
-	Duration    float64
-	FileMD5     string
-	CreatedAt   string
+	ID           int64
+	Path         string
+	Title        string
+	Artist       string
+	Album        string
+	Duration     float64
+	FileMD5      string
+	CreatedAt    string
 	ArtworkPath  string
 	ClusterID    int
 	Embedding    []byte
@@ -47,39 +56,90 @@ type TrackRow struct {
 }
 
 func Open(path string) (*Store, error) {
-	// _txlock=immediate: transactions take the write lock on BEGIN. A deferred
-	// transaction that reads first and then writes cannot be upgraded once another
-	// writer has committed in WAL mode — SQLite fails it at once (SQLITE_BUSY /
-	// BUSY_SNAPSHOT) instead of waiting for busy_timeout.
-	dsn := fmt.Sprintf("file:%s?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate", path)
-	db, err := sql.Open("sqlite", dsn)
+	return OpenDatabase("", path)
+}
+
+// OpenDatabase creates the selected backend through GORM. The returned
+// database compatibility port and the ORM always share the same pool.
+func OpenDatabase(databaseURL, sqlitePath string) (*Store, error) {
+	dialect := "sqlite"
+	var orm *gorm.DB
+	var err error
+	if databaseURL == "" {
+		// _txlock=immediate: transactions take the write lock on BEGIN. A deferred
+		// transaction that reads first and then writes cannot be upgraded once another
+		// writer has committed in WAL mode — SQLite fails it at once (SQLITE_BUSY /
+		// BUSY_SNAPSHOT) instead of waiting for busy_timeout.
+		absolute, absErr := filepath.Abs(sqlitePath)
+		if absErr != nil {
+			return nil, absErr
+		}
+		dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String() + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+		orm, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
+			Logger:                                   logger.Default.LogMode(logger.Silent),
+			DisableForeignKeyConstraintWhenMigrating: true,
+		})
+	} else {
+		u, parseErr := url.Parse(databaseURL)
+		if parseErr != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+			return nil, fmt.Errorf("invalid PostgreSQL MUSIK_DATABASE_URL")
+		}
+		dialect = "postgres"
+		orm, err = gorm.Open(gormpostgres.Open(databaseURL), &gorm.Config{
+			Logger:                                   logger.Default.LogMode(logger.Silent),
+			DisableForeignKeyConstraintWhenMigrating: true,
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
-	// WAL allows concurrent readers. One connection serialized every catalog
-	// request behind reloads and mix queries, so the home shelves stayed empty.
-	db.SetMaxOpenConns(8)
-	db.SetMaxIdleConns(4)
-	s := &Store{DB: db}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
+	sqlDB, err := orm.DB()
+	if err != nil {
 		return nil, err
 	}
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("read schema version: %w", err)
+	// WAL allows concurrent readers; keep a small bounded pool on both engines.
+	sqlDB.SetMaxOpenConns(8)
+	sqlDB.SetMaxIdleConns(4)
+	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
+	s := &Store{DB: &Database{DB: sqlDB, Dialect: dialect}, ORM: orm, Dialect: dialect}
+	if err := sqlDB.Ping(); err != nil {
+		_ = sqlDB.Close()
+		return nil, err
 	}
-	if version != SupportedSchemaVersion {
-		_ = db.Close()
-		return nil, fmt.Errorf(
-			"unsupported database schema version %d (player requires exactly %d); "+
-				"run `musik db migrate` with the Python worker before starting the player",
-			version, SupportedSchemaVersion,
-		)
+	if dialect == "sqlite" {
+		var version int
+		if err := sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("read SQLite schema version: %w", err)
+		}
+		if version != SupportedSchemaVersion {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf(
+				"unsupported SQLite database schema version %d (player requires exactly %d); run `musik db migrate` before starting the player",
+				version, SupportedSchemaVersion,
+			)
+		}
+		var revision string
+		if err := sqlDB.QueryRow(`SELECT version_num FROM alembic_version`).Scan(&revision); err != nil {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("SQLite migration history is missing; run `musik db migrate` first: %w", err)
+		}
+		if revision != SupportedSchemaRevision {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("unsupported database migration revision %q (player requires %q)", revision, SupportedSchemaRevision)
+		}
+		_, _ = sqlDB.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	} else {
+		var revision string
+		if err := sqlDB.QueryRow(`SELECT version_num FROM alembic_version`).Scan(&revision); err != nil {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("PostgreSQL schema is not migrated; run `musik db migrate` first: %w", err)
+		}
+		if revision != SupportedSchemaRevision {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("unsupported database migration revision %q (player requires %q)", revision, SupportedSchemaRevision)
+		}
 	}
-	// Truncate WAL so it does not grow unbounded across restarts.
-	_, _ = db.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
 	return s, nil
 }
 

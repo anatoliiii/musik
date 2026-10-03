@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 from musik.db.schema import connect, utcnow
 
@@ -34,9 +35,9 @@ def save_playlist(
                 INSERT INTO playlist_tracks(
                     item_id, playlist_id, position, track_id, added_at, source, explanation
                 )
-                VALUES (lower(hex(randomblob(16))),?,?,?,?, 'rule', ?)
+                VALUES (?,?,?,?,?, 'rule', ?)
                 """,
-                (pid, pos, int(e["track_id"]), now, e.get("explanation")),
+                (uuid4().hex, pid, pos, int(e["track_id"]), now, e.get("explanation")),
             )
         if retain > 0:
             conn.execute(

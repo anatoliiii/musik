@@ -82,15 +82,16 @@ def _for_you_forbidden_rows(
     previous = latest_playlist("for_you")
     if previous:
         track_ids.update(int(t["track_id"]) for t in previous["tracks"])
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, recent_days))).isoformat()
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT track_id
             FROM listening_history
-            WHERE datetime(ts) >= datetime('now', ?)
+            WHERE ts >= ?
               AND action IN ('start', 'finish', 'track_end', 'like', 'dislike')
             """,
-            (f"-{max(1, recent_days)} days",),
+            (cutoff,),
         ).fetchall()
     track_ids.update(int(r["track_id"]) for r in rows)
     return {

@@ -7,8 +7,7 @@ import (
 	"strings"
 )
 
-// ResolveDatabase selects the SQLite path shared by the player and worker.
-// PostgreSQL URLs are recognized but rejected until both storage adapters exist.
+// ResolveDatabase selects and validates the same backend for player and worker.
 func ResolveDatabase(databaseURL, legacyPath, defaultPath string) (string, error) {
 	if databaseURL == "" {
 		return defaultPath, nil
@@ -31,7 +30,11 @@ func ResolveDatabase(databaseURL, legacyPath, defaultPath string) (string, error
 		}
 		return path, nil
 	case "postgres", "postgresql":
-		return "", fmt.Errorf("PostgreSQL storage adapter is not available yet")
+		if u.Host == "" || strings.Trim(u.Path, "/") == "" {
+			return "", fmt.Errorf("PostgreSQL MUSIK_DATABASE_URL must include a host and database")
+		}
+		parts := strings.SplitN(databaseURL, "://", 2)
+		return "postgresql://" + parts[1], nil
 	default:
 		return "", fmt.Errorf("unsupported MUSIK_DATABASE_URL scheme")
 	}

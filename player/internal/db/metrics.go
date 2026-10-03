@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 const (
@@ -145,26 +146,27 @@ func (s *Store) metricSlices(days int, dimension, expression string) ([]MetricSl
 	query := fmt.Sprintf(`
 SELECT %s AS slice_key,
        COUNT(*),
-       COALESCE(SUM(i.played_at IS NOT NULL), 0),
-       COALESCE(SUM(i.outcome='finished'), 0),
-       COALESCE(SUM(i.outcome='partial'), 0),
-       COALESCE(SUM(i.outcome='early_skip'), 0),
-       COALESCE(SUM(i.outcome='superseded'), 0),
-       COALESCE(SUM(i.outcome='abandoned'), 0),
-       COALESCE(SUM(EXISTS(
+       SUM(CASE WHEN i.played_at IS NOT NULL THEN 1 ELSE 0 END),
+       SUM(CASE WHEN i.outcome='finished' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN i.outcome='partial' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN i.outcome='early_skip' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN i.outcome='superseded' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN i.outcome='abandoned' THEN 1 ELSE 0 END),
+       SUM(CASE WHEN EXISTS(
            SELECT 1 FROM listening_history h
            WHERE h.impression_id=i.impression_id AND h.action='like'
-       )), 0),
+       ) THEN 1 ELSE 0 END),
        COUNT(DISTINCT CASE WHEN i.played_at IS NOT NULL THEN NULLIF(t.artist,'') END)
 FROM recommendation_impressions i
 JOIN tracks t ON t.id=i.track_id
 WHERE i.legacy=0
   AND i.source NOT IN ('manual', 'legacy')
   AND COALESCE(i.mode, '') != 'share'
-  AND datetime(i.queued_at) >= datetime('now', ?)
+  AND i.queued_at >= ?
 GROUP BY slice_key
 ORDER BY slice_key`, expression)
-	rows, err := s.DB.Query(query, fmt.Sprintf("-%d days", days))
+	cutoff := time.Now().UTC().Add(-time.Duration(days) * 24 * time.Hour).Format(time.RFC3339Nano)
+	rows, err := s.DB.Query(query, cutoff)
 	if err != nil {
 		return nil, err
 	}

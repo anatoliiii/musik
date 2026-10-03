@@ -7,9 +7,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 
 WORKDIR /workspace/player
 ENV GOTOOLCHAIN=auto \
+    MUSIK_DATA_DIR=/data \
     MUSIK_PLAYER_ADDR=:8787 \
     MUSIK_WORKER_AUTOSTART=0 \
-    MUSIK_DB_PATH=/data/db/musik.db \
     MUSIK_LIBRARY=/music \
     MUSIK_WORKER_URL=http://worker:8790 \
     MUSIK_ROOT=/workspace
