@@ -43,6 +43,20 @@ type AuthSessionRecord struct {
 
 func (AuthSessionRecord) TableName() string { return "auth_sessions" }
 
+type DeviceTokenRecord struct {
+	ID         string  `gorm:"primaryKey"`
+	SecretHash string  `gorm:"column:secret_hash;not null;uniqueIndex"`
+	UserID     string  `gorm:"column:user_id;not null;index"`
+	ProfileID  string  `gorm:"column:profile_id;not null;index"`
+	Name       string  `gorm:"not null"`
+	CreatedAt  string  `gorm:"column:created_at;not null"`
+	LastUsedAt *string `gorm:"column:last_used_at"`
+	ExpiresAt  string  `gorm:"column:expires_at;not null"`
+	RevokedAt  *string `gorm:"column:revoked_at"`
+}
+
+func (DeviceTokenRecord) TableName() string { return "device_tokens" }
+
 type ExternalIdentityRecord struct {
 	Issuer    string `gorm:"primaryKey"`
 	Subject   string `gorm:"primaryKey"`

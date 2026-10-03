@@ -1,37 +1,16 @@
-# Flutter client (musik_app)
+# Mobile client notes
 
-План паритета с вебом: **[docs/MOBILE.md](../docs/MOBILE.md)** §B.
+Этот каталог хранит заметки и план разработки, а не исходники текущего
+мобильного приложения. Flutter-клиент находится в отдельном соседнем проекте
+`musik-mobile`. Совместимость его существующего протокола описана в
+[docs/MOBILE.md](../docs/MOBILE.md); раздел B там является историческим планом,
+а не перечнем уже выпущенных возможностей.
+
+Проверенный в обзоре checkout клиента: тег `v0.1.1`, `pubspec.yaml` version
+`0.1.1+2`. APK/AAB/IPA и установленное устройство для проверки не были
+доступны, поэтому это идентификация исходного кода, не подтверждение бинарного
+релиза. Исходники клиента в рамках этого изменения не менялись.
+
+Исторический план паритета с вебом: [docs/MOBILE.md](../docs/MOBILE.md) §B.
 Общий порядок развития backend и нового event/impression-контракта:
-**[docs/ROADMAP.md](../docs/ROADMAP.md)**. Новые recommendation lifecycle-поля
-не следует добавлять в клиент до их фиксации в OpenAPI.
-
-## Сейчас (Phase 1–2)
-
-Рабочий клиент к Go player:
-- **Главная** — радио, share, миксы, артисты/альбомы/треки
-- **Сейчас** — artwork, seek, skip, like/dislike, очередь/плейлист
-- **Библиотека** — треки/артисты/альбомы + поиск
-- **Профиль** — health, вкус, share-ссылки
-- mini-player над табами, `just_audio` (+ media_kit на Linux)
-
-```bash
-cd mobile/flutter
-flutter pub get
-flutter run -d linux
-```
-
-Логин:
-- для LAN укажи `http://<server-lan-ip>:8787` и `MUSIK_API_TOKEN` сервера;
-- URL и token сохраняются локально через `SharedPreferences`;
-- public build не содержит URL, паролей или токенов;
-- private build может использовать `--dart-define=MUSIK_BASE_URL=...`
-  и `--dart-define=MUSIK_API_TOKEN=...` (значения попадут в APK).
-
-Player (LAN):
-```bash
-export MUSIK_ROOT=$PWD MUSIK_DB_PATH=$PWD/data/db/musik.db
-set -a && source .env && set +a
-./player/bin/musik-player   # MUSIK_PLAYER_ADDR=0.0.0.0:8787
-```
-
-После обновления кода: **`R`** (hot restart) в `flutter run`.
+[docs/ROADMAP.md](../docs/ROADMAP.md).

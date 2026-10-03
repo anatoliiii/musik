@@ -75,7 +75,7 @@ def _clear_bootstrap_owner(connection, metadata: MetaData) -> None:
     state = dict(connection.execute(text("SELECT key,value FROM installation_state")).all())
     user_id = state.get("legacy_user_id")
     profile_id = state.get("legacy_profile_id")
-    if not user_id or not profile_id or len(state) != 2:
+    if not user_id or not profile_id or state.get("active_admin_guard") != "1" or len(state) != 3:
         raise ValueError("PostgreSQL destination is not a fresh bootstrap installation")
     users = connection.execute(text("SELECT id,status,display_name FROM users")).all()
     profiles = connection.execute(text("SELECT id,owner_user_id,name,is_default,deleted_at FROM profiles")).all()
@@ -86,11 +86,11 @@ def _clear_bootstrap_owner(connection, metadata: MetaData) -> None:
         raise ValueError("PostgreSQL destination already contains profiles")
     if roles != {(user_id, "admin"), (user_id, "user")}:
         raise ValueError("PostgreSQL destination contains non-bootstrap roles")
-    for table_name in ("external_identities", "auth_sessions", "invitations"):
+    for table_name in ("external_identities", "auth_sessions", "invitations", "device_tokens"):
         if connection.execute(text(f'SELECT 1 FROM "{table_name}" LIMIT 1')).first():
             raise ValueError(f"PostgreSQL destination table {table_name} is not empty")
     allowed = {"alembic_version", "installation_state", "users", "profiles", "user_roles",
-               "external_identities", "auth_sessions", "invitations"}
+               "external_identities", "auth_sessions", "invitations", "device_tokens"}
     for table in metadata.sorted_tables:
         if table.name in allowed:
             continue

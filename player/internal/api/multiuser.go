@@ -22,10 +22,12 @@ import (
 
 type principalKey struct{}
 type principal struct {
-	UserID  string
-	Profile db.Profile
-	Admin   bool
-	Session string
+	UserID      string
+	Profile     db.Profile
+	Admin       bool
+	Session     string
+	DeviceToken bool
+	DeviceID    string
 }
 type multiUserState struct {
 	oidc     *auth.OIDCClient
@@ -67,7 +69,23 @@ func (s *Server) EnableMultiUser(ctx context.Context) error {
 func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var p *principal
-		if cookie, err := r.Cookie(auth.CookieName); err == nil {
+		cookie, cookieErr := r.Cookie(auth.CookieName)
+		authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+		if authorization != "" && cookieErr == nil {
+			writeErr(w, 400, "credential_conflict", "send either a browser session or a bearer token")
+			return
+		}
+		if authorization != "" {
+			const bearerPrefix = "Bearer "
+			if strings.HasPrefix(authorization, bearerPrefix) && strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix)) != "" {
+				secret := strings.TrimSpace(strings.TrimPrefix(authorization, bearerPrefix))
+				user, profile, tokenID, err := s.Store.AuthenticateDeviceToken(r.Context(), secret)
+				if err == nil {
+					p = &principal{UserID: user, Profile: profile, DeviceToken: true, DeviceID: tokenID}
+					r = r.WithContext(context.WithValue(r.Context(), principalKey{}, p))
+				}
+			}
+		} else if cookieErr == nil {
 			user, profile, err := s.Store.UserSession(r.Context(), cookie.Value)
 			if err == nil {
 				admin, e := s.Store.UserIsAdmin(r.Context(), user)
@@ -96,12 +114,19 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Cache-Control", "private, no-store")
+		if p.DeviceToken && !deviceRouteAllowed(r.Method, path) {
+			writeErr(w, 403, "device_token_scope", "operation is not available to device tokens")
+			return
+		}
 		adminOnly := strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/jobs") || path == "/api/library/upload" || path == "/api/library/rescan" || path == "/api/reload"
+		if p.DeviceToken && strings.HasPrefix(path, "/api/jobs/") && (path == "/api/jobs/mix_pack" || deviceJobIDPath(r.Method, path)) {
+			adminOnly = false
+		}
 		if adminOnly && !p.Admin {
 			writeErr(w, 403, "admin_required", "administrator required")
 			return
 		}
-		if r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
+		if !p.DeviceToken && r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
 			origin := r.Header.Get("Origin")
 			if origin != "" && origin != strings.TrimRight(s.Cfg.PublicBaseURL, "/") {
 				writeErr(w, 403, "csrf", "invalid origin")
@@ -114,6 +139,33 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func deviceRouteAllowed(method, path string) bool {
+	if strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/profiles") ||
+		strings.HasPrefix(path, "/api/account/device-tokens") || strings.HasPrefix(path, "/api/auth/oidc/") {
+		return false
+	}
+	if strings.HasPrefix(path, "/api/jobs") {
+		return (method == http.MethodPost && path == "/api/jobs/mix_pack") || deviceJobIDPath(method, path)
+	}
+	return true
+}
+
+func deviceJobIDPath(method, path string) bool {
+	if method != http.MethodGet || !strings.HasPrefix(path, "/api/jobs/") {
+		return false
+	}
+	id := strings.TrimPrefix(path, "/api/jobs/")
+	if id == "" || strings.Contains(id, "/") {
+		return false
+	}
+	for _, digit := range id {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) requestServer(r *http.Request) (*Server, error) {
@@ -272,6 +324,10 @@ func clearUserCookies(w http.ResponseWriter) {
 func (s *Server) handleUserAuthMe(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	p, _ := r.Context().Value(principalKey{}).(*principal)
+	if strings.TrimSpace(r.Header.Get("Authorization")) != "" {
+		writeJSON(w, map[string]any{"ok": p != nil, "auth_enabled": true})
+		return
+	}
 	if p == nil {
 		writeJSON(w, map[string]any{"ok": false, "authenticated": false, "auth_enabled": true, "multi_user": true, "oidc_login_url": "/api/auth/oidc/default/start"})
 		return

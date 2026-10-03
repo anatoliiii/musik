@@ -39,6 +39,10 @@ func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "kind_required", "kind required")
 		return
 	}
+	if p := caller(r); p != nil && p.DeviceToken && kind != "mix_pack" {
+		writeErr(w, http.StatusForbidden, "device_token_scope", "device tokens can only refresh personal mixes")
+		return
+	}
 	s.ensureWorkerBeforeEnqueue()
 	payload := map[string]any{"profile_id": s.Store.DB.ProfileID}
 	body, _ := json.Marshal(payload)
@@ -87,6 +91,22 @@ func (s *Server) handleGetJob(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		writeErr(w, 400, "bad_id", "bad id")
+		return
+	}
+	if p := caller(r); p != nil && p.DeviceToken {
+		job, err := s.Store.GetJob(id)
+		if err != nil {
+			writeErr(w, 500, "db", "job unavailable")
+			return
+		}
+		var payload struct {
+			ProfileID string `json:"profile_id"`
+		}
+		if job == nil || job.Kind != "mix_pack" || json.Unmarshal([]byte(job.Payload), &payload) != nil || payload.ProfileID != p.Profile.ID {
+			writeErr(w, 404, "not_found", "not found")
+			return
+		}
+		writeJSON(w, jobPublic(*job))
 		return
 	}
 	out, code, err := s.proxyWorker("GET", "/jobs/"+strconv.FormatInt(id, 10), nil)

@@ -98,12 +98,25 @@ CREATE TABLE features (
 CREATE TABLE installation_state (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 INSERT INTO "installation_state" VALUES('legacy_user_id','330a64b2-4303-4813-bdc1-495b869c15a7');
 INSERT INTO "installation_state" VALUES('legacy_profile_id','8458c014-517b-401b-93de-54c6ab327596');
+INSERT INTO "installation_state" VALUES('active_admin_guard','1');
 CREATE TABLE invitations (
  id TEXT PRIMARY KEY, secret_hash TEXT NOT NULL UNIQUE,
  created_by TEXT REFERENCES users(id), issuer TEXT, email TEXT,
  created_at TEXT NOT NULL, expires_at TEXT NOT NULL, consumed_at TEXT,
  revoked_at TEXT, consumed_by TEXT REFERENCES users(id)
 , target_user_id TEXT REFERENCES users(id));
+CREATE TABLE device_tokens (
+ id TEXT PRIMARY KEY,
+ secret_hash TEXT NOT NULL UNIQUE,
+ user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ profile_id TEXT NOT NULL REFERENCES profiles(id),
+ name TEXT NOT NULL,
+ created_at TEXT NOT NULL,
+ last_used_at TEXT,
+ expires_at TEXT NOT NULL,
+ revoked_at TEXT
+);
+CREATE INDEX idx_device_tokens_user ON device_tokens(user_id, revoked_at, expires_at);
 CREATE TABLE jobs (
  id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
  payload_json TEXT, result_json TEXT, error TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -483,9 +496,9 @@ INSERT INTO "sqlite_sequence" VALUES('recommendation_impressions',0);
 INSERT INTO "sqlite_sequence" VALUES('user_profile_snapshots',0);
 COMMIT;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;
 CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL);
-INSERT INTO alembic_version(version_num) VALUES ('musik_7');
+INSERT INTO alembic_version(version_num) VALUES ('musik_8');
 `
 
 func Create(path string) error {

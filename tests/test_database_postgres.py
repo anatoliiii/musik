@@ -54,8 +54,8 @@ def test_postgres_migration_and_verified_sqlite_transfer(tmp_path: Path) -> None
             )
     finally:
         engine.dispose()
-    assert revision == "musik_7"
+    assert revision == "musik_8"
     assert history_profile == profile_id
     assert counts == (1, 1, 1)
-    assert report["schema_version"] == 7
+    assert report["schema_version"] == 8
     assert len(report["tables"]) >= 40

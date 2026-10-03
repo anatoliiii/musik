@@ -27,6 +27,15 @@ def test_fresh_migration_is_idempotent(tmp_path) -> None:
         ).fetchall()
     assert before == after
     assert _version(path) == LATEST_SCHEMA_VERSION
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(device_tokens)")}
+        assert columns == {
+            "id", "secret_hash", "user_id", "profile_id", "name", "created_at",
+            "last_used_at", "expires_at", "revoked_at",
+        }
+        assert conn.execute(
+            "SELECT value FROM installation_state WHERE key='active_admin_guard'"
+        ).fetchone() == ("1",)
 
 
 def test_legacy_database_reaches_same_schema_and_preserves_rows(tmp_path) -> None:

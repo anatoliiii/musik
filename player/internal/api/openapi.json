@@ -3,8 +3,8 @@
   "info": {
     "title": "musik API",
     "version": "1.0.0",
-    "description": "Music player API. Legacy single-user password/token auth or invite-gated multi-user OIDC with revocable sessions. In multi-user mode personal endpoints resolve the active profile from the server session; state-changing requests require X-CSRF-Token. Shared password and bearer token authentication are disabled in multi-user mode.",
-    "x-musik-schema-version": 7
+    "description": "Music player API. Legacy single-user password/token auth or invite-gated multi-user OIDC with revocable browser sessions and user-owned device bearer tokens. In multi-user mode device tokens are fixed to one owned profile and cannot manage accounts, tokens or shared-library jobs. Browser state changes require X-CSRF-Token. The Python worker owns Alembic migrations for SQLite or PostgreSQL; the Go player validates the migration head. Radio events remain idempotent and profile-scoped.",
+    "x-musik-schema-version": 8
   },
   "servers": [
     {
@@ -82,7 +82,6 @@
         "type": "object",
         "required": [
           "type",
-          "event_id",
           "track_id",
           "session_id"
         ],
@@ -101,7 +100,7 @@
           "event_id": {
             "type": "string",
             "minLength": 1,
-            "description": "Stable client-generated identity; retries reuse the same value."
+            "description": "Optional for legacy mobile events; newer clients use a stable id for retries. The server generates an id when omitted."
           },
           "impression_id": {
             "type": "string",
@@ -329,6 +328,86 @@
             "default": 24
           }
         }
+      },
+      "DeviceToken": {
+        "type": "object",
+        "required": [
+          "id",
+          "user_id",
+          "profile_id",
+          "profile_name",
+          "name",
+          "created_at",
+          "expires_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string"
+          },
+          "profile_id": {
+            "type": "string"
+          },
+          "profile_name": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "last_used_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revoked_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          }
+        }
+      },
+      "DeviceTokenCreate": {
+        "type": "object",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "profile_id": {
+            "type": "string",
+            "description": "Optional; omitted or empty selects the user's default profile."
+          }
+        }
+      },
+      "DeviceTokenCreated": {
+        "type": "object",
+        "required": [
+          "device",
+          "token"
+        ],
+        "properties": {
+          "device": {
+            "$ref": "#/components/schemas/DeviceToken"
+          },
+          "token": {
+            "type": "string",
+            "description": "Opaque secret shown only on creation or replacement."
+          }
+        }
       }
     }
   },
@@ -407,8 +486,8 @@
         "security": [],
         "summary": "Auth status",
         "responses": {
-          "200": {
-            "description": "{ok, auth_enabled}"
+        "200": {
+          "description": "Browser sessions receive account/profile data. Device Bearer clients retain {ok, auth_enabled}; invalid device tokens receive ok=false with HTTP 200."
           }
         }
       }
@@ -2145,6 +2224,162 @@
           },
           "403": {
             "description": "Access, CSRF or invitation rejected"
+          }
+        }
+      }
+    },
+    "/api/account/device-tokens": {
+      "get": {
+        "summary": "List the caller device token metadata",
+        "description": "Never returns token secrets or hashes.",
+        "security": [
+          {
+            "cookieAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Device token metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "tokens": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/DeviceToken"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Device tokens cannot manage tokens"
+          }
+        }
+      },
+      "post": {
+        "summary": "Create a profile-bound device token",
+        "description": "The opaque bearer secret is returned once; lifetime is 180 days.",
+        "security": [
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceTokenCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Device metadata and one-time secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenCreated"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Invalid CSRF token or device-token caller"
+          },
+          "404": {
+            "description": "Profile not found or not owned"
+          }
+        }
+      }
+    },
+    "/api/account/device-tokens/{id}": {
+      "delete": {
+        "summary": "Revoke one device token",
+        "security": [
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked"
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Invalid CSRF token or device-token caller"
+          },
+          "404": {
+            "description": "Token not found for this user"
+          }
+        }
+      }
+    },
+    "/api/account/device-tokens/{id}/replace": {
+      "post": {
+        "summary": "Atomically replace one device token",
+        "description": "Revokes the old secret and returns the replacement once.",
+        "security": [
+          {
+            "cookieAuth": [],
+            "csrfToken": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "New device metadata and one-time secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceTokenCreated"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Sign-in required"
+          },
+          "403": {
+            "description": "Invalid CSRF token or device-token caller"
+          },
+          "404": {
+            "description": "Token not found for this user"
           }
         }
       }

@@ -197,6 +197,10 @@ class QueryResult:
     def fetchall(self) -> list[MappingRow]:
         return [MappingRow(row) for row in self._result.fetchall()]
 
+    def __iter__(self):
+        """Keep the small result bridge compatible with sqlite3 cursors."""
+        return iter(self.fetchall())
+
     def close(self) -> None:
         self._result.close()
 

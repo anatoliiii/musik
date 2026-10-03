@@ -1,7 +1,7 @@
 # SQLite and PostgreSQL portability contract
 
-Status: integrated schema v7 is verified on SQLite and PostgreSQL 17, including
-profile ownership and the offline SQLite-to-PostgreSQL transfer. Every player
+Status: integrated schema v8 is verified on SQLite and PostgreSQL 17, including
+profile ownership, device tokens and the offline SQLite-to-PostgreSQL transfer. Every player
 and worker repository now executes through the selected GORM or SQLAlchemy
 session. Identity, account, profile, job, and catalog paths use mapped models;
 complex legacy queries still pass through GORM Raw or SQLAlchemy text at the
@@ -14,7 +14,7 @@ The same musik build and logical schema must run on SQLite or PostgreSQL. Select
 - GORM opens either SQLite or PostgreSQL and owns the shared connection pool. All Go repository calls pass through its query, execution, and transaction APIs; mapped records cover identity, profiles, accounts, jobs, catalog writes, listens and playlists. Complex query reads still use GORM Raw behind the compatibility boundary.
 - Python runtime repositories use SQLAlchemy sessions. Catalog and job operations use mapped entities and SQLAlchemy expressions; other query shapes use `Session.execute(text(...))` through the shared compatibility boundary. It binds values and adapts the legacy SQLite functions exercised by PostgreSQL tests.
 - Python runtime connections are SQLAlchemy sessions. The remaining direct `sqlite3` usage is limited to legacy migrations, SQLite snapshot/transfer checks, and SQLite-specific test setup.
-- Alembic owns migration history through `musik_7`. Go requires that shared head and additionally checks `PRAGMA user_version` on SQLite; it does not migrate at startup.
+- Alembic owns migration history through `musik_8`. Go requires that shared head and additionally checks `PRAGMA user_version` on SQLite; it does not migrate at startup.
 - PostgreSQL 17 migration, profile isolation, worker schema, and offline transfer checks run in CI. Conformance coverage is still narrower than the full behavioral contract below; broader rollback, concurrency, and service-path parity remains future work.
 
 ## Required architecture
@@ -41,7 +41,7 @@ The same musik build and logical schema must run on SQLite or PostgreSQL. Select
 ### Transaction and concurrency contract
 
 - A repository method that represents one domain operation documents and owns its transaction. Partial writes are never visible.
-- SQLite keeps WAL and a bounded busy timeout; write transactions use the existing immediate-lock behavior where read-then-write atomicity is required. PostgreSQL uses row/unique locks and bounded transaction retries only for explicitly retryable serialization/deadlock errors.
+- SQLite keeps WAL and a bounded busy timeout; write transactions use the existing immediate-lock behavior where read-then-write atomicity is required. PostgreSQL uses row/unique locks and bounded transaction retries only for explicitly retryable serialization/deadlock errors. Account role/status changes lock the shared `installation_state.active_admin_guard` row before counting admins, so updates to different accounts serialize.
 - Worker job claiming is atomic and exclusive under concurrent workers on both engines. Implement engine-specific claim SQL behind one method (SQLite transaction/update; PostgreSQL may use `FOR UPDATE SKIP LOCKED`). A job can never be claimed twice or silently lost.
 - No long-lived transaction spans audio processing, model inference, HTTP requests or user playback.
 - In-memory indexes/taste caches are derivative state. Their keys include profile IDs where data is personalized, and startup/reload rebuilds them from the chosen backend.
@@ -49,9 +49,9 @@ The same musik build and logical schema must run on SQLite or PostgreSQL. Select
 ## Migration and configuration contract
 
 - One migration command is the only schema writer. Applications and workers validate schema compatibility and fail clearly; they do not race to migrate at startup.
-- Alembic over SQLAlchemy is the sole migration runner. Operator runs `musik db migrate` once before player/worker startup. It adopts existing SQLite v5 data and advances it through identity/profile migrations to v7; Go validates the same head and never migrates at startup. Downgrade is not supported for data migrations; restore a verified backup to roll back.
-- SQLite batch DDL and PostgreSQL constraints may use different operations as long as they preserve the same logical invariant. Fresh PostgreSQL databases are created from the reflected shared schema and advanced to the same `musik_7` head.
-- The offline `musik db transfer` path copies the complete SQLite v7 schema and rows to a destination with only the expected bootstrap owner/profile. It validates the read-only source snapshot, schema and foreign keys, then compares per-table counts and deterministic checksums. It leaves the SQLite source and external music/artwork files untouched; referenced paths must already exist at the destination.
+- Alembic over SQLAlchemy is the sole migration runner. Operator runs `musik db migrate` once before player/worker startup. It adopts existing SQLite v5 data and advances it through identity/profile migrations to v8; Go validates the same head and never migrates at startup. Downgrade is not supported for data migrations; restore a verified backup to roll back.
+- SQLite batch DDL and PostgreSQL constraints may use different operations as long as they preserve the same logical invariant. Fresh PostgreSQL databases are created from the reflected shared schema and advanced to the same `musik_8` head.
+- The offline `musik db transfer` path copies the complete SQLite v8 schema and rows, including profile-bound device-token hashes, to a destination with only the expected bootstrap owner/profile. It validates the read-only source snapshot, schema and foreign keys, then compares per-table counts and deterministic checksums. It leaves the SQLite source and external music/artwork files untouched; referenced paths must already exist at the destination.
 - Existing personal rows are mapped once to the installation owner/default profile before transfer. New invite-created OIDC accounts receive separate users and profiles; the transfer does not copy personal data to them.
 - Configuration contract: `MUSIK_DATABASE_URL` selects the backend (`sqlite:///...` or a PostgreSQL URL). Keep `MUSIK_DB_PATH` as a deprecated SQLite-only alias during transition; setting both is an error. Redact credentials from logs and diagnostics.
 - SQLite and PostgreSQL use the same schema version, migration identity, account/profile model and logical defaults. PostgreSQL is not a separate product mode.
@@ -72,14 +72,13 @@ Run the same repository and service contract cases against SQLite and PostgreSQL
 3. Multi-write operations roll back completely after an injected failure.
 4. Two independent connections performing concurrent updates, event de-duplication and job claims preserve the same invariants; no lost update or duplicate claim occurs.
 5. Profile-scoped reads/writes cannot cross owner boundaries; catalog data remains shared as specified.
-6. Fresh install, migration from SQLite v5 through v7, migration on PostgreSQL, migration of profile ownership, restart after an interrupted migration, and schema-version mismatch fail/complete as documented.
+6. Fresh install, migration from SQLite v5 through v8, migration on PostgreSQL, migration of profile ownership and device-token tables, restart after an interrupted migration, and schema-version mismatch fail/complete as documented.
 7. Python worker scan, embedding, recommendation-job and event persistence use the selected backend and produce the same logical rows as the Go player.
 8. Backup/restore and health/readiness checks succeed for both backends; health output never exposes the database URL.
 
-## Decisions needed before implementation
+## Resolved architecture choices
 
-- Keep two native adapters (Go `database/sql` plus Python DB-API) or move all persistence behind one internal storage service? Recommendation: adapters in each runtime for the first stage, with explicit repository contracts; a storage service would add operational/network failure modes and is a later option.
 - Resolved: GORM is the Go ORM, SQLAlchemy is the Python ORM, Alembic owns migrations, and `musik db migrate` is the operator command. All runtime repositories execute through those ORM boundaries; mapped entity conversion continues for complex legacy SQL where it improves safety or portability.
-- Implemented for schema v7: offline SQLite-to-PostgreSQL transfer verifies row counts and SHA-256 checksums and maps the legacy owner/profile. Music and artwork files remain external; database rows and embedded binary payloads are transferred.
+- Implemented for schema v8: offline SQLite-to-PostgreSQL transfer verifies row counts and SHA-256 checksums and maps the legacy owner/profile. Device-token hashes and profile binding transfer with the database; raw secrets are never stored. Music and artwork files remain external; database rows and embedded binary payloads are transferred.
 - PostgreSQL 17 is the CI and release minimum. SQLite requires a version supporting the migration's `RETURNING` behavior.
 - SQLite in-memory test compatibility and PostgreSQL CI service image/version are implementation choices; the behavioral cases above are mandatory regardless of tool.

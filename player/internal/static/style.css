@@ -1777,10 +1777,22 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
 .login-gate[hidden] { display: none; }
 #oidc-login[hidden], #login-submit[hidden], #login-password[hidden],
 #account-box[hidden], #invitation-box[hidden], #profile-switch[hidden],
-#invitation-result[hidden] { display: none; }
+#invitation-result[hidden], #device-token-created[hidden] { display: none; }
 #account-box form, #invitation-box form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin: 16px 0; }
 #account-box label, #invitation-box label { display: grid; gap: 6px; }
 #invitation-url { width: 100%; }
+.device-token-section { margin-top: 1.4rem; padding-top: 1rem; border-top: 1px solid var(--line); }
+.device-token-section h2 { margin: 0 0 .35rem; font-size: 1.05rem; }
+.device-token-section .sub { max-width: 68ch; }
+.device-token-section select { min-width: 12rem; color: var(--fg); background: var(--bg2); border: 1px solid var(--line); border-radius: var(--radius-sm); padding: .55rem .65rem; }
+.device-token-secret { display: grid; gap: .45rem; margin: 1rem 0; padding: .85rem; border: 1px solid var(--accent); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent) 8%, var(--surface)); }
+.device-token-secret p { margin: 0; }
+.device-token-secret input { width: 100%; min-width: 0; font-family: var(--font-mono, monospace); }
+.device-token-actions { display: flex; flex-wrap: wrap; gap: .5rem; }
+.device-token-row { align-items: flex-start; }
+.device-token-row strong { flex: 0 1 10rem; }
+.device-token-row > span { white-space: pre-line; }
+.device-token-row .btn { align-self: center; }
 .login-card {
   width: min(420px, 100%);
   display: flex;

@@ -504,6 +504,170 @@ func TestLifecycleEventsAreIdempotent(t *testing.T) {
 	}
 }
 
+func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
+	type testStore struct {
+		name  string
+		store *Store
+	}
+	local, _ := openTestStore(t)
+	stores := []testStore{{name: "sqlite", store: local}}
+	if databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL"); databaseURL != "" {
+		postgresStore, err := OpenDatabase(databaseURL, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = postgresStore.Close() })
+		_, profile, err := postgresStore.CreateUserWithDefaultProfile(context.Background(), "Stats upsert test")
+		if err != nil {
+			t.Fatal(err)
+		}
+		stores = append(stores, testStore{name: "postgres", store: postgresStore.ForProfile(profile.ID)})
+	}
+
+	for _, backend := range stores {
+		t.Run(backend.name, func(t *testing.T) {
+			store := backend.store
+			trackID := time.Now().UnixNano()%500_000_000 + 1_500_000_000
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			nextTrackID := trackID + 1
+			if store.Dialect == "postgres" {
+				if err := store.DB.QueryRow(`SELECT nextval(pg_get_serial_sequence('tracks','id'))`).Scan(&trackID); err != nil {
+					t.Fatal(err)
+				}
+				if err := store.DB.QueryRow(`SELECT nextval(pg_get_serial_sequence('tracks','id'))`).Scan(&nextTrackID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for offset, title := range []string{"Stats test", "Stats next"} {
+				id := trackID
+				if offset != 0 {
+					id = nextTrackID
+				}
+				var err error
+				if store.Dialect == "postgres" {
+					_, err = store.DB.Exec(
+						`INSERT INTO tracks(id,path,title,created_at,updated_at) VALUES (?,?,?,?,?)`,
+						id, fmt.Sprintf("/stats-%d.flac", id), title, now, now,
+					)
+				} else {
+					_, err = store.DB.Exec(
+						`INSERT INTO tracks(id,path,title) VALUES (?,?,?)`,
+						id, fmt.Sprintf("/stats-%d.flac", id), title,
+					)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			for _, bump := range [][3]int{{2, 1, 0}, {3, 2, 1}} {
+				if err := store.BumpRecStats(trackID, bump[0], bump[1], bump[2]); err != nil {
+					t.Fatalf("BumpRecStats: %v", err)
+				}
+			}
+			var shown, skips, completed int
+			if err := store.DB.QueryRow(
+				`SELECT shown, skipped_early, completed FROM rec_stats WHERE track_id=? AND profile_id=?`,
+				trackID, store.DB.ProfileID,
+			).Scan(&shown, &skips, &completed); err != nil {
+				t.Fatal(err)
+			}
+			if shown != 5 || skips != 3 || completed != 1 {
+				t.Fatalf("recommendation stats=%d/%d/%d, want 5/3/1", shown, skips, completed)
+			}
+
+			if err := store.BumpTransition(trackID, nextTrackID, 0.5); err != nil {
+				t.Fatalf("first BumpTransition: %v", err)
+			}
+			if err := store.BumpTransition(trackID, nextTrackID, 1.25); err != nil {
+				t.Fatalf("second BumpTransition: %v", err)
+			}
+			var weight float64
+			if err := store.DB.QueryRow(
+				`SELECT weight FROM transitions WHERE from_id=? AND to_id=? AND profile_id=?`,
+				trackID, nextTrackID, store.DB.ProfileID,
+			).Scan(&weight); err != nil || weight != 1.75 {
+				t.Fatalf("transition weight=%v err=%v, want 1.75", weight, err)
+			}
+
+			requestID, impressionID := NewID(), NewID()
+			sessionID := "stats-" + NewID()
+			if err := store.CreateRecommendationRequest(RecommendationRequest{
+				RequestID: requestID, SessionID: sessionID, Reason: "stats-test",
+				PolicyVersion: "test", CandidateCount: 1,
+			}, []RecommendationImpression{{
+				ImpressionID: impressionID, RequestID: requestID, SessionID: sessionID,
+				TrackID: trackID, Source: "radio_start", Explore: true, NewBoost: true,
+			}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			start := LifecycleEvent{
+				EventID: NewID(), Type: "track_start", TrackID: trackID,
+				SessionID: sessionID, ImpressionID: impressionID, RequestID: requestID,
+			}
+			first, err := store.ApplyLifecycleEvent(start)
+			if err != nil || !first.Inserted || !first.LifecycleChanged {
+				t.Fatalf("first track_start=%+v err=%v", first, err)
+			}
+			retry, err := store.ApplyLifecycleEvent(start)
+			if err != nil || retry.Inserted || retry.LifecycleChanged {
+				t.Fatalf("duplicate track_start=%+v err=%v", retry, err)
+			}
+			end := LifecycleEvent{
+				EventID: NewID(), Type: "track_end", TrackID: trackID,
+				SessionID: sessionID, ImpressionID: impressionID, RequestID: requestID,
+				Outcome: "finished", ListenedRatio: 0.95,
+			}
+			firstEnd, err := store.ApplyLifecycleEvent(end)
+			if err != nil || !firstEnd.Inserted || !firstEnd.LifecycleChanged {
+				t.Fatalf("first track_end=%+v err=%v", firstEnd, err)
+			}
+			end.EventID = NewID()
+			retryEnd, err := store.ApplyLifecycleEvent(end)
+			if err != nil || !retryEnd.Inserted || retryEnd.LifecycleChanged {
+				t.Fatalf("duplicate lifecycle transition=%+v err=%v", retryEnd, err)
+			}
+			like := LifecycleEvent{
+				EventID: NewID(), Type: "like", TrackID: trackID,
+				SessionID: sessionID, ImpressionID: impressionID, RequestID: requestID,
+			}
+			if result, err := store.ApplyLifecycleEvent(like); err != nil || !result.LifecycleChanged {
+				t.Fatalf("first like=%+v err=%v", result, err)
+			}
+			like.EventID = NewID()
+			if result, err := store.ApplyLifecycleEvent(like); err != nil || result.LifecycleChanged {
+				t.Fatalf("duplicate like transition=%+v err=%v", result, err)
+			}
+			var plays, finishes, likes int
+			if err := store.DB.QueryRow(
+				`SELECT plays, finishes, likes FROM track_stats WHERE track_id=? AND profile_id=?`,
+				trackID, store.DB.ProfileID,
+			).Scan(&plays, &finishes, &likes); err != nil {
+				t.Fatal(err)
+			}
+			if plays != 1 || finishes != 1 || likes != 1 {
+				t.Fatalf("lifecycle stats=%d/%d/%d, want 1/1/1", plays, finishes, likes)
+			}
+
+			for range 2 {
+				if err := store.RecordOutcomeTransition(trackID, nextTrackID, "finished", "radio"); err != nil {
+					t.Fatalf("RecordOutcomeTransition: %v", err)
+				}
+			}
+			var radioCount, finishedCount int
+			if err := store.DB.QueryRow(
+				`SELECT radio_count, finished_count FROM transition_stats WHERE from_id=? AND to_id=? AND profile_id=?`,
+				trackID, nextTrackID, store.DB.ProfileID,
+			).Scan(&radioCount, &finishedCount); err != nil {
+				t.Fatal(err)
+			}
+			if radioCount != 2 || finishedCount != 2 {
+				t.Fatalf("outcome transition counters=%d/%d, want 2/2", radioCount, finishedCount)
+			}
+		})
+	}
+}
+
 func TestLegacyFallbackRejectsAmbiguousPendingImpressions(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 var ErrLastAdmin = errors.New("at least one active administrator is required")
@@ -70,6 +71,16 @@ func (s *Store) UpdateAccount(ctx context.Context, adminID, userID, status strin
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	return s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		// Lock a shared invariant row before reading or changing administrator
+		// roles. Locking either target user would allow two transactions that
+		// update different administrators to pass the same count check.
+		if s.Dialect == "postgres" {
+			var guard InstallationStateRecord
+			if err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("key = ?", "active_admin_guard").Take(&guard).Error; err != nil {
+				return err
+			}
+		}
 		var adminCount int64
 		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
 			Where("users.id = ? AND users.status = ? AND user_roles.role = ?", adminID, "active", "admin").
@@ -109,6 +120,9 @@ func (s *Store) UpdateAccount(ctx context.Context, adminID, userID, status strin
 			return ErrLastAdmin
 		}
 		if status == "disabled" {
+			if err := s.RevokeUserDeviceTokens(ctx, tx, userID, now); err != nil {
+				return err
+			}
 			if err := tx.Model(&AuthSessionRecord{}).Where("user_id = ? AND revoked_at IS NULL", userID).
 				Updates(map[string]any{"revoked_at": now}).Error; err != nil {
 				return err

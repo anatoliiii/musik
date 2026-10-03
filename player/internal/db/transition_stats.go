@@ -92,11 +92,11 @@ INSERT INTO transition_stats(
   skip_count, decayed_weight, updated_at
 ,profile_id) VALUES (?,?,?,?,?,?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
-  manual_count = manual_count + excluded.manual_count,
-  radio_count = radio_count + excluded.radio_count,
-  finished_count = finished_count + excluded.finished_count,
-  partial_count = partial_count + excluded.partial_count,
-  skip_count = skip_count + excluded.skip_count,
+  manual_count = transition_stats.manual_count + excluded.manual_count,
+  radio_count = transition_stats.radio_count + excluded.radio_count,
+  finished_count = transition_stats.finished_count + excluded.finished_count,
+  partial_count = transition_stats.partial_count + excluded.partial_count,
+  skip_count = transition_stats.skip_count + excluded.skip_count,
   decayed_weight = excluded.decayed_weight,
   updated_at = excluded.updated_at`,
 		fromID, toID, manual, radio, finished, partial, skip, decayed, nowStr)
