@@ -22,7 +22,7 @@ func New(cfg config.Config, idx *index.Index) *Service {
 	return &Service{
 		cfg:  cfg,
 		idx:  idx,
-		warm: newStreamWarm(8),
+		warm: sharedWarm,
 	}
 }
 

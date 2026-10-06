@@ -221,12 +221,21 @@ func (s *Service) transcodeMobile(src, dst, format string) error {
 	return nil
 }
 
+// streamWarm keeps prepared mobile audio for the current and next tracks in
+// memory. One cache serves every profile runtime (track bytes are not
+// personal); it is bounded by total size so memory does not grow with the
+// number of open profiles.
 type streamWarm struct {
-	mu    sync.Mutex
-	max   int
-	order []int64
-	data  map[int64]warmEntry
+	mu       sync.Mutex
+	maxBytes int
+	bytes    int
+	order    []int64
+	data     map[int64]warmEntry
 }
+
+const warmCacheBytes = 64 << 20
+
+var sharedWarm = newStreamWarm(warmCacheBytes)
 
 type warmEntry struct {
 	bytes []byte
@@ -234,11 +243,8 @@ type warmEntry struct {
 	mtime time.Time
 }
 
-func newStreamWarm(max int) *streamWarm {
-	if max < 4 {
-		max = 8
-	}
-	return &streamWarm{max: max, data: map[int64]warmEntry{}}
+func newStreamWarm(maxBytes int) *streamWarm {
+	return &streamWarm{maxBytes: maxBytes, data: map[int64]warmEntry{}}
 }
 
 func (cache *streamWarm) get(id int64) (warmEntry, bool) {
@@ -259,9 +265,13 @@ func (cache *streamWarm) get(id int64) (warmEntry, bool) {
 }
 
 func (cache *streamWarm) put(id int64, entry warmEntry) {
+	if len(entry.bytes) > cache.maxBytes {
+		return
+	}
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
-	if _, ok := cache.data[id]; ok {
+	if old, ok := cache.data[id]; ok {
+		cache.bytes -= len(old.bytes)
 		for i, itemID := range cache.order {
 			if itemID == id {
 				cache.order = append(cache.order[:i], cache.order[i+1:]...)
@@ -270,10 +280,12 @@ func (cache *streamWarm) put(id int64, entry warmEntry) {
 		}
 	}
 	cache.data[id] = entry
+	cache.bytes += len(entry.bytes)
 	cache.order = append(cache.order, id)
-	for len(cache.order) > cache.max {
+	for cache.bytes > cache.maxBytes && len(cache.order) > 1 {
 		oldest := cache.order[0]
 		cache.order = cache.order[1:]
+		cache.bytes -= len(cache.data[oldest].bytes)
 		delete(cache.data, oldest)
 	}
 }
