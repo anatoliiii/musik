@@ -17,6 +17,9 @@ func (s *Server) trackJSON(id int64) any {
 		if m.ArtworkPath != "" {
 			out["artwork"] = "/api/artwork/" + strconv.FormatInt(m.ID, 10)
 		}
+		if m.AlbumArtist != "" {
+			out["album_artist"] = m.AlbumArtist
+		}
 		return out
 	}
 	tracks, err := s.Store.ListCatalogTracks()
@@ -35,6 +38,9 @@ func (s *Server) trackJSON(id int64) any {
 		}
 		if m.Artwork != "" {
 			out["artwork"] = "/api/artwork/" + strconv.FormatInt(m.ID, 10)
+		}
+		if m.AlbumArtist != "" {
+			out["album_artist"] = m.AlbumArtist
 		}
 		return out
 	}

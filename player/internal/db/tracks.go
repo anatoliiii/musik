@@ -27,10 +27,18 @@ func parseSegments(raw string) []string {
 	return append([]string(nil), clean...)
 }
 
+// VariousArtists credits a compilation whose tags set only the flag.
+const VariousArtists = "Various Artists"
+
+// albumArtistSQL is the album-level credit of t: the album artist tag, or
+// VariousArtists for a flagged compilation, else ”. The Python worker groups
+// albums by the same rule (musik.db.store.ALBUM_OWNER_SQL).
+const albumArtistSQL = `COALESCE(NULLIF(trim(t.album_artist), ''), CASE WHEN t.is_compilation = 1 THEN '` + VariousArtists + `' END, '')`
+
 func (s *Store) LoadReadyTracks() ([]TrackRow, error) {
 	rows, err := s.DB.Query(`
 SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.artist_segments,''),
-       COALESCE(t.album,''),
+       `+albumArtistSQL+` AS album_artist, COALESCE(t.album,''),
        COALESCE(t.duration,0), COALESCE(t.file_md5,''), COALESCE(t.created_at,''),
        COALESCE(t.artwork_path,''), COALESCE(f.cluster_id, -1),
        f.embedding, COALESCE(f.embedding_dim,0),
@@ -54,7 +62,7 @@ ORDER BY t.id`, s.ProfileID, s.ProfileID)
 		var tr TrackRow
 		var bpm, lufs sql.NullFloat64
 		var segments string
-		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.Album,
+		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.AlbumArtist, &tr.Album,
 			&tr.Duration, &tr.FileMD5, &tr.CreatedAt, &tr.ArtworkPath, &tr.ClusterID,
 			&tr.Embedding, &tr.Dim, &tr.Shown, &tr.SkipEarly, &tr.Completed,
 			&tr.Year, &bpm, &lufs, &tr.KeyName,
@@ -74,16 +82,17 @@ ORDER BY t.id`, s.ProfileID, s.ProfileID)
 }
 
 type CatalogTrack struct {
-	ID       int64
-	Path     string
-	Title    string
-	Artist   string
-	Artists  []string
-	Album    string
-	Duration float64
-	Artwork  string
-	Cluster  int
-	Status   string
+	ID          int64
+	Path        string
+	Title       string
+	Artist      string
+	Artists     []string
+	AlbumArtist string
+	Album       string
+	Duration    float64
+	Artwork     string
+	Cluster     int
+	Status      string
 }
 
 func (s *Store) ListCatalogTracks() ([]CatalogTrack, error) {
@@ -93,7 +102,7 @@ func (s *Store) ListCatalogTracks() ([]CatalogTrack, error) {
 func (s *Store) ListCatalogTracksLimit(limit int) ([]CatalogTrack, error) {
 	q := `
 SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.artist_segments,''),
-       COALESCE(t.album,''), COALESCE(t.duration,0), COALESCE(t.artwork_path,''),
+       ` + albumArtistSQL + ` AS album_artist, COALESCE(t.album,''), COALESCE(t.duration,0), COALESCE(t.artwork_path,''),
        COALESCE(f.cluster_id, -1), COALESCE(f.status, 'pending')
 FROM tracks t
 LEFT JOIN features f ON f.track_id = t.id
@@ -113,7 +122,7 @@ ORDER BY t.id`
 	for rows.Next() {
 		var tr CatalogTrack
 		var segments string
-		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.Album,
+		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.AlbumArtist, &tr.Album,
 			&tr.Duration, &tr.Artwork, &tr.Cluster, &tr.Status); err != nil {
 			return nil, err
 		}

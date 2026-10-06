@@ -22,8 +22,8 @@ type Store struct {
 	ReadOnly  bool
 }
 
-const SupportedSchemaVersion = 9
-const SupportedSchemaRevision = "musik_9"
+const SupportedSchemaVersion = 10
+const SupportedSchemaRevision = "musik_10"
 
 func mondayZeroWeekday(day time.Weekday) int { return (int(day) + 6) % 7 }
 
@@ -34,6 +34,9 @@ type TrackRow struct {
 	Artist string
 	// ArtistSegments is the collaborator split parsed at scan time (row.artists).
 	ArtistSegments []string
+	// AlbumArtist is the album-level credit ("Various Artists" for a flagged
+	// compilation); empty when the tags carry neither.
+	AlbumArtist string
 	Album          string
 	Duration       float64
 	FileMD5        string

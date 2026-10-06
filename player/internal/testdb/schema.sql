@@ -6,7 +6,7 @@ CREATE TABLE alembic_version (
 	version_num VARCHAR(32) NOT NULL, 
 	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-INSERT INTO "alembic_version" VALUES('musik_9');
+INSERT INTO "alembic_version" VALUES('musik_10');
 CREATE TABLE artist_photos (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name_key   TEXT NOT NULL UNIQUE,
@@ -530,7 +530,7 @@ CREATE TABLE tracks (
     artwork_path    TEXT,
     created_at      TEXT NOT NULL,
     updated_at      TEXT NOT NULL
-, is_remaster INTEGER NOT NULL DEFAULT 0, artist_segments TEXT);
+, is_remaster INTEGER NOT NULL DEFAULT 0, artist_segments TEXT, album_artist TEXT, is_compilation INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE "training_runs" (profile_id TEXT NOT NULL DEFAULT '8458c014-517b-401b-93de-54c6ab327596' REFERENCES profiles(id),
 run_id                 TEXT PRIMARY KEY,
 model_version          TEXT ,
@@ -751,4 +751,4 @@ INSERT INTO "sqlite_sequence" VALUES('recommendation_impressions',0);
 INSERT INTO "sqlite_sequence" VALUES('user_profile_snapshots',0);
 COMMIT;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;

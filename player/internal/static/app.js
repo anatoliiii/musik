@@ -584,6 +584,12 @@ function primaryArtist(t) {
   return trackArtists(t)[0] || String(t?.artist || "").trim();
 }
 
+// Who the track's album is listed under: the album credit of a compilation
+// ("Various Artists"), else the primary artist. Same rule as the server.
+function albumOwner(t) {
+  return String(t?.album_artist || "").trim() || primaryArtist(t);
+}
+
 async function loadFavorites() {
   try {
     const data = await api("/api/favorites");
@@ -622,7 +628,7 @@ function setEntityFavChips() {
   }
   const artistOn = trackArtists(current).some((s) => favoriteArtists.has(s));
   if (a) a.classList.toggle("on", artistOn);
-  if (b) b.classList.toggle("on", favoriteAlbums.has(albumKey(primaryArtist(current), current.album)));
+  if (b) b.classList.toggle("on", favoriteAlbums.has(albumKey(albumOwner(current), current.album)));
 }
 
 async function toggleFavorite(payload, { withLike = true } = {}) {
@@ -681,7 +687,7 @@ function groupCatalog(tracks) {
 
     const album = (t.album || "").trim();
     if (!album) continue;
-    const albumArtist = primaryArtist(t) || "Unknown";
+    const albumArtist = albumOwner(t) || "Unknown";
     const key = albumArtist + "\0" + album;
     if (!albums.has(key)) {
       albums.set(key, {
@@ -824,7 +830,9 @@ function tracksOfAlbum(artist, album) {
   // artist "" = a merged soundtrack album: every artist on it
   return library.filter((t) => {
     if ((t.album || "").trim() !== al) return false;
-    return !a || trackArtists(t).some((seg) => seg.toLowerCase() === a);
+    if (!a) return true;
+    if (String(t.album_artist || "").trim().toLowerCase() === a) return true;
+    return trackArtists(t).some((seg) => seg.toLowerCase() === a);
   });
 }
 
@@ -4922,7 +4930,7 @@ function wire() {
   $("btn-fav-album").onclick = () => {
     if (!current?.album) return toast("Нет альбома");
     toggleFavorite(
-      { type: "album", artist: current.artist, album: current.album },
+      { type: "album", artist: albumOwner(current), album: current.album },
       { withLike: false }
     ).catch((e) => toast(e.message || String(e)));
   };

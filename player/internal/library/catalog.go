@@ -42,12 +42,14 @@ func IsGameSoundtrackPath(path string) bool {
 	return false
 }
 
-func MatchArtistAlbum(gotArtist string, gotSegments []string, gotAlbum, wantArtist, wantAlbum string) bool {
+func MatchArtistAlbum(gotArtist string, gotSegments []string, gotAlbumArtist, gotAlbum, wantArtist, wantAlbum string) bool {
 	if wantArtist != "" {
 		want := strings.TrimSpace(wantArtist)
 		// The raw label matches first so queries that carry a full
-		// collaboration string keep working, then each stored segment.
-		matched := strings.EqualFold(strings.TrimSpace(gotArtist), want)
+		// collaboration string keep working, then the album-level credit
+		// (a compilation's album artist), then each stored segment.
+		matched := strings.EqualFold(strings.TrimSpace(gotArtist), want) ||
+			(gotAlbumArtist != "" && strings.EqualFold(strings.TrimSpace(gotAlbumArtist), want))
 		if !matched {
 			for _, segment := range gotSegments {
 				if strings.EqualFold(strings.TrimSpace(segment), want) {
@@ -122,12 +124,10 @@ func GroupAlbums(idx *index.Index) []AlbumGroup {
 		if album == "" {
 			continue
 		}
-		// Group by the primary collaborator segment so a record credited to
-		// several artists stays a single album entry instead of one per artist.
-		artist := strings.TrimSpace(m.Artist)
-		if len(m.Artists) > 0 {
-			artist = strings.TrimSpace(m.Artists[0])
-		}
+		// Group by the album artist (a compilation is one album), else the
+		// primary collaborator segment, so a record credited to several
+		// artists stays a single album entry instead of one per artist.
+		artist := m.AlbumOwner()
 		key := strings.ToLower(artist) + "\x00" + strings.ToLower(album)
 		g := by[key]
 		if g == nil {

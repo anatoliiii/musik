@@ -27,6 +27,11 @@ class TrackTags:
     is_remaster: bool = False
     # Collaborator segments parsed once here and stored in the database.
     artist_segments: list[str] = field(default_factory=list)
+    # Album-level credit ("Various Artists" on a compilation) and the
+    # compilation flag (ID3 TCMP, MP4 cpil, Vorbis COMPILATION). Albums group
+    # by this credit so a compilation stays one album.
+    album_artist: str | None = None
+    compilation: bool = False
 
 
 # Remaster markers seen in real album tags:
@@ -58,6 +63,12 @@ def _first(val: Any) -> str | None:
     if isinstance(val, list):
         return str(val[0]) if val else None
     return str(val)
+
+
+def _truthy(raw: Any) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    return str(raw or "").strip().lower() in {"1", "true", "yes"}
 
 
 def _parse_year(raw: str | None) -> int | None:
@@ -107,6 +118,12 @@ def read_tags(path: Path) -> TrackTags:
             tags.artist = _first(audio.tags.get("artist"))
             tags.album = _first(audio.tags.get("album"))
             tags.is_remaster = detect_remaster(tags.album)
+            for key in ("albumartist", "album artist", "album_artist"):
+                value = (_first(audio.tags.get(key)) or "").strip()
+                if value:
+                    tags.album_artist = value
+                    break
+            tags.compilation = _truthy(_first(audio.tags.get("compilation")))
             tags.year = _parse_year(_first(audio.tags.get("date")) or _first(audio.tags.get("year")))
             tags.track_number = _parse_track_no(_first(audio.tags.get("tracknumber")))
             genre_raw = audio.tags.get("genre")
@@ -120,6 +137,12 @@ def read_tags(path: Path) -> TrackTags:
     try:
         raw = MutagenFile(path)
         if raw is not None:
+            if not tags.compilation and raw.tags is not None:
+                # EasyMP4 has no compilation key; the flag is the cpil atom.
+                try:
+                    tags.compilation = _truthy(raw.tags.get("cpil"))
+                except Exception:
+                    pass
             pictures = []
             if hasattr(raw, "pictures"):
                 pictures = list(raw.pictures or [])

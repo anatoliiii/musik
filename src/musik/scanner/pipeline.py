@@ -10,6 +10,12 @@ from typing import Any, Callable
 from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
 
 from musik.config import get_settings
+from musik.db.store import (
+    TAG_SCHEMA_VERSION,
+    set_tag_schema_version,
+    tag_schema_version,
+    update_track_tags,
+)
 from musik.db import (
     ensure_db,
     mark_duplicates,
@@ -86,6 +92,8 @@ def _process_one(path: Path, *, extract_audio: bool) -> tuple[str, dict | None, 
             "album": tags.album,
             "is_remaster": tags.is_remaster,
             "artist_segments": tags.artist_segments,
+            "album_artist": tags.album_artist,
+            "is_compilation": tags.compilation,
             "year": tags.year,
             "track_number": tags.track_number,
             "duration": tags.duration,
@@ -106,6 +114,35 @@ def _process_one(path: Path, *, extract_audio: bool) -> tuple[str, dict | None, 
         return "fail", None, str(exc)
 
 
+def _tag_payload(path: Path) -> tuple[str, dict[str, Any]]:
+    tags = read_tags(path)
+    return str(path.resolve()), {
+        "title": tags.title, "artist": tags.artist, "album": tags.album,
+        "year": tags.year, "track_number": tags.track_number,
+        "is_remaster": tags.is_remaster, "artist_segments": tags.artist_segments,
+        "album_artist": tags.album_artist, "is_compilation": tags.compilation,
+    }
+
+
+def _refresh_tags(
+    paths: list[Path],
+    workers: int,
+    on_progress: Callable[[dict[str, Any]], None] | None,
+) -> None:
+    if on_progress is not None:
+        on_progress({"phase": "retag", "done": 0, "total": len(paths), "pct": 0.0,
+                     "message": f"re-reading tags of {len(paths)} unchanged files"})
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = [pool.submit(_tag_payload, path) for path in paths]
+        for future in as_completed(futures):
+            try:
+                path_str, payload = future.result()
+            except Exception:
+                logger.exception("tag refresh failed")
+                continue
+            update_track_tags(path_str, payload)
+
+
 def scan_library(
     library: Path | None = None,
     *,
@@ -122,6 +159,10 @@ def scan_library(
     known = track_file_states()
     seen: set[str] = set()
     pending: list[Path] = []
+    # Unchanged files whose tags were read by an older scanner get their tag
+    # columns refreshed once, without fingerprinting or audio analysis.
+    retag_due = limit is None and tag_schema_version() < TAG_SCHEMA_VERSION
+    retag: list[Path] = []
     for path in files:
         path_str = str(path.resolve())
         seen.add(path_str)
@@ -138,6 +179,8 @@ def scan_library(
             and float(state.get("file_mtime") or -1) == float(stat.st_mtime)
         ):
             result.skipped_unchanged += 1
+            if retag_due:
+                retag.append(path)
         else:
             pending.append(path)
     if limit is not None:
@@ -215,6 +258,9 @@ def scan_library(
                 "message": "marking missing / duplicates",
             }
         )
+    if retag_due:
+        _refresh_tags(retag, workers, on_progress)
+        set_tag_schema_version(TAG_SCHEMA_VERSION)
     result.inactivated = mark_missing_inactive(seen)
     if extract_audio:
         result.duplicates_marked = mark_duplicates()

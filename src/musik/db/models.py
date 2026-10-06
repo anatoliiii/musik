@@ -34,6 +34,9 @@ class Track(Base):
     is_remaster: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     # JSON array of collaborator credits split at scan time.
     artist_segments: Mapped[str | None] = mapped_column(Text)
+    # Album-level credit and compilation flag; albums group by them.
+    album_artist: Mapped[str | None] = mapped_column(Text)
+    is_compilation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     artwork_path: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)

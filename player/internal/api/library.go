@@ -13,16 +13,18 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	artist := strings.TrimSpace(r.URL.Query().Get("artist"))
 	album := strings.TrimSpace(r.URL.Query().Get("album"))
 	type row struct {
-		ID       int64    `json:"id"`
-		Artist   string   `json:"artist"`
-		Artists  []string `json:"artists,omitempty"`
-		Title    string   `json:"title"`
-		Album    string   `json:"album"`
-		Duration float64  `json:"duration"`
-		Cluster  int      `json:"cluster_id"`
-		Artwork  string   `json:"artwork,omitempty"`
-		Ready    bool     `json:"ready"`
-		Status   string   `json:"status,omitempty"`
+		ID      int64    `json:"id"`
+		Artist  string   `json:"artist"`
+		Artists []string `json:"artists,omitempty"`
+		// AlbumArtist lists a compilation track under its album credit.
+		AlbumArtist string  `json:"album_artist,omitempty"`
+		Title       string  `json:"title"`
+		Album       string  `json:"album"`
+		Duration    float64 `json:"duration"`
+		Cluster     int     `json:"cluster_id"`
+		Artwork     string  `json:"artwork,omitempty"`
+		Ready       bool    `json:"ready"`
+		Status      string  `json:"status,omitempty"`
 	}
 	limit := queryLimit(r, 0, 2000)
 	needAll := artist != "" || album != ""
@@ -38,7 +40,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	out := make([]row, 0, len(catalog))
 	if len(catalog) > 0 {
 		for _, m := range catalog {
-			if !library.MatchArtistAlbum(m.Artist, m.Artists, m.Album, artist, album) {
+			if !library.MatchArtistAlbum(m.Artist, m.Artists, m.AlbumArtist, m.Album, artist, album) {
 				continue
 			}
 			art := ""
@@ -46,7 +48,7 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 				art = "/api/artwork/" + strconv.FormatInt(m.ID, 10)
 			}
 			out = append(out, row{
-				ID: m.ID, Artist: m.Artist, Artists: m.Artists, Title: m.Title, Album: m.Album,
+				ID: m.ID, Artist: m.Artist, Artists: m.Artists, AlbumArtist: m.AlbumArtist, Title: m.Title, Album: m.Album,
 				Duration: m.Duration, Cluster: m.Cluster, Artwork: art,
 				Ready: m.Status == "ready", Status: m.Status,
 			})
@@ -60,14 +62,14 @@ func (s *Server) handleLibrary(w http.ResponseWriter, r *http.Request) {
 	n := s.Idx.Size()
 	for i := 0; i < n; i++ {
 		m := s.Idx.MetaAt(i)
-		if !library.MatchArtistAlbum(m.Artist, m.Artists, m.Album, artist, album) {
+		if !library.MatchArtistAlbum(m.Artist, m.Artists, m.AlbumArtist, m.Album, artist, album) {
 			continue
 		}
 		art := ""
 		if m.ArtworkPath != "" {
 			art = "/api/artwork/" + strconv.FormatInt(m.ID, 10)
 		}
-		out = append(out, row{m.ID, m.Artist, m.Artists, m.Title, m.Album, m.Duration, m.ClusterID, art, true, "ready"})
+		out = append(out, row{m.ID, m.Artist, m.Artists, m.AlbumArtist, m.Title, m.Album, m.Duration, m.ClusterID, art, true, "ready"})
 		if limit > 0 && len(out) >= limit {
 			break
 		}

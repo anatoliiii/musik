@@ -18,6 +18,63 @@ def _track_mapping(track: Track) -> dict[str, Any]:
     return {column.name: getattr(track, column.key) for column in Track.__table__.columns}
 
 
+# Bump when the scanner starts reading or deriving more from tags; the next
+# scan then re-reads tags of unchanged files once (no audio analysis).
+TAG_SCHEMA_VERSION = 2
+
+TAG_FIELDS = ("title", "artist", "album", "year", "track_number")
+
+# Who an album belongs to: the album-level credit, "Various Artists" for a
+# flagged compilation without one, otherwise the track artist. The Go player
+# groups albums by the same rule (db.albumOwnerSQL).
+VARIOUS_ARTISTS = "Various Artists"
+ALBUM_OWNER_SQL = (
+    "COALESCE(NULLIF(trim(t.album_artist), ''), "
+    f"CASE WHEN t.is_compilation = 1 THEN '{VARIOUS_ARTISTS}' END, t.artist)"
+)
+
+
+def _derived_tag_values(data: dict[str, Any]) -> dict[str, Any]:
+    album_artist = (data.get("album_artist") or "").strip() or None
+    return {
+        "is_remaster": 1 if data.get("is_remaster") else 0,
+        "artist_segments": json.dumps(
+            [str(segment) for segment in (data.get("artist_segments") or [])], ensure_ascii=False
+        ),
+        "album_artist": album_artist,
+        "is_compilation": 1 if data.get("is_compilation") else 0,
+    }
+
+
+def update_track_tags(path: str, data: dict[str, Any]) -> bool:
+    """Refresh tag-derived columns of an unchanged file without re-analysis."""
+    with connect() as conn:
+        track = conn.session.scalar(select(Track).where(Track.path == path))
+        if track is None:
+            return False
+        values = {name: data.get(name) for name in TAG_FIELDS}
+        values.update(_derived_tag_values(data))
+        for name, value in values.items():
+            setattr(track, name, value)
+        track.updated_at = utcnow()
+        return True
+
+
+def tag_schema_version() -> int:
+    with connect() as conn:
+        state = conn.session.get(ScanState, "tag_schema_version")
+        return int(state.value) if state is not None and str(state.value).isdigit() else 1
+
+
+def set_tag_schema_version(version: int) -> None:
+    with connect() as conn:
+        state = conn.session.get(ScanState, "tag_schema_version")
+        if state is None:
+            conn.session.add(ScanState(key="tag_schema_version", value=str(version)))
+        else:
+            state.value = str(version)
+
+
 def upsert_track(data: dict[str, Any]) -> int:
     """Insert or update a catalog track through its SQLAlchemy mapping."""
     now = utcnow()
@@ -27,10 +84,7 @@ def upsert_track(data: dict[str, Any]) -> int:
         "channels", "fingerprint", "lufs", "artwork_path",
     )
     values = {name: data.get(name) for name in fields}
-    values["is_remaster"] = 1 if data.get("is_remaster") else 0
-    values["artist_segments"] = json.dumps(
-        [str(segment) for segment in (data.get("artist_segments") or [])], ensure_ascii=False
-    )
+    values.update(_derived_tag_values(data))
     with connect() as conn:
         session = conn.session
         track = session.scalar(select(Track).where(Track.path == data["path"]))
@@ -351,7 +405,7 @@ def list_tracks_needing_artwork(
     query never discards a row because it happens to carry a non-empty string.
     """
     sql = """
-        SELECT t.id, t.path, t.file_md5, t.artist, t.album, t.artwork_path
+        SELECT t.id, t.path, t.file_md5, """ + ALBUM_OWNER_SQL + """ AS artist, t.album, t.artwork_path
         FROM tracks t
         WHERE t.is_active = 1 AND COALESCE(t.is_duplicate_of, 0) = 0
           AND trim(COALESCE(t.artist, '')) != ''

@@ -11,6 +11,7 @@ import numpy as np
 from sqlalchemy import bindparam, text
 
 from musik.db.schema import connect, utcnow
+from musik.db.store import ALBUM_OWNER_SQL
 from musik.index.brute import EmbeddingIndex, load_index
 from musik.listen.profile import resolve_taste
 
@@ -33,7 +34,9 @@ def _album_groups(index: EmbeddingIndex) -> dict[tuple[str, str], list[int]]:
     track_ids = [int(m["id"]) for m in index.meta]
     album_by_id: dict[int, tuple[str, str]] = {}
     if track_ids:
-        query = text("SELECT id, artist, album FROM tracks WHERE id IN :ids").bindparams(
+        query = text(
+            f"SELECT t.id, {ALBUM_OWNER_SQL} AS artist, t.album FROM tracks t WHERE t.id IN :ids"
+        ).bindparams(
             bindparam("ids", expanding=True)
         )
         with connect() as conn:

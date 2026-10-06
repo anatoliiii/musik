@@ -17,12 +17,14 @@ import (
 )
 
 type Meta struct {
-	ID           int64
-	Path         string
-	Title        string
-	Artist       string
+	ID     int64
+	Path   string
+	Title  string
+	Artist string
 	// Artists holds the collaborator segments from the database (row.artists).
-	Artists      []string
+	Artists []string
+	// AlbumArtist is the album-level credit; empty when the tags have none.
+	AlbumArtist  string
 	Album        string
 	Duration     float64
 	FileMD5      string
@@ -154,7 +156,7 @@ func (idx *Index) Load(rows []db.TrackRow) error {
 		}
 		meta[i] = Meta{
 			ID: r.ID, Path: r.Path, Title: r.Title, Artist: r.Artist,
-			Artists: r.ArtistSegments, Album: r.Album,
+			Artists: r.ArtistSegments, AlbumArtist: r.AlbumArtist, Album: r.Album,
 			Duration: r.Duration, FileMD5: r.FileMD5, CreatedAt: created,
 			ArtworkPath: r.ArtworkPath, ClusterID: r.ClusterID,
 			Shown: r.Shown, SkipEarly: r.SkipEarly, Completed: r.Completed,
@@ -170,6 +172,15 @@ func (idx *Index) Load(rows []db.TrackRow) error {
 			songKeyToIDs[key] = append(songKeyToIDs[key], r.ID)
 		}
 		albumKey := normName(r.Album)
+		// A credited album (a compilation) is one album of its album artist;
+		// otherwise every credited track artist owns the album.
+		if owner := strings.TrimSpace(r.AlbumArtist); owner != "" && albumKey != "" {
+			aKey := normName(owner) + "\x00" + albumKey
+			artistAlbums[aKey] = append(artistAlbums[aKey], i)
+			if _, ok := albumNames[aKey]; !ok {
+				albumNames[aKey] = [2]string{owner, strings.TrimSpace(r.Album)}
+			}
+		}
 		for _, name := range trackArtistNames(r.Artist, r.ArtistSegments) {
 			key := normName(name)
 			if key == "" {
@@ -179,7 +190,7 @@ func (idx *Index) Load(rows []db.TrackRow) error {
 			if _, ok := artistNames[key]; !ok {
 				artistNames[key] = name
 			}
-			if albumKey != "" {
+			if albumKey != "" && strings.TrimSpace(r.AlbumArtist) == "" {
 				aKey := key + "\x00" + albumKey
 				artistAlbums[aKey] = append(artistAlbums[aKey], i)
 				if _, ok := albumNames[aKey]; !ok {
@@ -682,4 +693,16 @@ func Quantile(vals []float32, q float64) float32 {
 	}
 	frac := float32(pos - float64(i))
 	return cp[i]*(1-frac) + cp[i+1]*frac
+}
+
+// AlbumOwner is who the track's album is listed under: the album-level
+// credit when the tags carry one, else the primary credited artist.
+func (m Meta) AlbumOwner() string {
+	if owner := strings.TrimSpace(m.AlbumArtist); owner != "" {
+		return owner
+	}
+	if len(m.Artists) > 0 {
+		return strings.TrimSpace(m.Artists[0])
+	}
+	return strings.TrimSpace(m.Artist)
 }

@@ -32,24 +32,31 @@ func artistTracks(groups []ArtistGroup, name string) int {
 }
 
 func TestMatchArtistAlbum(t *testing.T) {
-	if !MatchArtistAlbum("Massive Attack", nil, "Mezzanine", " massive attack ", "") {
+	// A compilation track matches its album credit as well as its own artist.
+	if !MatchArtistAlbum("Foxmelody", nil, "Разные артисты", "Силовая тренировка", "разные артисты", "Силовая тренировка") {
+		t.Fatal("compilation track must match its album artist")
+	}
+	if !MatchArtistAlbum("Foxmelody", nil, "Разные артисты", "Силовая тренировка", "Foxmelody", "") {
+		t.Fatal("compilation track must still match its own artist")
+	}
+	if !MatchArtistAlbum("Massive Attack", nil, "", "Mezzanine", " massive attack ", "") {
 		t.Fatal("artist match should be case-insensitive")
 	}
-	if MatchArtistAlbum("Massive Attack", nil, "Protection", "Massive Attack", "mezzanine") {
+	if MatchArtistAlbum("Massive Attack", nil, "", "Protection", "Massive Attack", "mezzanine") {
 		t.Fatal("album mismatch should fail")
 	}
-	if !MatchArtistAlbum("Portishead", nil, "Dummy", "", "") {
+	if !MatchArtistAlbum("Portishead", nil, "", "Dummy", "", "") {
 		t.Fatal("empty filters should match")
 	}
 	// A stored collaborator segment matches its performer.
-	if !MatchArtistAlbum("Thomas/БИ-2/Сплин", []string{"Thomas", "БИ-2", "Сплин"}, "Fellini 2001 Tour", "Сплин", "") {
+	if !MatchArtistAlbum("Thomas/БИ-2/Сплин", []string{"Thomas", "БИ-2", "Сплин"}, "", "Fellini 2001 Tour", "Сплин", "") {
 		t.Fatal("collaboration should match a stored segment")
 	}
 	// A band name is stored whole and must not match a separator part.
-	if MatchArtistAlbum("Король и Шут", []string{"Король и Шут"}, "Ангел-Демон", "Король", "") {
+	if MatchArtistAlbum("Король и Шут", []string{"Король и Шут"}, "", "Ангел-Демон", "Король", "") {
 		t.Fatal("band name should not match on a part")
 	}
-	if !MatchArtistAlbum("Король и Шут", []string{"Король и Шут"}, "Ангел-Демон", "Король и Шут", "") {
+	if !MatchArtistAlbum("Король и Шут", []string{"Король и Шут"}, "", "Ангел-Демон", "Король и Шут", "") {
 		t.Fatal("band name should match as a whole")
 	}
 }
@@ -143,5 +150,34 @@ func TestGameSoundtrackAlbums(t *testing.T) {
 	}
 	if IsGameSoundtrackPath("/music/Steam OSTs/x.mp3") {
 		t.Fatal("only whole folder names count")
+	}
+}
+
+func TestCompilationIsOneAlbumOfItsAlbumArtist(t *testing.T) {
+	const album = "Силовая тренировка & Бег"
+	idx := testIndex(t, []db.TrackRow{
+		{ID: 1, Title: "Be Junior", Artist: "Foxmelody", AlbumArtist: "Разные артисты", Album: album, Embedding: vec(1), Dim: 2},
+		{ID: 2, Title: "Run", Artist: "Jogger", AlbumArtist: "Разные артисты", Album: album, Embedding: vec(2), Dim: 2},
+		{ID: 3, Title: "Lift", Artist: "Ironmen", AlbumArtist: "Разные артисты", Album: album, Embedding: vec(3), Dim: 2},
+		{ID: 4, Title: "Solo", Artist: "Foxmelody", Album: "Own Record", Embedding: vec(4), Dim: 2},
+	})
+	var compilation []AlbumGroup
+	for _, g := range GroupAlbums(idx) {
+		if g.Album == album {
+			compilation = append(compilation, g)
+		}
+	}
+	if len(compilation) != 1 || compilation[0].Artist != "Разные артисты" || compilation[0].Tracks != 3 {
+		t.Fatalf("compilation groups=%+v, want one album of 3 tracks", compilation)
+	}
+	if rows := idx.RowsForAlbum("Разные артисты", album); len(rows) != 3 {
+		t.Fatalf("rows for compilation=%v", rows)
+	}
+	// Track artists keep their own entries and albums.
+	if rows := idx.RowsForArtist("Foxmelody"); len(rows) != 2 {
+		t.Fatalf("Foxmelody rows=%v, want both tracks", rows)
+	}
+	if rows := idx.RowsForAlbum("Foxmelody", "Own Record"); len(rows) != 1 {
+		t.Fatalf("own album rows=%v", rows)
 	}
 }
