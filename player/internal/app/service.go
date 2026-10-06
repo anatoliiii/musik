@@ -30,6 +30,9 @@ type Service struct {
 	Taste *taste.Profile
 	Play  *playback.Engine
 	HTTP  *http.Client
+	// ProfileRuntime marks a per-profile copy of the catalog index. Shared
+	// catalog derivatives are written once by the installation runtime.
+	ProfileRuntime bool
 }
 
 func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile, play *playback.Engine, client *http.Client) *Service {
@@ -62,7 +65,7 @@ func (s *Service) Reload() error {
 		s.Taste.Maturity(s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt))
 	s.Play.ReloadTransitions()
 	s.Play.ReloadRanker()
-	if s.Store.ReadOnly {
+	if s.Store.ReadOnly || s.ProfileRuntime {
 		return nil
 	}
 	entityRows := s.Idx.EntityVectorRows(db.EntityModelVersion)

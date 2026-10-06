@@ -20,37 +20,40 @@ func IsArchive(name string) bool {
 		strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")
 }
 
-// SaveArchive accepts regular audio files only. Extraction is staged before
-// publishing; links, absolute paths, traversal and excessive expansion fail.
+// archiveSource is satisfied by multipart.File, which is already spooled to
+// memory or a temporary file; it is read in place instead of copied again.
+type archiveSource interface {
+	io.Reader
+	io.ReaderAt
+	io.Seeker
+}
+
+// SaveArchive accepts regular audio files only. Extraction is staged inside
+// the library (a hidden directory the scanner ignores) and published by rename
+// once the whole archive is valid; links, absolute paths, traversal and
+// excessive expansion fail before anything becomes visible.
 func SaveArchive(root, name string, src io.Reader) ([]Saved, []Skipped, error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, nil, err
 	}
+	input, size, cleanup, err := openArchiveSource(src)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer cleanup()
 	stage, err := os.MkdirTemp(root, ".archive-*")
 	if err != nil {
 		return nil, nil, err
 	}
 	defer os.RemoveAll(stage)
-	compressed, err := os.CreateTemp("", "musik-archive-*")
-	if err != nil {
-		return nil, nil, err
-	}
-	defer os.Remove(compressed.Name())
-	defer compressed.Close()
-	n, err := io.Copy(compressed, io.LimitReader(src, MaxFileBytes+1))
-	if err != nil || n > MaxFileBytes {
-		return nil, nil, errors.New("архив повреждён или превышает 1 ГиБ")
-	}
-	if _, err := compressed.Seek(0, io.SeekStart); err != nil {
-		return nil, nil, err
-	}
+
 	var extracted []Saved
 	var skipped []Skipped
 	var expanded int64
 	seen := make(map[string]bool)
 	save := func(raw string, size int64, reader io.Reader) error {
 		raw = strings.ReplaceAll(raw, "\\", "/")
-		if strings.HasPrefix(raw, "/") || strings.Contains(raw, ":") {
+		if strings.HasPrefix(raw, "/") || hasDriveLetter(raw) {
 			return errors.New("недопустимый путь в архиве")
 		}
 		for _, part := range strings.Split(raw, "/") {
@@ -85,7 +88,7 @@ func SaveArchive(root, name string, src io.Reader) ([]Saved, []Skipped, error) {
 		return nil
 	}
 	if strings.HasSuffix(strings.ToLower(name), ".zip") {
-		archive, err := zip.NewReader(compressed, n)
+		archive, err := zip.NewReader(input, size)
 		if err != nil {
 			return nil, nil, errors.New("не удалось прочитать ZIP")
 		}
@@ -113,10 +116,10 @@ func SaveArchive(root, name string, src io.Reader) ([]Saved, []Skipped, error) {
 			}
 		}
 	} else {
-		var reader io.Reader = compressed
+		var reader io.Reader = input
 		lower := strings.ToLower(name)
 		if strings.HasSuffix(lower, ".gz") || strings.HasSuffix(lower, ".tgz") {
-			gz, err := gzip.NewReader(compressed)
+			gz, err := gzip.NewReader(input)
 			if err != nil {
 				return nil, nil, errors.New("не удалось прочитать GZIP")
 			}
@@ -158,18 +161,88 @@ func SaveArchive(root, name string, src io.Reader) ([]Saved, []Skipped, error) {
 			return nil, nil, errors.New("распакованный архив превышает 8 ГиБ")
 		}
 	}
-	var saved []Saved
-	for _, file := range extracted {
-		r, err := os.Open(filepath.Join(stage, file.Path))
-		if err != nil {
-			return saved, skipped, err
-		}
-		n, err := SaveFile(root, file.Path, r)
-		_ = r.Close()
-		if err != nil {
-			return saved, skipped, err
-		}
-		saved = append(saved, Saved{Path: file.Path, Bytes: n})
+	if err := publishStaged(root, stage, extracted); err != nil {
+		return nil, skipped, err
 	}
-	return saved, skipped, nil
+	return extracted, skipped, nil
+}
+
+// hasDriveLetter rejects Windows absolute paths ("C:/...") while allowing
+// colons inside ordinary names such as "Artist: Title.flac".
+func hasDriveLetter(path string) bool {
+	if len(path) < 2 || path[1] != ':' {
+		return false
+	}
+	c := path[0]
+	return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+}
+
+func openArchiveSource(src io.Reader) (archiveSource, int64, func(), error) {
+	if file, ok := src.(archiveSource); ok {
+		size, err := file.Seek(0, io.SeekEnd)
+		if err == nil {
+			_, err = file.Seek(0, io.SeekStart)
+		}
+		if err != nil {
+			return nil, 0, nil, err
+		}
+		if size > MaxFileBytes {
+			return nil, 0, nil, errors.New("архив превышает 1 ГиБ")
+		}
+		return file, size, func() {}, nil
+	}
+	spool, err := os.CreateTemp("", "musik-archive-*")
+	if err != nil {
+		return nil, 0, nil, err
+	}
+	cleanup := func() {
+		_ = spool.Close()
+		_ = os.Remove(spool.Name())
+	}
+	n, err := io.Copy(spool, io.LimitReader(src, MaxFileBytes+1))
+	if err != nil || n > MaxFileBytes {
+		cleanup()
+		return nil, 0, nil, errors.New("архив повреждён или превышает 1 ГиБ")
+	}
+	if _, err := spool.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, 0, nil, err
+	}
+	return spool, n, cleanup, nil
+}
+
+// publishStaged moves staged files into the library. The stage lives on the
+// same filesystem, so each move is a rename; a failure removes the files this
+// archive created, leaving previously existing library files in place.
+func publishStaged(root, stage string, files []Saved) error {
+	library, err := os.OpenRoot(root)
+	if err != nil {
+		return errors.New("библиотека недоступна")
+	}
+	defer library.Close()
+	stageRel, err := filepath.Rel(root, stage)
+	if err != nil {
+		return err
+	}
+	var created []string
+	rollback := func() {
+		for _, rel := range created {
+			_ = library.Remove(rel)
+		}
+	}
+	for _, file := range files {
+		if err := library.MkdirAll(filepath.Dir(file.Path), 0o755); err != nil {
+			rollback()
+			return errors.New("не удалось создать папку")
+		}
+		_, statErr := library.Lstat(file.Path)
+		if err := library.Rename(filepath.Join(stageRel, file.Path), file.Path); err != nil {
+			rollback()
+			return errors.New("не удалось сохранить файл")
+		}
+		if errors.Is(statErr, os.ErrNotExist) {
+			created = append(created, file.Path)
+		}
+	}
+	return nil
 }

@@ -220,6 +220,13 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	for _, route := range apiRoutes {
 		mux.HandleFunc(route.method+" "+route.path, func(w http.ResponseWriter, r *http.Request) {
+			// A hot standby rejects every write; fail clearly instead of
+			// surfacing PostgreSQL's read-only transaction error as a 500.
+			if s.Store.ReadOnly && route.method != http.MethodGet {
+				w.Header().Set("Retry-After", "30")
+				writeErr(w, 503, "read_only_replica", "this server is a read-only replica")
+				return
+			}
 			server, err := s.requestServer(r)
 			if err != nil {
 				writeErr(w, 404, "profile_not_found", "profile not found")

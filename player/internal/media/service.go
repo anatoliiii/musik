@@ -14,8 +14,7 @@ type Service struct {
 	cfg config.Config
 	idx *index.Index
 
-	mobileFlight mobileFlight
-	warm         *streamWarm
+	warm *streamWarm
 }
 
 // New creates a media service.

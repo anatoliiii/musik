@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +26,13 @@ type mobileFlight struct {
 	mu   sync.Mutex
 	wait map[int64]*flightEntry
 }
+
+// Every profile runtime has its own media.Service but they share one cache
+// directory, so de-duplication and the ffmpeg budget are process-wide.
+var (
+	sharedMobileFlight mobileFlight
+	transcodeSlots     = make(chan struct{}, max(2, runtime.NumCPU()/2))
+)
 
 func (f *mobileFlight) do(id int64, fn func() error) error {
 	f.mu.Lock()
@@ -117,17 +125,6 @@ func (s *Service) lookupMobileCache(id int64, srcPath string) (path, ctype strin
 	return "", "", false
 }
 
-func (s *Service) scheduleMobileTranscode(id int64, srcPath string) {
-	go func() {
-		path, ctype, err := s.ensureMobileFile(id, srcPath)
-		if err != nil {
-			log.Printf("mobile transcode %d: %v", id, err)
-			return
-		}
-		s.loadWarmFromFile(id, path, ctype)
-	}()
-}
-
 func (s *Service) ensureMobileFile(id int64, srcPath string) (path, ctype string, err error) {
 	if path, ctype, ok := s.lookupMobileCache(id, srcPath); ok {
 		return path, ctype, nil
@@ -141,7 +138,7 @@ func (s *Service) ensureMobileFile(id int64, srcPath string) (path, ctype string
 		return "", "", err
 	}
 
-	ferr := s.mobileFlight.do(id, func() error {
+	ferr := sharedMobileFlight.do(id, func() error {
 		if dstInfo, err := os.Stat(dst); err == nil && !dstInfo.ModTime().Before(srcInfo.ModTime()) && dstInfo.Size() > 0 {
 			return nil
 		}
@@ -154,7 +151,7 @@ func (s *Service) ensureMobileFile(id int64, srcPath string) (path, ctype string
 			if dstInfo, err := os.Stat(mp3Path); err == nil && !dstInfo.ModTime().Before(srcInfo.ModTime()) && dstInfo.Size() > 0 {
 				return mp3Path, mp3Type, nil
 			}
-			if err := s.mobileFlight.do(-id, func() error {
+			if err := sharedMobileFlight.do(-id, func() error {
 				return s.transcodeMobile(srcPath, mp3Path, "mp3")
 			}); err != nil {
 				return "", "", ferr
@@ -174,8 +171,14 @@ func (s *Service) transcodeMobile(src, dst, format string) error {
 	if ffmpeg == "" {
 		ffmpeg = "ffmpeg"
 	}
-	tmp := dst + ".tmp"
-	_ = os.Remove(tmp)
+	transcodeSlots <- struct{}{}
+	defer func() { <-transcodeSlots }()
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := tmpFile.Name()
+	_ = tmpFile.Close()
 
 	bitrate := s.mobileBitrate()
 	var args []string

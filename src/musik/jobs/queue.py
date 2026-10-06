@@ -70,7 +70,13 @@ def claim_next(*, kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None
         pending = select(Job.id).where(Job.status == "pending")
         if kinds is not None:
             pending = pending.where(Job.kind.in_(kinds))
-        next_id = pending.order_by(Job.id).limit(1).scalar_subquery()
+        # PostgreSQL skips rows another worker is claiming instead of waiting
+        # for it and then matching nothing; SQLite ignores the lock clause and
+        # serializes claims with its IMMEDIATE write transaction.
+        next_id = (
+            pending.order_by(Job.id).limit(1)
+            .with_for_update(skip_locked=True).scalar_subquery()
+        )
         statement = (
             update(Job).where(Job.id == next_id, Job.status == "pending")
             .values(status="running", updated_at=now).returning(Job)
