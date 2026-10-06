@@ -1,0 +1,211 @@
+package db
+
+import (
+	"context"
+	"testing"
+	"time"
+)
+
+// TestRepositorySmoke calls repository methods that other tests do not reach,
+// so SQL that only one backend accepts fails on the run for the other
+// (MUSIK_TEST_BACKEND=postgres). Assertions check the basic contract only.
+func TestRepositorySmoke(t *testing.T) {
+	store, _, _ := openTestTarget(t)
+	ctx := context.Background()
+	insertTracks(t, store, 3)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("taste contexts", func(t *testing.T) {
+		created, err := store.CreateTasteContext(TasteContext{Kind: "mood", Name: "Calm", Influence: 1, LearningEnabled: true})
+		must(err)
+		must(store.UpdateTasteContext(TasteContext{ID: created.ID, Name: "Calmer", Influence: 1.5, LearningEnabled: true,
+			Seeds: ContextSeeds{SchemaVersion: 1, Tracks: []int64{1}}}))
+		got, err := store.GetTasteContext(created.ID)
+		must(err)
+		if got == nil || got.Name != "Calmer" || got.Influence != 1.5 || len(got.Seeds.Tracks) != 1 {
+			t.Fatalf("context=%+v", got)
+		}
+		must(store.UpsertTasteContextState(TasteContextState{ContextID: created.ID, PositiveVector: []byte{1, 2, 3, 4}, EmbeddingDim: 1, PositiveSamples: 2}))
+		state, err := store.LoadTasteContextState(created.ID)
+		must(err)
+		if state == nil || state.PositiveSamples != 2 || state.EmbeddingDim != 1 {
+			t.Fatalf("state=%+v", state)
+		}
+		must(store.UpsertPlaySession(PlaySessionRow{ID: "smoke-session", Mode: "radio", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}))
+		must(store.SetSessionContexts("smoke-session", []string{created.ID}))
+		active, err := store.ActiveSessionContexts("smoke-session")
+		must(err)
+		if len(active) != 1 || active[0] != created.ID {
+			t.Fatalf("active=%v", active)
+		}
+	})
+
+	t.Run("sessions", func(t *testing.T) {
+		must(store.UpsertPlaySession(PlaySessionRow{ID: "smoke-old", Mode: "radio", UpdatedAt: "2026-01-01T00:00:00Z"}))
+		ids, err := store.OldestPlaySessionIDs(1)
+		must(err)
+		if len(ids) != 1 || ids[0] != "smoke-old" {
+			t.Fatalf("oldest=%v", ids)
+		}
+		must(store.DeletePlaySession("smoke-old"))
+		if _, ok, err := store.LoadPlaySession("smoke-old"); err != nil || ok {
+			t.Fatalf("deleted session ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("entity vectors", func(t *testing.T) {
+		must(store.ReplaceEntityVectors("", []EntityVector{{Type: "artist", Key: "a", Embedding: []byte{0, 0, 128, 63}, Dim: 1, TrackCount: 2}}))
+		rows, err := store.LoadEntityVectors("")
+		must(err)
+		one, err := store.EntityVector("artist", "a", "")
+		must(err)
+		if len(rows) != 1 || one == nil || one.TrackCount != 2 {
+			t.Fatalf("rows=%v one=%+v", rows, one)
+		}
+	})
+
+	t.Run("impressions", func(t *testing.T) {
+		requestID := NewID()
+		pending, abandoned := NewID(), NewID()
+		must(store.CreateRecommendationRequest(RecommendationRequest{RequestID: requestID, SessionID: "s-imp", Reason: "refill", PolicyVersion: "test"},
+			[]RecommendationImpression{
+				{ImpressionID: pending, SessionID: "s-imp", TrackID: 1, Source: "exploit"},
+				{ImpressionID: abandoned, SessionID: "s-imp", TrackID: 2, Source: "exploit"},
+			}, nil))
+		must(store.ClosePendingImpressions("s-imp", "superseded", []string{pending}))
+		must(store.AbandonSessionImpressions("s-imp"))
+		var outcomes []string
+		must(store.DB.Select(ctx, &outcomes, `SELECT outcome FROM recommendation_impressions WHERE profile_id = ? AND session_id = 's-imp' ORDER BY track_id`, store.ProfileID))
+		if len(outcomes) != 2 || outcomes[0] != "superseded" || outcomes[1] != "abandoned" {
+			t.Fatalf("outcomes=%v", outcomes)
+		}
+	})
+
+	t.Run("transition rebuild", func(t *testing.T) {
+		for i, trackID := range []int64{1, 2} {
+			_, err := store.ApplyLifecycleEvent(LifecycleEvent{EventID: NewID(), Type: "track_end", TrackID: trackID,
+				SessionID: "s-tr", Outcome: "finished", Reason: map[bool]string{true: "completed"}[i == 0]})
+			must(err)
+		}
+		n, err := store.RebuildTransitionStats()
+		must(err)
+		weights, err := store.LoadTransitionStatsFrom(1)
+		must(err)
+		if n != 1 || weights[2] <= 0 {
+			t.Fatalf("rebuilt=%d weights=%v", n, weights)
+		}
+	})
+
+	t.Run("accounts and invitations", func(t *testing.T) {
+		userID, profile, err := store.CreateUserWithDefaultProfile(ctx, "Smoke")
+		must(err)
+		must(store.RenameProfile(ctx, userID, profile.ID, "Renamed"))
+		name, roles, err := store.UserInfo(ctx, userID)
+		must(err)
+		if name != "Smoke" || len(roles) != 1 || roles[0] != "user" {
+			t.Fatalf("user=%q roles=%v", name, roles)
+		}
+		if ready, err := store.BootstrapReady(ctx); err != nil || ready {
+			t.Fatalf("bootstrap ready=%v err=%v (no admin, no owner invitation)", ready, err)
+		}
+		token, _, err := store.CreateDeviceToken(ctx, userID, profile.ID, "Phone")
+		must(err)
+		must(store.RevokeDeviceToken(ctx, userID, token.ID))
+		if err := store.RevokeDeviceToken(ctx, userID, "missing"); err != ErrDeviceTokenNotFound {
+			t.Fatalf("revoke missing=%v", err)
+		}
+		if SessionFingerprint("a") == SessionFingerprint("b") {
+			t.Fatal("fingerprints collide")
+		}
+	})
+
+	t.Run("radio shares and rules", func(t *testing.T) {
+		_, err := store.CreateRadioShare("smoke-token", "Share")
+		must(err)
+		must(store.TouchRadioShareListen("smoke-token"))
+		share, ok, err := store.GetActiveRadioShare("smoke-token")
+		must(err)
+		if !ok || share.ListenCount != 1 {
+			t.Fatalf("share=%+v ok=%v", share, ok)
+		}
+		owner, err := store.RadioShareProfile(ctx, "smoke-token")
+		if err != nil && err != ErrProfileNotFound {
+			t.Fatal(err)
+		}
+		_ = owner // the fixture owner is disabled until bootstrap; both outcomes are valid
+		rule, err := store.CreateRadioRule(RadioRule{TargetType: "artist", Action: "downrank", Scope: "global", TargetKey: "A"})
+		must(err)
+		must(store.UpdateRadioRule(RadioRule{ID: rule.ID, Strength: 0.25, ExpiresAt: "2099-01-01T00:00:00Z"}))
+		got, err := store.GetRadioRule(rule.ID)
+		must(err)
+		if got == nil || got.Strength != 0.25 || got.ExpiresAt != "2099-01-01T00:00:00Z" {
+			t.Fatalf("rule=%+v", got)
+		}
+	})
+
+	t.Run("tags and preferences", func(t *testing.T) {
+		tag, err := store.CreateCustomTag("Chill")
+		must(err)
+		must(store.TagTrack(tag.ID, 1))
+		must(store.TagTrack(tag.ID, 1))
+		ids, err := store.TrackIDsForTagNames([]string{" chill "})
+		must(err)
+		tags, err := store.ListCustomTags()
+		must(err)
+		if len(ids) != 1 || len(tags) != 1 || tags[0].TrackCount != 1 {
+			t.Fatalf("ids=%v tags=%+v", ids, tags)
+		}
+		must(store.UntagTrack(tag.ID, 1))
+		must(store.ArchiveCustomTag(tag.ID))
+		favorite := true
+		must(store.SetTrackPreference(2, "like", &favorite))
+		must(store.SetTrackPreference(2, "neutral", nil))
+		must(store.FavAlbumAdd("Artist", "Album"))
+		must(store.FavAlbumRemove("Artist", "Album"))
+		if store.FavAlbumHas("Artist", "Album") {
+			t.Fatal("album still favorite")
+		}
+	})
+
+	t.Run("user playlists", func(t *testing.T) {
+		pl, err := store.CreateUserPlaylist(UserPlaylist{Name: "Smoke", Type: "manual"})
+		must(err)
+		must(store.UpdateUserPlaylist(UserPlaylist{ID: pl.ID, Name: "Smoke 2", CoverTrackID: 1}))
+		must(store.ReplacePlaylistItems(pl.ID, []UserPlaylistItem{
+			{TrackID: 1},
+			{UnresolvedArtist: "ARTIST", UnresolvedTitle: "title"},
+			{UnresolvedPath: "/elsewhere/T-3.FLAC"},
+		}))
+		resolved, err := store.ResolvePlaylistEntries()
+		must(err)
+		if resolved != 2 {
+			t.Fatalf("resolved=%d, want artist/title and file-name matches", resolved)
+		}
+		if id, ok, err := store.MatchTrack("", "", "/x/t_%.flac"); err != nil || ok {
+			t.Fatalf("LIKE wildcards must match literally: id=%d ok=%v err=%v", id, ok, err)
+		}
+		dup, err := store.DuplicateUserPlaylist(pl.ID)
+		must(err)
+		if dup == nil || dup.Name != "Smoke 2 (копия)" || len(dup.Tracks) != 3 {
+			t.Fatalf("duplicate=%+v", dup)
+		}
+		must(store.ArchiveUserPlaylist(pl.ID))
+	})
+
+	t.Run("jobs", func(t *testing.T) {
+		id, err := store.EnqueueJob("embed", "")
+		must(err)
+		_, err = store.DB.Exec(`UPDATE jobs SET status = 'done', updated_at = ? WHERE id = ?`, "2099-01-01T00:00:00Z", id)
+		must(err)
+		done, err := store.ListDoneJobsAfter("2098-01-01T00:00:00Z", 5)
+		must(err)
+		if len(done) != 1 || done[0].ID != id {
+			t.Fatalf("done=%+v", done)
+		}
+	})
+}
