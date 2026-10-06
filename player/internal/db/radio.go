@@ -18,9 +18,9 @@ type RadioShare struct {
 
 func (s *Store) CreateRadioShare(token, name string) (RadioShare, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
-INSERT INTO radio_shares(token, name, created_at, listen_count,profile_id)
-VALUES(?,?,?,0,:musik_profile)`, token, name, now)
+	_, err := s.DB.Exec(`
+INSERT INTO radio_shares(token, name, created_at, listen_count, profile_id)
+VALUES(?,?,?,0,?)`, token, name, now, s.ProfileID)
 	if err != nil {
 		return RadioShare{}, err
 	}
@@ -29,12 +29,12 @@ VALUES(?,?,?,0,:musik_profile)`, token, name, now)
 
 func (s *Store) ListRadioShares(includeRevoked bool) ([]RadioShare, error) {
 	q := `SELECT token, name, created_at, revoked_at, last_listen_at, listen_count
-FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_shares`
+FROM radio_shares WHERE profile_id = ?`
 	if !includeRevoked {
-		q += ` WHERE revoked_at IS NULL`
+		q += ` AND revoked_at IS NULL`
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.legacy.Query(q)
+	rows, err := s.DB.Query(q, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}
@@ -61,9 +61,9 @@ FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_share
 func (s *Store) GetActiveRadioShare(token string) (RadioShare, bool, error) {
 	var sh RadioShare
 	var revoked, last sql.NullString
-	err := s.legacy.QueryRow(`
+	err := s.DB.QueryRow(`
 SELECT token, name, created_at, revoked_at, last_listen_at, listen_count
-FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_shares WHERE token = ?`, token).Scan(
+FROM radio_shares WHERE profile_id = ? AND token = ?`, s.ProfileID, token).Scan(
 		&sh.Token, &sh.Name, &sh.CreatedAt, &revoked, &last, &sh.ListenCount)
 	if err == sql.ErrNoRows {
 		return RadioShare{}, false, nil
@@ -84,7 +84,7 @@ FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_share
 
 func (s *Store) RevokeRadioShare(token string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.legacy.Exec(`UPDATE radio_shares SET revoked_at = ? WHERE radio_shares.profile_id=:musik_profile AND ( token = ? AND revoked_at IS NULL) `, now, token)
+	res, err := s.DB.Exec(`UPDATE radio_shares SET revoked_at = ? WHERE profile_id = ? AND token = ? AND revoked_at IS NULL`, now, s.ProfileID, token)
 	if err != nil {
 		return err
 	}
@@ -97,8 +97,8 @@ func (s *Store) RevokeRadioShare(token string) error {
 
 func (s *Store) TouchRadioShareListen(token string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 UPDATE radio_shares SET listen_count = listen_count + 1, last_listen_at = ?
-WHERE radio_shares.profile_id=:musik_profile AND ( token = ? AND revoked_at IS NULL) `, now, token)
+WHERE profile_id = ? AND token = ? AND revoked_at IS NULL`, now, s.ProfileID, token)
 	return err
 }

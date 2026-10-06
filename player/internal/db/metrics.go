@@ -3,6 +3,7 @@ package db
 import (
 	"fmt"
 	"math"
+	"time"
 )
 
 const (
@@ -88,6 +89,7 @@ func (s *Store) OutcomeMetrics(days int) (Metrics, error) {
 	if len(overall) > 0 {
 		metrics.Overall = overall[0]
 	}
+	hour := s.Dialect.HourUTC("i.played_at")
 	dimensions := []struct {
 		name string
 		sql  string
@@ -95,12 +97,12 @@ func (s *Store) OutcomeMetrics(days int) (Metrics, error) {
 		{"source", "i.source"},
 		{"daypart", `CASE
 			WHEN i.played_at IS NULL THEN 'unplayed'
-			WHEN CAST(strftime('%H', i.played_at) AS INTEGER) BETWEEN 5 AND 11 THEN 'morning'
-			WHEN CAST(strftime('%H', i.played_at) AS INTEGER) BETWEEN 12 AND 16 THEN 'afternoon'
-			WHEN CAST(strftime('%H', i.played_at) AS INTEGER) BETWEEN 17 AND 22 THEN 'evening'
+			WHEN ` + hour + ` BETWEEN 5 AND 11 THEN 'morning'
+			WHEN ` + hour + ` BETWEEN 12 AND 16 THEN 'afternoon'
+			WHEN ` + hour + ` BETWEEN 17 AND 22 THEN 'evening'
 			ELSE 'night' END`},
 		{"maturity", "COALESCE(NULLIF(i.maturity,''), 'unknown')"},
-		{"date", "date(i.queued_at)"},
+		{"date", s.Dialect.DateUTC("i.queued_at")},
 	}
 	for _, dimension := range dimensions {
 		slices, err := s.metricSlices(days, dimension.name, dimension.sql)
@@ -152,19 +154,23 @@ SELECT %s AS slice_key,
 		SUM(CASE WHEN i.outcome='superseded' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN i.outcome='abandoned' THEN 1 ELSE 0 END),
 		SUM(CASE WHEN EXISTS(
-           SELECT 1 FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
-           WHERE h.impression_id=i.impression_id AND h.action='like'
+           SELECT 1 FROM listening_history h
+           WHERE h.profile_id=i.profile_id AND h.impression_id=i.impression_id AND h.action='like'
        ) THEN 1 ELSE 0 END),
        COUNT(DISTINCT CASE WHEN i.played_at IS NOT NULL THEN NULLIF(t.artist,'') END)
-FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) i
+FROM recommendation_impressions i
 JOIN tracks t ON t.id=i.track_id
-WHERE i.legacy=0
+WHERE i.profile_id = ?
+  AND i.legacy=0
   AND i.source NOT IN ('manual', 'legacy')
   AND COALESCE(i.mode, '') != 'share'
-  AND datetime(i.queued_at) >= datetime('now', ?)
+  AND i.queued_at >= ?
 GROUP BY slice_key
 ORDER BY slice_key`, expression)
-	rows, err := s.legacy.Query(query, fmt.Sprintf("-%d days", days))
+	// Stored instants are UTC ISO-8601 text; a whole-second cutoff without a
+	// zone suffix orders correctly against both "Z" and "+00:00" forms.
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02T15:04:05")
+	rows, err := s.DB.Query(query, s.ProfileID, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -206,20 +212,20 @@ func (s *Store) baselineStatus() (BaselineStatus, error) {
 		MinimumImpressions: BaselineMinimumImpressions,
 	}
 	var started string
-	var elapsed float64
-	err := s.legacy.QueryRow(`
-SELECT COALESCE(MIN(played_at), ''),
-       COALESCE(julianday('now') - julianday(MIN(played_at)), 0),
-       COUNT(*)
-FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
-WHERE legacy=0 AND source NOT IN ('manual','legacy')
+	err := s.DB.QueryRow(`
+SELECT COALESCE(MIN(played_at), ''), COUNT(*)
+FROM recommendation_impressions
+WHERE profile_id = ? AND legacy=0 AND source NOT IN ('manual','legacy')
   AND COALESCE(mode, '') != 'share' AND played_at IS NOT NULL`,
-	).Scan(&started, &elapsed, &status.EligibleImpressions)
+		s.ProfileID,
+	).Scan(&started, &status.EligibleImpressions)
 	if err != nil {
 		return status, err
 	}
 	status.StartedAt = started
-	if started != "" {
+	var elapsed float64
+	if at, ok := parseTimestamp(started); ok {
+		elapsed = time.Since(at).Hours() / 24
 		status.ObservedDays = int(math.Floor(elapsed)) + 1
 	}
 	status.Ready = elapsed >= BaselineMinimumDays &&
@@ -279,4 +285,15 @@ func nullStr(s string) any {
 		return nil
 	}
 	return s
+}
+
+// parseTimestamp reads a stored UTC instant: RFC 3339 as written by Go and
+// Python, or SQLite's legacy "YYYY-MM-DD HH:MM:SS".
+func parseTimestamp(value string) (time.Time, bool) {
+	for _, layout := range []string{time.RFC3339Nano, "2006-01-02 15:04:05", "2006-01-02T15:04:05"} {
+		if t, err := time.Parse(layout, value); err == nil {
+			return t.UTC(), true
+		}
+	}
+	return time.Time{}, false
 }

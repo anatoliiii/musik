@@ -30,11 +30,12 @@ func (s *Store) LatestRecommendationPolicies(limit int) ([]RecommendationPolicyR
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT request_id, reason, policy_version, COALESCE(model_version,''),
        candidate_count, latency_ms, created_at, COALESCE(policy_json,'')
-FROM (SELECT * FROM recommendation_requests WHERE profile_id=:musik_profile) AS recommendation_requests
-ORDER BY created_at DESC LIMIT ?`, limit)
+FROM recommendation_requests
+WHERE profile_id = ?
+ORDER BY created_at DESC LIMIT ?`, s.ProfileID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +65,12 @@ func (s *Store) ListTrainingRuns(limit int) ([]TrainingRunRow, error) {
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT run_id, COALESCE(model_version,''), status, positive_count, negative_count,
        created_at, metrics_json
 FROM training_runs
-WHERE profile_id=:musik_profile
-ORDER BY created_at DESC LIMIT ?`, limit)
+WHERE profile_id = ?
+ORDER BY created_at DESC LIMIT ?`, s.ProfileID, limit)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil

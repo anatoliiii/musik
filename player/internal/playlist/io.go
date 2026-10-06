@@ -154,7 +154,7 @@ func ResolveImport(store *db.Store, doc ExportDoc) []db.UserPlaylistItem {
 			UnresolvedTitle:  tr.Title,
 			UnresolvedPath:   tr.Path,
 		}
-		if id, ok := matchTrack(store, tr); ok {
+		if id, ok, err := store.MatchTrack(tr.Artist, tr.Title, tr.Path); err == nil && ok {
 			item.TrackID = id
 		} else {
 			item.Unresolved = true
@@ -162,31 +162,6 @@ func ResolveImport(store *db.Store, doc ExportDoc) []db.UserPlaylistItem {
 		items = append(items, item)
 	}
 	return items
-}
-
-func matchTrack(store *db.Store, tr ExportTrack) (int64, bool) {
-	if tr.Artist != "" && tr.Title != "" {
-		var id int64
-		err := store.DB.QueryRow(`
-SELECT id FROM tracks
-WHERE is_active = 1 AND lower(trim(artist)) = lower(?) AND lower(trim(title)) = lower(?)
-ORDER BY id LIMIT 1`, tr.Artist, tr.Title).Scan(&id)
-		if err == nil {
-			return id, true
-		}
-	}
-	if tr.Path != "" {
-		base := filepath.Base(tr.Path)
-		var id int64
-		err := store.DB.QueryRow(`
-SELECT id FROM tracks
-WHERE is_active = 1 AND (path = ? OR path LIKE ?)
-ORDER BY id LIMIT 1`, tr.Path, "%"+base).Scan(&id)
-		if err == nil {
-			return id, true
-		}
-	}
-	return 0, false
 }
 
 func firstNonEmpty(values ...string) string {

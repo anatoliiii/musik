@@ -21,18 +21,18 @@ func (s *Store) CreateCustomTag(name string) (CustomTag, error) {
 		return CustomTag{}, fmt.Errorf("name required")
 	}
 	tag := CustomTag{ID: NewID(), Name: name, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	_, err := s.legacy.Exec(`INSERT INTO custom_tags(tag_id, name, created_at,profile_id) VALUES (?,?,?,:musik_profile)`,
-		tag.ID, tag.Name, tag.CreatedAt)
+	_, err := s.DB.Exec(`INSERT INTO custom_tags(tag_id, name, created_at, profile_id) VALUES (?,?,?,?)`,
+		tag.ID, tag.Name, tag.CreatedAt, s.ProfileID)
 	return tag, err
 }
 
 func (s *Store) ListCustomTags() ([]CustomTag, error) {
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT t.tag_id, t.name, t.created_at, COALESCE(t.archived_at,''),
-       (SELECT COUNT(*) FROM (SELECT * FROM track_tags WHERE profile_id=:musik_profile) tt WHERE tt.tag_id = t.tag_id)
-FROM (SELECT * FROM custom_tags WHERE profile_id=:musik_profile) t
-WHERE t.archived_at IS NULL
-ORDER BY t.name`)
+       (SELECT COUNT(*) FROM track_tags tt WHERE tt.profile_id = t.profile_id AND tt.tag_id = t.tag_id)
+FROM custom_tags t
+WHERE t.profile_id = ? AND t.archived_at IS NULL
+ORDER BY t.name`, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}
@@ -50,20 +50,21 @@ ORDER BY t.name`)
 
 func (s *Store) ArchiveCustomTag(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`UPDATE custom_tags SET archived_at = ? WHERE custom_tags.profile_id=:musik_profile AND ( tag_id = ?) `, now, id)
+	_, err := s.DB.Exec(`UPDATE custom_tags SET archived_at = ? WHERE profile_id = ? AND tag_id = ?`, now, s.ProfileID, id)
 	return err
 }
 
 func (s *Store) TagTrack(tagID string, trackID int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
-INSERT OR IGNORE INTO track_tags(tag_id, track_id, created_at,profile_id) VALUES (?,?,?,:musik_profile)`,
-		tagID, trackID, now)
+	_, err := s.DB.Exec(`
+INSERT INTO track_tags(tag_id, track_id, created_at, profile_id) VALUES (?,?,?,?)
+ON CONFLICT DO NOTHING`,
+		tagID, trackID, now, s.ProfileID)
 	return err
 }
 
 func (s *Store) UntagTrack(tagID string, trackID int64) error {
-	_, err := s.legacy.Exec(`DELETE FROM track_tags WHERE track_tags.profile_id=:musik_profile AND ( tag_id = ? AND track_id = ?) `, tagID, trackID)
+	_, err := s.DB.Exec(`DELETE FROM track_tags WHERE profile_id = ? AND tag_id = ? AND track_id = ?`, s.ProfileID, tagID, trackID)
 	return err
 }
 
@@ -72,16 +73,16 @@ func (s *Store) TrackIDsForTagNames(names []string) ([]int64, error) {
 		return nil, nil
 	}
 	placeholders := make([]string, len(names))
-	args := make([]any, len(names))
+	args := []any{s.ProfileID}
 	for i, name := range names {
 		placeholders[i] = "?"
-		args[i] = strings.ToLower(strings.TrimSpace(name))
+		args = append(args, strings.ToLower(strings.TrimSpace(name)))
 	}
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT DISTINCT tt.track_id
-FROM (SELECT * FROM track_tags WHERE profile_id=:musik_profile) tt
-JOIN (SELECT * FROM custom_tags WHERE profile_id=:musik_profile) t ON t.tag_id = tt.tag_id
-WHERE t.archived_at IS NULL AND lower(t.name) IN (`+strings.Join(placeholders, ",")+`)`, args...)
+FROM track_tags tt
+JOIN custom_tags t ON t.profile_id = tt.profile_id AND t.tag_id = tt.tag_id
+WHERE tt.profile_id = ? AND t.archived_at IS NULL AND lower(t.name) IN (`+strings.Join(placeholders, ",")+`)`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -113,7 +114,7 @@ func (s *Store) SetTrackPreference(trackID int64, rating string, favorite *bool)
 	}
 	if favorite == nil {
 		var existing int
-		err := s.legacy.QueryRow(`SELECT favorite FROM (SELECT * FROM track_preferences WHERE profile_id=:musik_profile) AS track_preferences WHERE track_id = ?`, trackID).Scan(&existing)
+		err := s.DB.QueryRow(`SELECT favorite FROM track_preferences WHERE profile_id = ? AND track_id = ?`, s.ProfileID, trackID).Scan(&existing)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
@@ -121,12 +122,12 @@ func (s *Store) SetTrackPreference(trackID int64, rating string, favorite *bool)
 			fav = existing
 		}
 	}
-	_, err := s.legacy.Exec(`
-INSERT INTO track_preferences(track_id, rating, favorite, updated_at,profile_id) VALUES (?,?,?,?,:musik_profile)
+	_, err := s.DB.Exec(`
+INSERT INTO track_preferences(track_id, rating, favorite, updated_at, profile_id) VALUES (?,?,?,?,?)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
   rating=excluded.rating,
   favorite=excluded.favorite,
   updated_at=excluded.updated_at`,
-		trackID, rating, fav, now)
+		trackID, rating, fav, now, s.ProfileID)
 	return err
 }

@@ -35,69 +35,6 @@ func openTestTarget(t *testing.T) (*Store, string, string) {
 	return store, databaseURL, path
 }
 
-func TestPostgreSQLQueryAdapterPreservesBindPositions(t *testing.T) {
-	got, args, err := adaptQuery("SELECT ?, datetime('now', ?), '?' -- ?\n", []any{7, "-3 days"}, "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "SELECT $1, (CURRENT_TIMESTAMP + CAST($2 AS INTERVAL)), '?' -- ?\n"
-	if got != want {
-		t.Fatalf("adaptQuery = %q, want %q", got, want)
-	}
-	if len(args) != 2 || args[0] != 7 || args[1] != "-3 days" {
-		t.Fatalf("bound arguments changed: %#v", args)
-	}
-}
-
-func TestPostgreSQLIgnoreBecomesConflictDoNothing(t *testing.T) {
-	got, _, err := adaptQuery("INSERT OR IGNORE INTO request_contexts(request_id) VALUES (?)", []any{"id"}, "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != "INSERT INTO request_contexts(request_id) VALUES ($1) ON CONFLICT DO NOTHING" {
-		t.Fatalf("adaptQuery = %q", got)
-	}
-}
-
-func TestPostgreSQLMetricTimeExpressionsArePortable(t *testing.T) {
-	got, _, err := adaptQuery(`SELECT CAST(strftime('%H', i.played_at) AS INTEGER), date(i.queued_at), julianday('now') - julianday(MIN(played_at))`, nil, "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := `SELECT CAST(EXTRACT(HOUR FROM CAST(i.played_at AS TIMESTAMPTZ)) AS INTEGER), CAST(CAST(i.queued_at AS TIMESTAMPTZ) AS DATE), EXTRACT(EPOCH FROM (CURRENT_TIMESTAMP - CAST(MIN(played_at) AS TIMESTAMPTZ))) / 86400.0`
-	if got != want {
-		t.Fatalf("adaptQuery = %q, want %q", got, want)
-	}
-}
-
-func TestPostgreSQLAdapterBindsProfileFromStoreContext(t *testing.T) {
-	got, args, err := adaptQueryProfile(
-		"SELECT id FROM profiles WHERE owner_profile=:musik_profile AND id=? AND note='?' -- ?",
-		[]any{17}, "postgres", "profile-a",
-	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "SELECT id FROM profiles WHERE owner_profile=$1 AND id=$2 AND note='?' -- ?"
-	if got != want {
-		t.Fatalf("adaptQueryProfile = %q, want %q", got, want)
-	}
-	if len(args) != 2 || args[0] != "profile-a" || args[1] != 17 {
-		t.Fatalf("profile bind order = %#v", args)
-	}
-}
-
-func TestPostgreSQLDatetimeColumnExpressionIsPortable(t *testing.T) {
-	got, _, err := adaptQuery("SELECT datetime(i.queued_at) FROM recommendation_impressions i", nil, "postgres")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "SELECT CAST(i.queued_at AS TIMESTAMPTZ) FROM recommendation_impressions i"
-	if got != want {
-		t.Fatalf("adaptQuery = %q, want %q", got, want)
-	}
-}
-
 func TestPostgreSQLStoreWhenConfigured(t *testing.T) {
 	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
 	if databaseURL == "" {

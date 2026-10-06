@@ -5,7 +5,7 @@ import (
 )
 
 func (s *Store) LoadReadyTracks() ([]TrackRow, error) {
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.album,''),
        COALESCE(t.duration,0), COALESCE(t.file_md5,''), COALESCE(t.created_at,''),
        COALESCE(t.artwork_path,''), COALESCE(f.cluster_id, -1),
@@ -16,11 +16,11 @@ SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.alb
        COALESCE(ts.last_played_at,'')
 FROM tracks t
 JOIN features f ON f.track_id = t.id
-LEFT JOIN (SELECT * FROM rec_stats WHERE profile_id=:musik_profile) rs ON rs.track_id = t.id
-LEFT JOIN (SELECT * FROM track_stats WHERE profile_id=:musik_profile) ts ON ts.track_id = t.id
+LEFT JOIN rec_stats rs ON rs.track_id = t.id AND rs.profile_id = ?
+LEFT JOIN track_stats ts ON ts.track_id = t.id AND ts.profile_id = ?
 WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
   AND f.status = 'ready' AND f.embedding IS NOT NULL
-ORDER BY t.id`)
+ORDER BY t.id`, s.ProfileID, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ ORDER BY t.id`
 		q += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.legacy.Query(q, args...)
+	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +96,7 @@ ORDER BY t.id`
 
 func (s *Store) TrackPath(id int64) (string, error) {
 	var path string
-	err := s.legacy.QueryRow(`SELECT path FROM tracks WHERE id = ? AND is_active = 1`, id).Scan(&path)
+	err := s.DB.QueryRow(`SELECT path FROM tracks WHERE id = ? AND is_active = 1`, id).Scan(&path)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}

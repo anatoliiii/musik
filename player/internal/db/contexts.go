@@ -85,19 +85,16 @@ func (s *Store) CreateTasteContext(ctx TasteContext) (TasteContext, error) {
 		seedsVer = sql.NullInt64{Int64: int64(ctx.Seeds.SchemaVersion), Valid: true}
 	}
 	learning := 1
-	if !ctx.LearningEnabled && ctx.ID != "" {
-		// default is enabled unless caller set the field explicitly via API
-	}
 	if !ctx.LearningEnabled {
 		learning = 0
 	}
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 INSERT INTO taste_contexts(
   context_id, kind, name, icon, influence, learning_enabled,
-  seeds_schema_version, seeds_json, created_at, updated_at
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
+  seeds_schema_version, seeds_json, created_at, updated_at, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		ctx.ID, ctx.Kind, ctx.Name, nullStr(ctx.Icon), ctx.Influence, learning,
-		seedsVer, seedsJSON, ctx.CreatedAt, ctx.UpdatedAt)
+		seedsVer, seedsJSON, ctx.CreatedAt, ctx.UpdatedAt, s.ProfileID)
 	return ctx, err
 }
 
@@ -123,37 +120,46 @@ func (s *Store) UpdateTasteContext(ctx TasteContext) error {
 	if !ctx.LearningEnabled {
 		learning = 0
 	}
-	_, err := s.legacy.Exec(`
-UPDATE taste_contexts SET
-  name = COALESCE(NULLIF(?, ''), name),
-  icon = COALESCE(NULLIF(?, ''), icon),
-  influence = CASE WHEN ? > 0 THEN ? ELSE influence END,
-  learning_enabled = ?,
-  seeds_schema_version = CASE WHEN ? THEN ? ELSE seeds_schema_version END,
-  seeds_json = CASE WHEN ? THEN ? ELSE seeds_json END,
-  updated_at = ?
-WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived_at IS NULL) `,
-		ctx.Name, ctx.Icon, ctx.Influence, ctx.Influence, learning,
-		seedsJSON.Valid, seedsVer, seedsJSON.Valid, seedsJSON, now, ctx.ID)
+	sets := []string{"learning_enabled = ?", "updated_at = ?"}
+	args := []any{learning, now}
+	if ctx.Name != "" {
+		sets = append(sets, "name = ?")
+		args = append(args, ctx.Name)
+	}
+	if ctx.Icon != "" {
+		sets = append(sets, "icon = ?")
+		args = append(args, ctx.Icon)
+	}
+	if ctx.Influence > 0 {
+		sets = append(sets, "influence = ?")
+		args = append(args, ctx.Influence)
+	}
+	if seedsJSON.Valid {
+		sets = append(sets, "seeds_schema_version = ?", "seeds_json = ?")
+		args = append(args, seedsVer, seedsJSON)
+	}
+	args = append(args, s.ProfileID, ctx.ID)
+	_, err := s.DB.Exec(`UPDATE taste_contexts SET `+strings.Join(sets, ", ")+`
+WHERE profile_id = ? AND context_id = ? AND archived_at IS NULL`, args...)
 	return err
 }
 
 func (s *Store) ArchiveTasteContext(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 UPDATE taste_contexts SET archived_at = ?, updated_at = ?
-WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived_at IS NULL) `, now, now, id)
+WHERE profile_id = ? AND context_id = ? AND archived_at IS NULL`, now, now, s.ProfileID, id)
 	return err
 }
 
 func (s *Store) GetTasteContext(id string) (*TasteContext, error) {
-	row := s.legacy.QueryRow(`
+	row := s.DB.QueryRow(`
 SELECT c.context_id, c.kind, c.name, COALESCE(c.icon,''), c.influence, c.learning_enabled,
        c.seeds_schema_version, c.seeds_json, c.created_at, c.updated_at, COALESCE(c.archived_at,''),
        COALESCE(s.positive_samples,0), s.positive_vector
-FROM (SELECT * FROM taste_contexts WHERE profile_id=:musik_profile) c
-LEFT JOIN (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) s ON s.context_id = c.context_id
-WHERE c.context_id = ?`, id)
+FROM taste_contexts c
+LEFT JOIN taste_context_states s ON s.profile_id = c.profile_id AND s.context_id = c.context_id
+WHERE c.profile_id = ? AND c.context_id = ?`, s.ProfileID, id)
 	return scanTasteContext(row)
 }
 
@@ -162,13 +168,14 @@ func (s *Store) ListTasteContexts(includeArchived bool) ([]TasteContext, error) 
 SELECT c.context_id, c.kind, c.name, COALESCE(c.icon,''), c.influence, c.learning_enabled,
        c.seeds_schema_version, c.seeds_json, c.created_at, c.updated_at, COALESCE(c.archived_at,''),
        COALESCE(s.positive_samples,0), s.positive_vector
-FROM (SELECT * FROM taste_contexts WHERE profile_id=:musik_profile) c
-LEFT JOIN (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) s ON s.context_id = c.context_id`
+FROM taste_contexts c
+LEFT JOIN taste_context_states s ON s.profile_id = c.profile_id AND s.context_id = c.context_id
+WHERE c.profile_id = ?`
 	if !includeArchived {
-		q += ` WHERE c.archived_at IS NULL`
+		q += ` AND c.archived_at IS NULL`
 	}
 	q += ` ORDER BY c.kind, c.name`
-	rows, err := s.legacy.Query(q)
+	rows, err := s.DB.Query(q, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}
@@ -226,11 +233,11 @@ func (s *Store) UpsertTasteContextState(state TasteContextState) error {
 	if state.EmbeddingDim > 0 {
 		dim = sql.NullInt64{Int64: int64(state.EmbeddingDim), Valid: true}
 	}
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 INSERT INTO taste_context_states(
   context_id, positive_vector, embedding_dim, negative_prototypes_json,
-  positive_samples, negative_samples, model_version, updated_at
-,profile_id) VALUES (?,?,?,?,?,?,?,?,:musik_profile)
+  positive_samples, negative_samples, model_version, updated_at, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?)
 ON CONFLICT(profile_id,context_id) DO UPDATE SET
   positive_vector=excluded.positive_vector,
   embedding_dim=excluded.embedding_dim,
@@ -240,7 +247,7 @@ ON CONFLICT(profile_id,context_id) DO UPDATE SET
   model_version=excluded.model_version,
   updated_at=excluded.updated_at`,
 		state.ContextID, nullBytes(state.PositiveVector), dim, nullStr(state.NegativesJSON),
-		state.PositiveSamples, state.NegativeSamples, state.ModelVersion, state.UpdatedAt)
+		state.PositiveSamples, state.NegativeSamples, state.ModelVersion, state.UpdatedAt, s.ProfileID)
 	return err
 }
 
@@ -248,10 +255,10 @@ func (s *Store) LoadTasteContextState(id string) (*TasteContextState, error) {
 	var state TasteContextState
 	var dim sql.NullInt64
 	var vector []byte
-	err := s.legacy.QueryRow(`
+	err := s.DB.QueryRow(`
 SELECT context_id, positive_vector, embedding_dim, COALESCE(negative_prototypes_json,''),
        positive_samples, negative_samples, model_version, updated_at
-FROM (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) AS taste_context_states WHERE context_id = ?`, id).Scan(
+FROM taste_context_states WHERE profile_id = ? AND context_id = ?`, s.ProfileID, id).Scan(
 		&state.ContextID, &vector, &dim, &state.NegativesJSON,
 		&state.PositiveSamples, &state.NegativeSamples, &state.ModelVersion, &state.UpdatedAt)
 	if err == sql.ErrNoRows {
@@ -269,14 +276,14 @@ FROM (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) AS tas
 
 func (s *Store) SetSessionContexts(sessionID string, contextIDs []string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.legacy.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 	if _, err := tx.Exec(`
 UPDATE session_contexts SET deactivated_at = ?
-WHERE session_contexts.profile_id=:musik_profile AND ( session_id = ? AND deactivated_at IS NULL) `, now, sessionID); err != nil {
+WHERE profile_id = ? AND session_id = ? AND deactivated_at IS NULL`, now, s.ProfileID, sessionID); err != nil {
 		return err
 	}
 	for _, id := range contextIDs {
@@ -285,24 +292,24 @@ WHERE session_contexts.profile_id=:musik_profile AND ( session_id = ? AND deacti
 			continue
 		}
 		if _, err := tx.Exec(`
-INSERT INTO session_contexts(session_id, context_id, activated_at,profile_id)
-VALUES (?,?,?,:musik_profile)`, sessionID, id, now); err != nil {
+INSERT INTO session_contexts(session_id, context_id, activated_at, profile_id)
+VALUES (?,?,?,?)`, sessionID, id, now, s.ProfileID); err != nil {
 			return err
 		}
 	}
 	payload, _ := json.Marshal(contextIDs)
 	if _, err := tx.Exec(`
-UPDATE play_sessions SET active_contexts_json = ? WHERE play_sessions.profile_id=:musik_profile AND ( id = ?) `, string(payload), sessionID); err != nil {
+UPDATE play_sessions SET active_contexts_json = ? WHERE profile_id = ? AND id = ?`, string(payload), s.ProfileID, sessionID); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
 func (s *Store) ActiveSessionContexts(sessionID string) ([]string, error) {
-	rows, err := s.legacy.Query(`
-SELECT context_id FROM (SELECT * FROM session_contexts WHERE profile_id=:musik_profile) AS session_contexts
-WHERE session_id = ? AND deactivated_at IS NULL
-ORDER BY activated_at`, sessionID)
+	rows, err := s.DB.Query(`
+SELECT context_id FROM session_contexts
+WHERE profile_id = ? AND session_id = ? AND deactivated_at IS NULL
+ORDER BY activated_at`, s.ProfileID, sessionID)
 	if err != nil {
 		return nil, err
 	}
@@ -323,9 +330,10 @@ func (s *Store) AttachRequestContexts(requestID string, contextIDs []string) err
 		if strings.TrimSpace(id) == "" {
 			continue
 		}
-		if _, err := s.legacy.Exec(`
-INSERT OR IGNORE INTO request_contexts(request_id, context_id,profile_id) VALUES (?,?,:musik_profile)`,
-			requestID, id); err != nil {
+		if _, err := s.DB.Exec(`
+INSERT INTO request_contexts(request_id, context_id, profile_id) VALUES (?,?,?)
+ON CONFLICT DO NOTHING`,
+			requestID, id, s.ProfileID); err != nil {
 			return err
 		}
 	}

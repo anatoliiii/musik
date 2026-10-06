@@ -80,13 +80,13 @@ func (s *Store) CreateRadioRule(rule RadioRule) (RadioRule, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rule.CreatedAt = now
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 INSERT INTO radio_rules(
   rule_id, target_type, action, scope, target_key, strength,
-  session_id, context_id, expires_at, created_at
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
+  session_id, context_id, expires_at, created_at, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		rule.ID, rule.TargetType, rule.Action, rule.Scope, rule.TargetKey, rule.Strength,
-		nullStr(rule.SessionID), nullStr(rule.ContextID), nullStr(rule.ExpiresAt), rule.CreatedAt)
+		nullStr(rule.SessionID), nullStr(rule.ContextID), nullStr(rule.ExpiresAt), rule.CreatedAt, s.ProfileID)
 	return rule, err
 }
 
@@ -94,51 +94,57 @@ func (s *Store) UpdateRadioRule(rule RadioRule) error {
 	if rule.ID == "" {
 		return fmt.Errorf("rule_id required")
 	}
-	now := time.Now().UTC()
-	_, err := s.legacy.Exec(`
-UPDATE radio_rules SET
-  strength = CASE WHEN ? > 0 THEN ? ELSE strength END,
-  expires_at = CASE WHEN ? THEN ? ELSE expires_at END,
-  archived_at = CASE WHEN ? THEN NULL ELSE archived_at END
-WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `,
-		rule.Strength, rule.Strength,
-		rule.ExpiresAt != "", nullStr(rule.ExpiresAt),
-		rule.ArchivedAt == "undo",
-		rule.ID)
-	_ = now
+	var sets []string
+	var args []any
+	if rule.Strength > 0 {
+		sets = append(sets, "strength = ?")
+		args = append(args, rule.Strength)
+	}
+	if rule.ExpiresAt != "" {
+		sets = append(sets, "expires_at = ?")
+		args = append(args, rule.ExpiresAt)
+	}
+	if rule.ArchivedAt == "undo" {
+		sets = append(sets, "archived_at = NULL")
+	}
+	if len(sets) == 0 {
+		return nil
+	}
+	args = append(args, s.ProfileID, rule.ID)
+	_, err := s.DB.Exec(`UPDATE radio_rules SET `+strings.Join(sets, ", ")+` WHERE profile_id = ? AND rule_id = ?`, args...)
 	return err
 }
 
 func (s *Store) ArchiveRadioRule(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`UPDATE radio_rules SET archived_at = ? WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ? AND archived_at IS NULL) `, now, id)
+	_, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = ? WHERE profile_id = ? AND rule_id = ? AND archived_at IS NULL`, now, s.ProfileID, id)
 	return err
 }
 
 func (s *Store) UndoLastRadioRule() (*RadioRule, error) {
 	var id string
-	err := s.legacy.QueryRow(`
-SELECT rule_id FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules
-WHERE archived_at IS NOT NULL
-ORDER BY archived_at DESC LIMIT 1`).Scan(&id)
+	err := s.DB.QueryRow(`
+SELECT rule_id FROM radio_rules
+WHERE profile_id = ? AND archived_at IS NOT NULL
+ORDER BY archived_at DESC LIMIT 1`, s.ProfileID).Scan(&id)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.legacy.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `, id); err != nil {
+	if _, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE profile_id = ? AND rule_id = ?`, s.ProfileID, id); err != nil {
 		return nil, err
 	}
 	return s.GetRadioRule(id)
 }
 
 func (s *Store) GetRadioRule(id string) (*RadioRule, error) {
-	row := s.legacy.QueryRow(`
+	row := s.DB.QueryRow(`
 SELECT rule_id, target_type, action, scope, target_key, strength,
        COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
        created_at, COALESCE(archived_at,'')
-FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules WHERE rule_id = ?`, id)
+FROM radio_rules WHERE profile_id = ? AND rule_id = ?`, s.ProfileID, id)
 	return scanRadioRule(row)
 }
 
@@ -147,12 +153,12 @@ func (s *Store) ListRadioRules(includeExpired bool) ([]RadioRule, error) {
 SELECT rule_id, target_type, action, scope, target_key, strength,
        COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
        created_at, COALESCE(archived_at,'')
-FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules`
+FROM radio_rules WHERE profile_id = ?`
 	if !includeExpired {
-		q += ` WHERE archived_at IS NULL`
+		q += ` AND archived_at IS NULL`
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.legacy.Query(q)
+	rows, err := s.DB.Query(q, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}

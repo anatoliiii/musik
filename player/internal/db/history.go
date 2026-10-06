@@ -28,16 +28,16 @@ func (s *Store) RecentTrackIDs(hours int, limit int) ([]int64, error) {
 		limit = 40
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT track_id FROM (
   SELECT track_id, MAX(ts) AS last_ts
-  FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-  WHERE ts >= ?
+  FROM listening_history
+  WHERE profile_id = ? AND ts >= ?
   GROUP BY track_id
   ORDER BY last_ts DESC
   LIMIT ?
-)
-`, cutoff, limit)
+) recent
+`, s.ProfileID, cutoff, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -56,41 +56,41 @@ SELECT track_id FROM (
 func (s *Store) InsertListen(trackID int64, action, source, sessionID, reason string,
 	position, duration, listened *float64) (int64, error) {
 	now := time.Now().UTC()
-	daypart := dayPart(now.Hour())
-	weekday := mondayZeroWeekday(now.Weekday())
-	record := ListenRecord{
-		ProfileID: s.ProfileID, TrackID: trackID, TS: now.Format(time.RFC3339Nano),
-		Source: optionalString(source), Action: action, Daypart: optionalString(daypart),
-		Weekday: &weekday, PositionSec: position, DurationSec: duration,
-		ListenedSec: listened, SessionID: optionalString(sessionID), Reason: optionalString(reason),
-	}
-	if err := s.ORM.Create(&record).Error; err != nil {
-		return 0, err
-	}
-	return record.ID, nil
+	var id int64
+	err := s.DB.QueryRow(`
+INSERT INTO listening_history(
+  profile_id, track_id, ts, source, action, daypart, weekday,
+  position_sec, duration_sec, listened_sec, session_id, reason
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+RETURNING id`,
+		s.ProfileID, trackID, now.Format(time.RFC3339Nano), nullStr(source), action,
+		dayPart(now.Hour()), mondayZeroWeekday(now.Weekday()),
+		position, duration, listened, nullStr(sessionID), nullStr(reason),
+	).Scan(&id)
+	return id, err
 }
 
 func (s *Store) BumpTransition(fromID, toID int64, weight float64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
-INSERT INTO transitions(from_id, to_id, weight, updated_at,profile_id) VALUES (?,?,?,?,:musik_profile)
+	_, err := s.DB.Exec(`
+INSERT INTO transitions(from_id, to_id, weight, updated_at, profile_id) VALUES (?,?,?,?,?)
 ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
   weight = transitions.weight + excluded.weight,
-  updated_at = excluded.updated_at`, fromID, toID, weight, now)
+  updated_at = excluded.updated_at`, fromID, toID, weight, now, s.ProfileID)
 	return err
 }
 
 func (s *Store) BumpRecStats(trackID int64, shown, skipEarly, completed int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.legacy.Exec(`
-INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at,profile_id)
-VALUES (?,?,?,?,?,:musik_profile)
+	_, err := s.DB.Exec(`
+INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at, profile_id)
+VALUES (?,?,?,?,?,?)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
   shown = rec_stats.shown + excluded.shown,
   skipped_early = rec_stats.skipped_early + excluded.skipped_early,
   completed = rec_stats.completed + excluded.completed,
   updated_at = excluded.updated_at`,
-		trackID, shown, skipEarly, completed, now)
+		trackID, shown, skipEarly, completed, now, s.ProfileID)
 	return err
 }
 
@@ -141,7 +141,7 @@ func (s *Store) CreateRecommendationRequest(
 		return errors.New("request_id is required")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.legacy.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
@@ -155,11 +155,11 @@ func (s *Store) CreateRecommendationRequest(
 	if _, err = tx.Exec(`
 INSERT INTO recommendation_requests(
   request_id, session_id, reason, policy_version, model_version,
-  candidate_count, latency_ms, created_at, policy_schema_version, policy_json
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,:musik_profile)`,
+  candidate_count, latency_ms, created_at, policy_schema_version, policy_json, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
 		request.RequestID, request.SessionID, request.Reason, request.PolicyVersion,
 		nullStr(request.ModelVersion), request.CandidateCount, request.LatencyMS, now,
-		policyVersion, policyJSON); err != nil {
+		policyVersion, policyJSON, s.ProfileID); err != nil {
 		return err
 	}
 	for _, impressionID := range superseded {
@@ -169,8 +169,8 @@ INSERT INTO recommendation_requests(
 		if _, err = tx.Exec(`
 UPDATE recommendation_impressions
 SET outcome='superseded', closed_at=?
-WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=? AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL) `,
-			now, impressionID); err != nil {
+WHERE profile_id=? AND impression_id=? AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL`,
+			now, s.ProfileID, impressionID); err != nil {
 			return err
 		}
 	}
@@ -179,8 +179,8 @@ INSERT INTO recommendation_impressions(
   impression_id, request_id, session_id, track_id, position, score,
   cosine_taste, cosine_current, explore, new_boost, maturity, mode,
   source, features_schema_version, features_json, queued_at, shown_at,
-  outcome, legacy
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,:musik_profile)`)
+  outcome, legacy, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending',0,?)`)
 	if err != nil {
 		return err
 	}
@@ -196,7 +196,7 @@ INSERT INTO recommendation_impressions(
 			item.ImpressionID, request.RequestID, item.SessionID, item.TrackID,
 			item.Position, item.Score, item.CosineTaste, item.CosineCurrent,
 			boolFlag(item.Explore), boolFlag(item.NewBoost), item.Maturity, item.Mode, item.Source,
-			featuresVersion, featuresJSON, now, now,
+			featuresVersion, featuresJSON, now, now, s.ProfileID,
 		); err != nil {
 			return err
 		}
@@ -243,20 +243,20 @@ func (s *Store) ResolveImpression(
 ) (ImpressionRef, error) {
 	var ref ImpressionRef
 	if impressionID != "" {
-		err := s.legacy.QueryRow(`
+		err := s.DB.QueryRow(`
 SELECT impression_id, COALESCE(request_id,''), source, played_at IS NOT NULL
-FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
-WHERE impression_id=? AND session_id=? AND track_id=? AND legacy=0`,
-			impressionID, sessionID, trackID,
+FROM recommendation_impressions
+WHERE profile_id=? AND impression_id=? AND session_id=? AND track_id=? AND legacy=0`,
+			s.ProfileID, impressionID, sessionID, trackID,
 		).Scan(&ref.ImpressionID, &ref.RequestID, &ref.Source, &ref.Played)
 		return ref, err
 	}
-	rows, err := s.legacy.Query(`
+	rows, err := s.DB.Query(`
 SELECT impression_id, COALESCE(request_id,''), source, played_at IS NOT NULL
-FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
-WHERE session_id=? AND track_id=? AND outcome='pending'
+FROM recommendation_impressions
+WHERE profile_id=? AND session_id=? AND track_id=? AND outcome='pending'
   AND closed_at IS NULL AND legacy=0
-ORDER BY queued_at DESC LIMIT 2`, sessionID, trackID)
+ORDER BY queued_at DESC LIMIT 2`, s.ProfileID, sessionID, trackID)
 	if err != nil {
 		return ref, err
 	}
@@ -313,22 +313,23 @@ func (s *Store) ApplyLifecycleEvent(ev LifecycleEvent) (LifecycleResult, error) 
 	}
 	now := time.Now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
-	tx, err := s.legacy.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return LifecycleResult{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	result, err := tx.Exec(`
-INSERT OR IGNORE INTO listening_history(
+INSERT INTO listening_history(
   track_id, ts, source, action, daypart, weekday, position_sec,
   duration_sec, listened_sec, session_id, reason, event_id,
-  event_schema_version, request_id, impression_id, device_id, client_id
-,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,:musik_profile)`,
+  event_schema_version, request_id, impression_id, device_id, client_id, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,?,?,?)
+ON CONFLICT DO NOTHING`,
 		ev.TrackID, nowText, ev.Source, ev.Type, dayPart(now.Hour()),
 		mondayZeroWeekday(now.Weekday()), ev.PositionSec, ev.DurationSec,
 		ev.ListenedSec, nullStr(ev.SessionID), nullStr(ev.Reason), ev.EventID,
 		nullStr(ev.RequestID), nullStr(ev.ImpressionID), nullStr(ev.DeviceID),
-		nullStr(ev.ClientID))
+		nullStr(ev.ClientID), s.ProfileID)
 	if err != nil {
 		return LifecycleResult{}, err
 	}
@@ -342,37 +343,37 @@ INSERT OR IGNORE INTO listening_history(
 		result, err = tx.Exec(`
 UPDATE recommendation_impressions
 SET played_at=?
-WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=? AND session_id=? AND track_id=? AND legacy=0
-  AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL) `,
-			nowText, ev.ImpressionID, ev.SessionID, ev.TrackID)
+WHERE profile_id=? AND impression_id=? AND session_id=? AND track_id=? AND legacy=0
+  AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL`,
+			nowText, s.ProfileID, ev.ImpressionID, ev.SessionID, ev.TrackID)
 		if err == nil {
 			out.LifecycleChanged, _ = changed(result)
 		}
 		if err == nil && out.LifecycleChanged {
 			_, err = tx.Exec(`
-INSERT INTO track_stats(track_id, plays, last_played_at, updated_at,profile_id)
-VALUES (?,1,?,?,:musik_profile)
+INSERT INTO track_stats(track_id, plays, last_played_at, updated_at, profile_id)
+VALUES (?,1,?,?,?)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
   plays=track_stats.plays+1, last_played_at=excluded.last_played_at,
-  updated_at=excluded.updated_at`, ev.TrackID, nowText, nowText)
+  updated_at=excluded.updated_at`, ev.TrackID, nowText, nowText, s.ProfileID)
 		}
 	case "track_end", "skip":
 		if ev.ImpressionID != "" {
 			result, err = tx.Exec(`
 UPDATE recommendation_impressions
 SET outcome=?, listened_ratio=?, closed_at=?
-WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=? AND session_id=? AND track_id=? AND legacy=0
-  AND outcome='pending' AND played_at IS NOT NULL AND closed_at IS NULL) `,
-				ev.Outcome, ev.ListenedRatio, nowText, ev.ImpressionID, ev.SessionID, ev.TrackID)
+WHERE profile_id=? AND impression_id=? AND session_id=? AND track_id=? AND legacy=0
+  AND outcome='pending' AND played_at IS NOT NULL AND closed_at IS NULL`,
+				ev.Outcome, ev.ListenedRatio, nowText, s.ProfileID, ev.ImpressionID, ev.SessionID, ev.TrackID)
 			if err == nil {
 				out.LifecycleChanged, _ = changed(result)
 			}
 		} else if err == nil {
 			var prior int
 			err = tx.QueryRow(`
-SELECT COUNT(*) FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-WHERE session_id=? AND track_id=? AND action IN ('track_end','skip') AND event_id!=?`,
-				ev.SessionID, ev.TrackID, ev.EventID).Scan(&prior)
+SELECT COUNT(*) FROM listening_history
+WHERE profile_id=? AND session_id=? AND track_id=? AND action IN ('track_end','skip') AND event_id!=?`,
+				s.ProfileID, ev.SessionID, ev.TrackID, ev.EventID).Scan(&prior)
 			out.LifecycleChanged = err == nil && prior == 0
 		}
 		if err == nil && out.LifecycleChanged {
@@ -387,8 +388,8 @@ WHERE session_id=? AND track_id=? AND action IN ('track_end','skip') AND event_i
 			}
 			_, err = tx.Exec(`
 INSERT INTO track_stats(
-  track_id, finishes, partial, early_skips, last_finished_at, updated_at
-,profile_id) VALUES (?,?,?,?,?,?,:musik_profile)
+  track_id, finishes, partial, early_skips, last_finished_at, updated_at, profile_id
+) VALUES (?,?,?,?,?,?,?)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
   finishes=track_stats.finishes+excluded.finishes,
   partial=track_stats.partial+excluded.partial,
@@ -402,20 +403,20 @@ ON CONFLICT(profile_id,track_id) DO UPDATE SET
 						return nowText
 					}
 					return nil
-				}(), nowText)
+				}(), nowText, s.ProfileID)
 		}
 	case "like", "dislike":
 		var prior int
 		if ev.ImpressionID != "" {
 			err = tx.QueryRow(`
-SELECT COUNT(*) FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-WHERE impression_id=? AND action=? AND event_id!=?`,
-				ev.ImpressionID, ev.Type, ev.EventID).Scan(&prior)
+SELECT COUNT(*) FROM listening_history
+WHERE profile_id=? AND impression_id=? AND action=? AND event_id!=?`,
+				s.ProfileID, ev.ImpressionID, ev.Type, ev.EventID).Scan(&prior)
 		} else {
 			err = tx.QueryRow(`
-SELECT COUNT(*) FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-WHERE session_id=? AND track_id=? AND action=? AND event_id!=?`,
-				ev.SessionID, ev.TrackID, ev.Type, ev.EventID).Scan(&prior)
+SELECT COUNT(*) FROM listening_history
+WHERE profile_id=? AND session_id=? AND track_id=? AND action=? AND event_id!=?`,
+				s.ProfileID, ev.SessionID, ev.TrackID, ev.Type, ev.EventID).Scan(&prior)
 		}
 		if err == nil && prior == 0 {
 			likes, dislikes := 0, 0
@@ -425,12 +426,12 @@ WHERE session_id=? AND track_id=? AND action=? AND event_id!=?`,
 				dislikes = 1
 			}
 			_, err = tx.Exec(`
-INSERT INTO track_stats(track_id, likes, dislikes, updated_at,profile_id)
-VALUES (?,?,?,?,:musik_profile)
+INSERT INTO track_stats(track_id, likes, dislikes, updated_at, profile_id)
+VALUES (?,?,?,?,?)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
   likes=track_stats.likes+excluded.likes,
   dislikes=track_stats.dislikes+excluded.dislikes,
-  updated_at=excluded.updated_at`, ev.TrackID, likes, dislikes, nowText)
+  updated_at=excluded.updated_at`, ev.TrackID, likes, dislikes, nowText, s.ProfileID)
 			out.LifecycleChanged = true
 		}
 	}
@@ -455,7 +456,7 @@ func (s *Store) ClosePendingImpressions(sessionID, outcome string, ids []string)
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := s.legacy.Begin()
+	tx, err := s.DB.Begin()
 	if err != nil {
 		return err
 	}
@@ -464,8 +465,8 @@ func (s *Store) ClosePendingImpressions(sessionID, outcome string, ids []string)
 	for _, id := range ids {
 		if _, err := tx.Exec(`
 UPDATE recommendation_impressions SET outcome=?, closed_at=?
-WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=? AND session_id=? AND outcome='pending'
-  AND played_at IS NULL AND closed_at IS NULL) `, outcome, now, id, sessionID); err != nil {
+WHERE profile_id=? AND impression_id=? AND session_id=? AND outcome='pending'
+  AND played_at IS NULL AND closed_at IS NULL`, outcome, now, s.ProfileID, id, sessionID); err != nil {
 			return err
 		}
 	}
@@ -473,10 +474,10 @@ WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=?
 }
 
 func (s *Store) AbandonSessionImpressions(sessionID string) error {
-	_, err := s.legacy.Exec(`
+	_, err := s.DB.Exec(`
 UPDATE recommendation_impressions
 SET outcome='abandoned', closed_at=?
-WHERE recommendation_impressions.profile_id=:musik_profile AND ( session_id=? AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL) `,
-		time.Now().UTC().Format(time.RFC3339Nano), sessionID)
+WHERE profile_id=? AND session_id=? AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339Nano), s.ProfileID, sessionID)
 	return err
 }

@@ -24,9 +24,8 @@ type Store struct {
 	Dialect   Dialect
 	ReadOnly  bool
 
-	// Transitional: repositories not yet converted to DB.
-	legacy *Database
-	ORM    *gorm.DB
+	// Transitional: identity, account and token repositories still use GORM.
+	ORM *gorm.DB
 }
 
 const SupportedSchemaVersion = 8
@@ -125,7 +124,6 @@ func newStore(dialect Dialect, pool *sql.DB) (*Store, error) {
 	return &Store{
 		DB:      &DB{x: sqlx.NewDb(pool, driver), Dialect: dialect},
 		Dialect: dialect,
-		legacy:  &Database{DB: pool, ORM: orm, Dialect: string(dialect)},
 		ORM:     orm,
 	}, nil
 }
@@ -155,7 +153,6 @@ func (s *Store) validateSchema() error {
 	if err := s.DB.QueryRow(`SELECT value FROM installation_state WHERE key='legacy_profile_id'`).Scan(&s.ProfileID); err != nil {
 		return fmt.Errorf("read installation profile: %w", err)
 	}
-	s.legacy.ProfileID = s.ProfileID
 	return nil
 }
 
@@ -165,10 +162,6 @@ func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) ForProfile(profileID string) *Store {
 	scoped := *s
 	scoped.ProfileID = profileID
-	legacy := *s.legacy
-	legacy.ProfileID = profileID
-	legacy.ORM = s.ORM.Session(&gorm.Session{})
-	scoped.legacy = &legacy
-	scoped.ORM = legacy.ORM
+	scoped.ORM = s.ORM.Session(&gorm.Session{})
 	return &scoped
 }
