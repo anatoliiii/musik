@@ -59,7 +59,7 @@ func TestSmartPlaylistRoundTripAndImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exported) == 0 || containsPath(string(exported), "/t.flac") {
+	if len(exported) == 0 || containsPath(string(exported), "/t-1.flac") {
 		t.Fatalf("export leaked a server path: %s", exported)
 	}
 	doc, err := ParseImport("copy", string(exported), "application/json")
