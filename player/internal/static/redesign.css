@@ -698,3 +698,85 @@ html:has(body[data-nav="now"]) { background: var(--np-tint, var(--bg)); }
   }
   #view-player .now-kicker { margin: 0; align-self: start; }
 }
+
+/* Tabs set display themselves; keep the hidden attribute (logout without auth). */
+.tabs .tab[hidden] { display: none !important; }
+
+/* The base phone layout swaps the top menu for its own dock and drops the mini
+   player; this edition keeps its bottom tabs and the mini player above them. */
+@media (max-width: 760px) {
+  .top .tabs { display: grid; }
+  .mini-player { display: flex; }
+  .shell { padding-bottom: calc(150px + env(safe-area-inset-bottom)); }
+  /* The base layout stacks the search tools in a column; the 320px basis
+     meant for a row would become the field's height there. */
+  .lib-tools input { flex: 0 0 auto; width: 100%; }
+}
+
+/* ---------- newer screens: artist page, server settings, small actions ---------- */
+/* Small actions outside track rows (artist page, settings) share the chip look. */
+.tiny {
+  min-height: 32px;
+  padding: .3rem .85rem;
+  border: 1px solid #33363f;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--fg-soft);
+  font: 600 .78rem/1.2 var(--font);
+  cursor: pointer;
+}
+.tiny:hover { color: var(--fg); border-color: var(--accent); }
+
+.lib-artist-head { margin: 4px 0 18px; }
+.lib-artist-head .text-link { font-family: var(--mono); font-size: .75rem; letter-spacing: .04em; }
+.lib-artist-title { gap: 18px; margin: 10px 0 14px; }
+.lib-artist-photo { width: 96px; height: 96px; border-radius: 50%; border: 0; }
+.lib-artist-head h2 {
+  font-family: var(--display);
+  font-size: clamp(1.6rem, 3.2vw, 2.4rem);
+  letter-spacing: -.01em;
+  margin: 0 0 4px;
+}
+.lib-artist-actions { gap: 8px; }
+.lib-artist-actions .tiny { min-height: 40px; padding: .45rem 1.1rem; font-size: .85rem; }
+#lib-artist-play {
+  background: var(--accent);
+  border-color: transparent;
+  color: var(--accent-ink);
+}
+#lib-artist-play:hover { filter: brightness(1.06); color: var(--accent-ink); }
+
+/* Server settings and the interface switch read as one family of controls. */
+#view-profile select {
+  min-height: 40px;
+  padding: .45rem 2rem .45rem .9rem;
+  border: 1px solid #33363f;
+  border-radius: 999px;
+  background: var(--bg2);
+  color: var(--fg);
+  font: 500 .9rem var(--font);
+}
+#view-profile input[type="radio"], #view-profile input[type="checkbox"] { accent-color: var(--accent); }
+.settings-radio { margin: .15rem 0; min-height: 40px; }
+.settings-panel h3 { font-family: var(--display); font-size: .95rem; letter-spacing: .01em; }
+.settings-banner { border-color: var(--accent); background: rgba(232, 163, 61, .08); }
+.settings-internet { border-left-color: var(--accent); }
+#ui-box label { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
+
+/* Long labels wrap beside the radio instead of dropping below it. */
+.settings-radio { flex-wrap: nowrap; align-items: center; line-height: 1.35; }
+.settings-radio input[type="radio"] { flex: 0 0 auto; margin: 0; }
+
+/* Phone "Сейчас": the page scrolls instead of squeezing the stage into one
+   screen; feedback and the like/share/more buttons get rows of their own. */
+@media (max-width: 759px) {
+  #view-player.active { overflow: visible; height: auto; align-content: start; }
+  #view-player .now-stage { flex: 0 0 auto; min-height: auto; }
+  #view-player .now-meta { display: flex; flex-direction: column; }
+  #view-player .transport { order: 1; margin-top: 4px; }
+  #view-player .np-feedback { order: 2; flex-wrap: nowrap; margin: 14px 0 0; }
+  #view-player .np-actions { order: 2; justify-content: center; margin-top: 10px; }
+  #view-player .fav-extra { order: 3; }
+  #view-player .np-feedback .btn { flex: 1 1 0; justify-content: center; }
+  .np-side { margin-top: 18px; }
+}

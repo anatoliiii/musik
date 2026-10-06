@@ -36,7 +36,7 @@
   <link rel="stylesheet" href="/themes/base.css" />
   <link rel="stylesheet" href="/style.css?v=bbc30f33b8" />
   <script>try { var savedTheme=JSON.parse(localStorage.getItem("musik_theme")||"null"); if(savedTheme&&savedTheme.id&&savedTheme.id!=="ember"&&/^[a-z][a-z0-9-]{0,31}$/.test(savedTheme.id)) document.write('<link rel="stylesheet" href="/themes/'+savedTheme.id+'.css?v=retro4">'); } catch(e) {};</script>
-  <link rel="stylesheet" href="/redesign.css?v=668d8d6fbe" />
+  <link rel="stylesheet" href="/redesign.css?v=90a395b7cf" />
 </head>
 <body>
   <div id="login-gate" class="login-gate" hidden>
@@ -275,7 +275,6 @@
                 <button type="button" class="icon-btn" id="btn-back" title="Назад"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M5.6 5.2h2.2v13.6H5.6zm11.6.3v13.6L8.4 12z"/></svg></button>
                 <button type="button" class="icon-btn play-btn" id="btn-play" title="Play/Pause"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M8.75 5.5v13l10-6.5z"/></svg></button>
                 <button type="button" class="icon-btn primary-icon" id="btn-skip" title="Skip">⏭</button>
-                <button type="button" class="icon-btn" id="btn-like" title="Любимая песня">♥</button>
               </div>
               <div class="volume-row">
                 <button type="button" class="icon-btn sm" id="btn-mute" title="Звук" aria-label="Звук"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4.5 9.2h3.4L12.2 5v14l-4.3-4.2H4.5z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M16 9.2a4.2 4.2 0 0 1 0 5.6M18.2 7a7 7 0 0 1 0 10"/></svg></button>
@@ -450,7 +449,18 @@
           <h3>Приглашения</h3>
           <div id="admin-invitations" class="admin-list" aria-live="polite"></div>
         </div>
-        <div id="settings-box" class="panel settings-panel"></div>
+        <div id="profile-box" class="panel"></div>
+        <div id="monitor-box" class="panel monitor-panel"></div>
+        <div id="contexts-box" class="panel"></div>
+        <div id="rules-box" class="panel"></div>
+        <div class="panel" id="share-box">
+          <div class="panel-kicker">поделиться</div>
+          <strong>Ссылка на радио</strong>
+          <p class="sub share-description">Откроется в VLC, браузере или на телефоне. Слушатели не меняют твой вкус.</p>
+          <button type="button" class="btn" id="btn-share-radio-profile">Создать ссылку</button>
+          <ul id="share-list" class="share-list"></ul>
+        </div>
+        <button type="button" class="btn" id="btn-logout-profile" hidden>Выйти</button>
         <div class="panel theme-panel" id="theme-box">
           <div class="panel-kicker">appearance</div>
           <strong>Theme</strong>
@@ -483,18 +493,7 @@
             </div>
           </form>
         </div>
-        <div id="profile-box" class="panel"></div>
-        <div id="monitor-box" class="panel monitor-panel"></div>
-        <div id="contexts-box" class="panel"></div>
-        <div id="rules-box" class="panel"></div>
-        <div class="panel" id="share-box">
-          <div class="panel-kicker">поделиться</div>
-          <strong>Ссылка на радио</strong>
-          <p class="sub share-description">Откроется в VLC, браузере или на телефоне. Слушатели не меняют твой вкус.</p>
-          <button type="button" class="btn" id="btn-share-radio-profile">Создать ссылку</button>
-          <ul id="share-list" class="share-list"></ul>
-        </div>
-        <button type="button" class="btn" id="btn-logout-profile" hidden>Выйти</button>
+        <div id="settings-box" class="panel settings-panel"></div>
       </section>
 
       <section id="view-upload" class="view">
@@ -566,25 +565,6 @@
       <button type="button" class="icon-btn sm" id="mini-skip" title="Skip"><svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M16.2 5.2h2.2v13.6h-2.2zM6.8 5.5v13.6L15.6 12z"/></svg></button>
       <label class="mini-volume"><input class="slider" id="mini-volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Громкость"></label>
     </footer>
-
-    <nav class="mobile-nav" id="mobile-nav" aria-label="Разделы">
-      <button type="button" class="tab active" data-view="home" aria-label="Главная">
-        <svg class="mnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 11 12 3l9 8"/><path d="M5 9.5V21h5v-6h4v6h5V9.5"/></svg>
-        <span>Главная</span>
-      </button>
-      <button type="button" class="tab" data-view="player" aria-label="Сейчас играет">
-        <svg class="mnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z" fill="currentColor" stroke="none"/></svg>
-        <span>Сейчас</span>
-      </button>
-      <button type="button" class="tab" data-view="library" aria-label="Библиотека">
-        <svg class="mnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l10-2v13"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>
-        <span>Библиотека</span>
-      </button>
-      <button type="button" class="tab" data-view="collections" aria-label="Плейлисты">
-        <svg class="mnav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 11h16M4 16h10M4 20h10"/></svg>
-        <span>Плейлисты</span>
-      </button>
-    </nav>
   </div>
 
   <div id="queue-modal" class="queue-modal" hidden>
@@ -607,6 +587,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=7397f98703"></script>
+  <script src="/app.js?v=07b9350ba1"></script>
 </body>
 </html>
