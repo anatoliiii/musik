@@ -44,21 +44,19 @@ func TestConcurrentPostgresAdminRoleChangeAndDisableKeepsAnActiveAdmin(t *testin
 	query := scopedURL.Query()
 	query.Set("search_path", schema)
 	scopedURL.RawQuery = query.Encode()
-	newStore := func() *Store {
-		orm, openErr := gorm.Open(gormpostgres.Open(scopedURL.String()), &gorm.Config{
-			Logger: logger.Default.LogMode(logger.Silent),
-		})
+	open := func() *Store {
+		_, pool, openErr := openPool(scopedURL.String(), "")
 		if openErr != nil {
 			t.Fatal(openErr)
 		}
-		sqlDB, dbErr := orm.DB()
-		if dbErr != nil {
-			t.Fatal(dbErr)
+		pool.SetMaxOpenConns(1)
+		store, storeErr := newStore(Postgres, pool)
+		if storeErr != nil {
+			t.Fatal(storeErr)
 		}
-		sqlDB.SetMaxOpenConns(1)
-		return &Store{DB: &Database{DB: sqlDB, ORM: orm, Dialect: "postgres"}, ORM: orm, Dialect: "postgres"}
+		return store
 	}
-	first, second := newStore(), newStore()
+	first, second := open(), open()
 	t.Cleanup(func() {
 		_ = first.Close()
 		_ = second.Close()

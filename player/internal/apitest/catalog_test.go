@@ -19,7 +19,7 @@ func TestLibraryFiltersByArtistAndAlbum(t *testing.T) {
 		{ID: 3, Path: "/tmp/three.flac", Title: "Three", Artist: "Portishead", Album: "Dummy", Duration: 180},
 	} {
 		if _, err := server.Store.DB.Exec(
-			`INSERT INTO tracks(id, path, title, artist, album, duration) VALUES (?,?,?,?,?,?)`,
+			`INSERT INTO tracks(id, path, title, artist, album, duration, created_at, updated_at) VALUES (?,?,?,?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 			row.ID, row.Path, row.Title, row.Artist, row.Album, row.Duration,
 		); err != nil {
 			t.Fatal(err)
@@ -70,8 +70,8 @@ func TestTrackPassport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := server.Store.DB.Exec(
-		`INSERT INTO tracks(id, path, title, artist, album, duration, lufs, bitrate, sample_rate, channels)
-		 VALUES (1, '/tmp/one.flac', 'One', 'Artist A', 'Album A', 180, -15, 900000, 44100, 2)`,
+		`INSERT INTO tracks(id, path, title, artist, album, duration, lufs, bitrate, sample_rate, channels, created_at, updated_at)
+		 VALUES (1, '/tmp/one.flac', 'One', 'Artist A', 'Album A', 180, -15, 900000, 44100, 2, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}

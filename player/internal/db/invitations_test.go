@@ -135,7 +135,7 @@ func TestInvitationRestrictionsAndIdentityKeys(t *testing.T) {
 func TestBootstrapRetainsLegacyOwnerProfile(t *testing.T) {
 	s, _ := openTestStore(t)
 	ctx := context.Background()
-	legacyProfile := s.DB.ProfileID
+	legacyProfile := s.ProfileID
 	secret, err := s.BootstrapInvitation(ctx, "https://issuer.test", time.Hour)
 	if err != nil {
 		t.Fatal(err)

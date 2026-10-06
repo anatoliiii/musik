@@ -111,11 +111,7 @@ func TestMixesShelfAndFavoritesPlay(t *testing.T) {
 	if err := server.Store.FavoritesAdd(11); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := server.Store.DB.Exec(`
-INSERT INTO playlists(id, kind, name, created_at) VALUES (1,'daily','Daily','` + time.Now().UTC().Format(time.RFC3339Nano) + `');
-INSERT INTO playlist_tracks(playlist_id, position, track_id, explanation) VALUES (1,0,11,''),(1,1,22,'')`); err != nil {
-		t.Fatal(err)
-	}
+	seedPlaylist(t, server, time.Now().UTC().Format(time.RFC3339Nano), 11, 22)
 
 	rec := serve(server, jsonReq("GET", "/api/mixes", ""))
 	if rec.Code != 200 {

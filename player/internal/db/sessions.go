@@ -7,7 +7,7 @@ import (
 
 // LoadTransitionGraph loads from→to weights (min weight 1).
 func (s *Store) LoadTransitionGraph() (map[int64]map[int64]float64, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT from_id, to_id, weight FROM (SELECT * FROM transitions WHERE profile_id=:musik_profile) AS transitions WHERE weight >= 1
 ORDER BY weight DESC LIMIT 50000`)
 	if err != nil {
@@ -50,7 +50,7 @@ type PlaySessionRow struct {
 }
 
 func (s *Store) UpsertPlaySession(row PlaySessionRow) error {
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO play_sessions(
   id, mode, current_id, queue_json, exclude_json, rated_json,
   daily_ids_json, daily_pos, playlist_name, playlist_kind, current_item_json,
@@ -90,7 +90,7 @@ func (s *Store) LoadPlaySession(id string) (PlaySessionRow, bool, error) {
 	var row PlaySessionRow
 	var q, ex, rated, daily, currentItem, tasteState, contexts sql.NullString
 	var profile sql.NullString
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT id, mode, current_id, queue_json, exclude_json, rated_json,
        daily_ids_json, daily_pos, playlist_name, playlist_kind,
        current_item_json, taste_state_json, active_contexts_json,
@@ -133,23 +133,23 @@ FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessi
 }
 
 func (s *Store) DeletePlaySession(id string) error {
-	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( id = ?) `, id)
+	_, err := s.legacy.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( id = ?) `, id)
 	return err
 }
 
 func (s *Store) DeleteStalePlaySessions(olderThan time.Time) error {
-	_, err := s.DB.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( updated_at < ?) `, olderThan.UTC().Format(time.RFC3339Nano))
+	_, err := s.legacy.Exec(`DELETE FROM play_sessions WHERE play_sessions.profile_id=:musik_profile AND ( updated_at < ?) `, olderThan.UTC().Format(time.RFC3339Nano))
 	return err
 }
 
 func (s *Store) CountPlaySessions() (int, error) {
 	var n int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions`).Scan(&n)
+	err := s.legacy.QueryRow(`SELECT COUNT(*) FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions`).Scan(&n)
 	return n, err
 }
 
 func (s *Store) OldestPlaySessionIDs(limit int) ([]string, error) {
-	rows, err := s.DB.Query(`SELECT id FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions ORDER BY updated_at ASC LIMIT ?`, limit)
+	rows, err := s.legacy.Query(`SELECT id FROM (SELECT * FROM play_sessions WHERE profile_id=:musik_profile) AS play_sessions ORDER BY updated_at ASC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}

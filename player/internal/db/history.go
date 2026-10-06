@@ -28,7 +28,7 @@ func (s *Store) RecentTrackIDs(hours int, limit int) ([]int64, error) {
 		limit = 40
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT track_id FROM (
   SELECT track_id, MAX(ts) AS last_ts
   FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
@@ -59,7 +59,7 @@ func (s *Store) InsertListen(trackID int64, action, source, sessionID, reason st
 	daypart := dayPart(now.Hour())
 	weekday := mondayZeroWeekday(now.Weekday())
 	record := ListenRecord{
-		ProfileID: s.DB.ProfileID, TrackID: trackID, TS: now.Format(time.RFC3339Nano),
+		ProfileID: s.ProfileID, TrackID: trackID, TS: now.Format(time.RFC3339Nano),
 		Source: optionalString(source), Action: action, Daypart: optionalString(daypart),
 		Weekday: &weekday, PositionSec: position, DurationSec: duration,
 		ListenedSec: listened, SessionID: optionalString(sessionID), Reason: optionalString(reason),
@@ -72,7 +72,7 @@ func (s *Store) InsertListen(trackID int64, action, source, sessionID, reason st
 
 func (s *Store) BumpTransition(fromID, toID int64, weight float64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO transitions(from_id, to_id, weight, updated_at,profile_id) VALUES (?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
   weight = transitions.weight + excluded.weight,
@@ -82,7 +82,7 @@ ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
 
 func (s *Store) BumpRecStats(trackID int64, shown, skipEarly, completed int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at,profile_id)
 VALUES (?,?,?,?,?,:musik_profile)
 ON CONFLICT(profile_id,track_id) DO UPDATE SET
@@ -141,7 +141,7 @@ func (s *Store) CreateRecommendationRequest(
 		return errors.New("request_id is required")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -243,7 +243,7 @@ func (s *Store) ResolveImpression(
 ) (ImpressionRef, error) {
 	var ref ImpressionRef
 	if impressionID != "" {
-		err := s.DB.QueryRow(`
+		err := s.legacy.QueryRow(`
 SELECT impression_id, COALESCE(request_id,''), source, played_at IS NOT NULL
 FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
 WHERE impression_id=? AND session_id=? AND track_id=? AND legacy=0`,
@@ -251,7 +251,7 @@ WHERE impression_id=? AND session_id=? AND track_id=? AND legacy=0`,
 		).Scan(&ref.ImpressionID, &ref.RequestID, &ref.Source, &ref.Played)
 		return ref, err
 	}
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT impression_id, COALESCE(request_id,''), source, played_at IS NOT NULL
 FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
 WHERE session_id=? AND track_id=? AND outcome='pending'
@@ -313,7 +313,7 @@ func (s *Store) ApplyLifecycleEvent(ev LifecycleEvent) (LifecycleResult, error) 
 	}
 	now := time.Now().UTC()
 	nowText := now.Format(time.RFC3339Nano)
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return LifecycleResult{}, err
 	}
@@ -455,7 +455,7 @@ func (s *Store) ClosePendingImpressions(sessionID, outcome string, ids []string)
 	if len(ids) == 0 {
 		return nil
 	}
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -473,7 +473,7 @@ WHERE recommendation_impressions.profile_id=:musik_profile AND ( impression_id=?
 }
 
 func (s *Store) AbandonSessionImpressions(sessionID string) error {
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE recommendation_impressions
 SET outcome='abandoned', closed_at=?
 WHERE recommendation_impressions.profile_id=:musik_profile AND ( session_id=? AND outcome='pending' AND played_at IS NULL AND closed_at IS NULL) `,

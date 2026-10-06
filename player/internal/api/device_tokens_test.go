@@ -26,10 +26,8 @@ import (
 func TestMultiUserDeviceTokensPreserveLegacyBearerContractAndScope(t *testing.T) {
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "db", "musik-test.db")
-	if err := testdb.Create(dbPath); err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.Open(dbPath)
+	databaseURL, dbPath := testdb.Target(t, dbPath)
+	store, err := db.OpenDatabase(databaseURL, dbPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,8 +79,8 @@ func TestMultiUserDeviceTokensPreserveLegacyBearerContractAndScope(t *testing.T)
 	}
 	for _, trackID := range []int64{11, 22} {
 		if _, err := store.DB.Exec(
-			`INSERT INTO tracks(id,path,title,artist,album,duration,artwork_path) VALUES (?,?,?,?,?,?,?)`,
-			trackID, audioPath, "Track", "Artist", "Album", 36, artPath,
+			`INSERT INTO tracks(id,path,title,artist,album,duration,artwork_path, created_at, updated_at) VALUES (?,?,?,?,?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			trackID, audioPath+map[int64]string{11: "", 22: ".copy"}[trackID], "Track", "Artist", "Album", 36, artPath,
 		); err != nil {
 			t.Fatal(err)
 		}

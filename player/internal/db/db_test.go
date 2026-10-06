@@ -17,16 +17,22 @@ import (
 
 func openTestStore(t *testing.T) (*Store, string) {
 	t.Helper()
+	store, _, path := openTestTarget(t)
+	return store, path
+}
+
+// openTestTarget also returns the database URL, for tests that open a second
+// independent pool (as the Python worker does).
+func openTestTarget(t *testing.T) (*Store, string, string) {
+	t.Helper()
 	path := filepath.Join(t.TempDir(), "musik-test.db")
-	if err := testdb.Create(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := Open(path)
+	databaseURL, path := testdb.Target(t, path)
+	store, err := OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	return store, path
+	return store, databaseURL, path
 }
 
 func TestPostgreSQLQueryAdapterPreservesBindPositions(t *testing.T) {
@@ -285,22 +291,39 @@ func TestLatestPlaylistSelectsNewestAndPreservesPositions(t *testing.T) {
 	store, _ := openTestStore(t)
 	for id := int64(1); id <= 3; id++ {
 		if _, err := store.DB.Exec(
-			`INSERT INTO tracks(id, path, title, artist, duration) VALUES (?, ?, ?, ?, ?)`,
+			`INSERT INTO tracks(id, path, title, artist, duration, created_at, updated_at) VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 			id, fmt.Sprintf("/track-%d.flac", id), fmt.Sprintf("Track %d", id), "Artist", 180,
 		); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.DB.Exec(`
-		INSERT INTO playlists(id, kind, name, created_at) VALUES
-			(10, 'daily', 'Old', '2026-08-14T00:00:00Z'),
-			(11, 'daily', 'New', '2026-08-15T00:00:00Z'),
-			(12, 'weekly', 'Other kind', '2026-08-16T00:00:00Z');
-		INSERT INTO playlist_tracks(playlist_id, position, track_id, explanation) VALUES
-			(10, 0, 1, 'old'),
-			(11, 7, 2, 'second'),
-			(11, 3, 3, 'first')`); err != nil {
-		t.Fatal(err)
+	for _, playlist := range []struct {
+		id         int64
+		kind, name string
+		createdAt  string
+	}{
+		{10, "daily", "Old", "2026-08-14T00:00:00Z"},
+		{11, "daily", "New", "2026-08-15T00:00:00Z"},
+		{12, "weekly", "Other kind", "2026-08-16T00:00:00Z"},
+	} {
+		if _, err := store.DB.Exec(
+			`INSERT INTO playlists(id, kind, name, created_at, profile_id) VALUES (?,?,?,?,?)`,
+			playlist.id, playlist.kind, playlist.name, playlist.createdAt, store.ProfileID,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct {
+		playlistID, position, trackID int64
+		explanation                   string
+	}{{10, 0, 1, "old"}, {11, 7, 2, "second"}, {11, 3, 3, "first"}} {
+		if _, err := store.DB.Exec(
+			`INSERT INTO playlist_tracks(item_id, playlist_id, position, track_id, explanation, added_at, profile_id)
+VALUES (?,?,?,?,?,?,?)`,
+			NewID(), item.playlistID, item.position, item.trackID, item.explanation, "2026-08-15T00:00:00Z", store.ProfileID,
+		); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	playlist, err := store.LatestPlaylist("daily")
@@ -322,8 +345,8 @@ func TestLatestPlaylistSelectsNewestAndPreservesPositions(t *testing.T) {
 }
 
 func TestConcurrentWorkerAndEventWrites(t *testing.T) {
-	store, path := openTestStore(t)
-	if _, err := store.DB.Exec(`INSERT INTO tracks(id, path, title) VALUES (1, '/track.flac', 'Track')`); err != nil {
+	store, databaseURL, path := openTestTarget(t)
+	if _, err := store.DB.Exec(`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (1, '/track.flac', 'Track', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	jobID, err := store.EnqueueJob("mix_pack", `{}`)
@@ -331,12 +354,11 @@ func TestConcurrentWorkerAndEventWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	worker, err := sql.Open("sqlite",
-		"file:"+path+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+	// The worker is an independent process: give it its own connection pool.
+	worker, err := OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = worker.Close() })
 
 	const writes = 40
@@ -346,7 +368,7 @@ func TestConcurrentWorkerAndEventWrites(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for i := 0; i < writes; i++ {
-			_, err := worker.Exec(
+			_, err := worker.DB.Exec(
 				`UPDATE jobs SET status = ?, updated_at = ? WHERE id = ?`,
 				"running", time.Now().UTC().Format(time.RFC3339Nano), jobID,
 			)
@@ -394,7 +416,7 @@ func TestRecommendationImpressionsJoinOutcomes(t *testing.T) {
 	store, _ := openTestStore(t)
 	for id := int64(1); id <= 2; id++ {
 		if _, err := store.DB.Exec(
-			`INSERT INTO tracks(id, path, title) VALUES (?, ?, ?)`,
+			`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 			id, fmt.Sprintf("/track-%d.flac", id), fmt.Sprintf("Track %d", id),
 		); err != nil {
 			t.Fatal(err)
@@ -451,7 +473,7 @@ func TestRecommendationImpressionsJoinOutcomes(t *testing.T) {
 func TestLifecycleEventsAreIdempotent(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title) VALUES (1, '/track.flac', 'Track')`,
+		`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (1, '/track.flac', 'Track', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +573,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 					)
 				} else {
 					_, err = store.DB.Exec(
-						`INSERT INTO tracks(id,path,title) VALUES (?,?,?)`,
+						`INSERT INTO tracks(id,path,title, created_at, updated_at) VALUES (?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 						id, fmt.Sprintf("/stats-%d.flac", id), title,
 					)
 				}
@@ -568,7 +590,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 			var shown, skips, completed int
 			if err := store.DB.QueryRow(
 				`SELECT shown, skipped_early, completed FROM rec_stats WHERE track_id=? AND profile_id=?`,
-				trackID, store.DB.ProfileID,
+				trackID, store.ProfileID,
 			).Scan(&shown, &skips, &completed); err != nil {
 				t.Fatal(err)
 			}
@@ -585,7 +607,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 			var weight float64
 			if err := store.DB.QueryRow(
 				`SELECT weight FROM transitions WHERE from_id=? AND to_id=? AND profile_id=?`,
-				trackID, nextTrackID, store.DB.ProfileID,
+				trackID, nextTrackID, store.ProfileID,
 			).Scan(&weight); err != nil || weight != 1.75 {
 				t.Fatalf("transition weight=%v err=%v, want 1.75", weight, err)
 			}
@@ -641,7 +663,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 			var plays, finishes, likes int
 			if err := store.DB.QueryRow(
 				`SELECT plays, finishes, likes FROM track_stats WHERE track_id=? AND profile_id=?`,
-				trackID, store.DB.ProfileID,
+				trackID, store.ProfileID,
 			).Scan(&plays, &finishes, &likes); err != nil {
 				t.Fatal(err)
 			}
@@ -657,7 +679,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 			var radioCount, finishedCount int
 			if err := store.DB.QueryRow(
 				`SELECT radio_count, finished_count FROM transition_stats WHERE from_id=? AND to_id=? AND profile_id=?`,
-				trackID, nextTrackID, store.DB.ProfileID,
+				trackID, nextTrackID, store.ProfileID,
 			).Scan(&radioCount, &finishedCount); err != nil {
 				t.Fatal(err)
 			}
@@ -671,7 +693,7 @@ func TestStatsUpsertsRemainIdempotentAcrossBackends(t *testing.T) {
 func TestLegacyFallbackRejectsAmbiguousPendingImpressions(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title) VALUES (1, '/track.flac', 'Track')`,
+		`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (1, '/track.flac', 'Track', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -694,16 +716,16 @@ func TestLegacyFallbackRejectsAmbiguousPendingImpressions(t *testing.T) {
 func TestBaselineStatusAndMetricBreakdowns(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title, artist) VALUES (1, '/track.flac', 'Track', 'Artist')`,
+		`INSERT INTO tracks(id, path, title, artist, created_at, updated_at) VALUES (1, '/track.flac', 'Track', 'Artist', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
 	requestID := NewID()
 	if _, err := store.DB.Exec(`
 INSERT INTO recommendation_requests(
-  request_id, session_id, reason, policy_version, candidate_count, latency_ms, created_at
-) VALUES (?, 's1', 'refill', 'test', 300, 1, datetime('now','-15 days'))`,
-		requestID); err != nil {
+  request_id, session_id, reason, policy_version, candidate_count, latency_ms, created_at, profile_id
+) VALUES (?, 's1', 'refill', 'test', 300, 1, ?, ?)`,
+		requestID, daysAgo(15), store.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < BaselineMinimumImpressions; i++ {
@@ -711,20 +733,19 @@ INSERT INTO recommendation_requests(
 		if i%4 == 0 {
 			outcome = "early_skip"
 		}
-		queued := "datetime('now','-15 days')"
+		queued := daysAgo(15)
 		if i > 0 {
-			queued = "datetime('now')"
+			queued = daysAgo(0)
 		}
-		query := fmt.Sprintf(`
+		if _, err := store.DB.Exec(`
 INSERT INTO recommendation_impressions(
   session_id, track_id, position, score, cosine_taste, cosine_current,
   explore, new_boost, maturity, mode, shown_at, impression_id, request_id,
-  source, queued_at, played_at, closed_at, outcome, listened_ratio, legacy
+  source, queued_at, played_at, closed_at, outcome, listened_ratio, legacy, profile_id
 ) VALUES (
-  's1', 1, ?, 0, 0, 0, 0, 0, 'ready', 'radio', %s, ?, ?,
-  'exploit', %s, %s, %s, ?, 0.9, 0
-)`, queued, queued, queued, queued)
-		if _, err := store.DB.Exec(query, i, NewID(), requestID, outcome); err != nil {
+  's1', 1, ?, 0, 0, 0, 0, 0, 'ready', 'radio', ?, ?, ?,
+  'exploit', ?, ?, ?, ?, 0.9, 0, ?
+)`, i, queued, NewID(), requestID, queued, queued, queued, outcome, store.ProfileID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -757,15 +778,15 @@ INSERT INTO recommendation_impressions(
 func TestMetricsExcludeLegacyManualAndShare(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title, artist) VALUES (1, '/track.flac', 'Track', 'Artist')`,
+		`INSERT INTO tracks(id, path, title, artist, created_at, updated_at) VALUES (1, '/track.flac', 'Track', 'Artist', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
 	requestID := NewID()
 	if _, err := store.DB.Exec(`
 INSERT INTO recommendation_requests(
-  request_id, session_id, reason, policy_version, candidate_count, latency_ms, created_at
-) VALUES (?, 's1', 'refill', 'test', 3, 1, datetime('now'))`, requestID); err != nil {
+  request_id, session_id, reason, policy_version, candidate_count, latency_ms, created_at, profile_id
+) VALUES (?, 's1', 'refill', 'test', 3, 1, ?, ?)`, requestID, daysAgo(0), store.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	rows := []struct {
@@ -782,11 +803,11 @@ INSERT INTO recommendation_requests(
 INSERT INTO recommendation_impressions(
   session_id, track_id, position, score, cosine_taste, cosine_current,
   explore, new_boost, maturity, mode, shown_at, impression_id, request_id,
-  source, queued_at, played_at, closed_at, outcome, listened_ratio, legacy
+  source, queued_at, played_at, closed_at, outcome, listened_ratio, legacy, profile_id
 ) VALUES (
-  's1', 1, ?, 0, 0, 0, 0, 0, 'ready', ?, datetime('now'), ?, ?,
-  ?, datetime('now'), datetime('now'), datetime('now'), ?, 0.9, ?
-)`, i, row.mode, NewID(), requestID, row.source, row.outcome, row.legacy); err != nil {
+  's1', 1, ?, 0, 0, 0, 0, 0, 'ready', ?, ?, ?, ?,
+  ?, ?, ?, ?, ?, 0.9, ?, ?
+)`, i, row.mode, daysAgo(0), NewID(), requestID, row.source, daysAgo(0), daysAgo(0), daysAgo(0), row.outcome, row.legacy, store.ProfileID); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -802,7 +823,7 @@ INSERT INTO recommendation_impressions(
 func TestLikeStatsAreIdempotentWithoutSameEventID(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title) VALUES (1, '/track.flac', 'Track')`,
+		`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (1, '/track.flac', 'Track', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -839,7 +860,7 @@ func TestLikeStatsAreIdempotentWithoutSameEventID(t *testing.T) {
 func TestLatestPoliciesAndTrainingRuns(t *testing.T) {
 	store, _ := openTestStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title) VALUES (1, '/track.flac', 'Track')`,
+		`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (1, '/track.flac', 'Track', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -854,16 +875,16 @@ func TestLatestPoliciesAndTrainingRuns(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at) VALUES ('ranker-v2','ranker',1,'/test/ranker.json','hash','active',datetime('now'))`); err != nil {
+	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at,profile_id) VALUES ('ranker-v2','ranker',1,'/test/ranker.json','hash','active',?,?)`, daysAgo(0), store.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB.Exec(`
 INSERT INTO training_runs(
   run_id, model_version, model_type, feature_schema_version, train_from, train_until,
-  positive_count, negative_count, metrics_schema_version, metrics_json, status, created_at
-) VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))`,
+  positive_count, negative_count, metrics_schema_version, metrics_json, status, created_at, profile_id
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		NewID(), "ranker-v2", "linear", 1, "2026-01-01", "2026-02-01",
-		12, 8, 1, `{"auc":0.71}`, "completed",
+		12, 8, 1, `{"auc":0.71}`, "completed", daysAgo(0), store.ProfileID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -881,4 +902,9 @@ INSERT INTO training_runs(
 	if runs[0].Metrics["auc"] != 0.71 {
 		t.Fatalf("metrics=%v", runs[0].Metrics)
 	}
+}
+
+// daysAgo formats an instant the way repositories store timestamps.
+func daysAgo(days int) string {
+	return time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339Nano)
 }

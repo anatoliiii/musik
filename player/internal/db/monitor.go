@@ -30,7 +30,7 @@ func (s *Store) LatestRecommendationPolicies(limit int) ([]RecommendationPolicyR
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT request_id, reason, policy_version, COALESCE(model_version,''),
        candidate_count, latency_ms, created_at, COALESCE(policy_json,'')
 FROM (SELECT * FROM recommendation_requests WHERE profile_id=:musik_profile) AS recommendation_requests
@@ -64,7 +64,7 @@ func (s *Store) ListTrainingRuns(limit int) ([]TrainingRunRow, error) {
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT run_id, COALESCE(model_version,''), status, positive_count, negative_count,
        created_at, metrics_json
 FROM training_runs

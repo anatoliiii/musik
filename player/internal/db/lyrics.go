@@ -18,7 +18,7 @@ type Lyrics struct {
 }
 
 func (s *Store) GetLyrics(trackID int64) (*Lyrics, bool, error) {
-	row := s.DB.QueryRow(`
+	row := s.legacy.QueryRow(`
 SELECT track_id, plain_lyrics, synced_lyrics, source, source_id,
        instrumental, status, COALESCE(error,''), updated_at
 FROM lyrics WHERE track_id = ?`, trackID)

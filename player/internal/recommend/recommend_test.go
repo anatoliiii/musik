@@ -100,7 +100,7 @@ func TestFromFavoritesEmpty(t *testing.T) {
 func TestFromFavoritesUsesHearts(t *testing.T) {
 	store := openRecommendStore(t)
 	if _, err := store.DB.Exec(
-		`INSERT INTO tracks(id, path, title, artist, album, duration) VALUES (1,'/a','Angel','Massive Attack','Mezzanine',180)`,
+		`INSERT INTO tracks(id, path, title, artist, album, duration, created_at, updated_at) VALUES (1,'/a','Angel','Massive Attack','Mezzanine',180, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -121,10 +121,8 @@ func TestFromFavoritesUsesHearts(t *testing.T) {
 func openRecommendStore(t *testing.T) *db.Store {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "recommend-test.db")
-	if err := testdb.Create(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.Open(path)
+	databaseURL, path := testdb.Target(t, path)
+	store, err := db.OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}

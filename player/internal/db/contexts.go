@@ -91,7 +91,7 @@ func (s *Store) CreateTasteContext(ctx TasteContext) (TasteContext, error) {
 	if !ctx.LearningEnabled {
 		learning = 0
 	}
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO taste_contexts(
   context_id, kind, name, icon, influence, learning_enabled,
   seeds_schema_version, seeds_json, created_at, updated_at
@@ -123,7 +123,7 @@ func (s *Store) UpdateTasteContext(ctx TasteContext) error {
 	if !ctx.LearningEnabled {
 		learning = 0
 	}
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE taste_contexts SET
   name = COALESCE(NULLIF(?, ''), name),
   icon = COALESCE(NULLIF(?, ''), icon),
@@ -140,14 +140,14 @@ WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived
 
 func (s *Store) ArchiveTasteContext(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE taste_contexts SET archived_at = ?, updated_at = ?
 WHERE taste_contexts.profile_id=:musik_profile AND ( context_id = ? AND archived_at IS NULL) `, now, now, id)
 	return err
 }
 
 func (s *Store) GetTasteContext(id string) (*TasteContext, error) {
-	row := s.DB.QueryRow(`
+	row := s.legacy.QueryRow(`
 SELECT c.context_id, c.kind, c.name, COALESCE(c.icon,''), c.influence, c.learning_enabled,
        c.seeds_schema_version, c.seeds_json, c.created_at, c.updated_at, COALESCE(c.archived_at,''),
        COALESCE(s.positive_samples,0), s.positive_vector
@@ -168,7 +168,7 @@ LEFT JOIN (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) s
 		q += ` WHERE c.archived_at IS NULL`
 	}
 	q += ` ORDER BY c.kind, c.name`
-	rows, err := s.DB.Query(q)
+	rows, err := s.legacy.Query(q)
 	if err != nil {
 		return nil, err
 	}
@@ -226,7 +226,7 @@ func (s *Store) UpsertTasteContextState(state TasteContextState) error {
 	if state.EmbeddingDim > 0 {
 		dim = sql.NullInt64{Int64: int64(state.EmbeddingDim), Valid: true}
 	}
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO taste_context_states(
   context_id, positive_vector, embedding_dim, negative_prototypes_json,
   positive_samples, negative_samples, model_version, updated_at
@@ -248,7 +248,7 @@ func (s *Store) LoadTasteContextState(id string) (*TasteContextState, error) {
 	var state TasteContextState
 	var dim sql.NullInt64
 	var vector []byte
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT context_id, positive_vector, embedding_dim, COALESCE(negative_prototypes_json,''),
        positive_samples, negative_samples, model_version, updated_at
 FROM (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) AS taste_context_states WHERE context_id = ?`, id).Scan(
@@ -269,7 +269,7 @@ FROM (SELECT * FROM taste_context_states WHERE profile_id=:musik_profile) AS tas
 
 func (s *Store) SetSessionContexts(sessionID string, contextIDs []string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -299,7 +299,7 @@ UPDATE play_sessions SET active_contexts_json = ? WHERE play_sessions.profile_id
 }
 
 func (s *Store) ActiveSessionContexts(sessionID string) ([]string, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT context_id FROM (SELECT * FROM session_contexts WHERE profile_id=:musik_profile) AS session_contexts
 WHERE session_id = ? AND deactivated_at IS NULL
 ORDER BY activated_at`, sessionID)
@@ -323,7 +323,7 @@ func (s *Store) AttachRequestContexts(requestID string, contextIDs []string) err
 		if strings.TrimSpace(id) == "" {
 			continue
 		}
-		if _, err := s.DB.Exec(`
+		if _, err := s.legacy.Exec(`
 INSERT OR IGNORE INTO request_contexts(request_id, context_id,profile_id) VALUES (?,?,:musik_profile)`,
 			requestID, id); err != nil {
 			return err

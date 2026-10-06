@@ -23,7 +23,7 @@ func TestBlockArtistLeavesGeneratedMusic(t *testing.T) {
 	for _, row := range rows {
 		path := filepath.Join(t.TempDir(), row.Title+".flac")
 		if _, err := server.Store.DB.Exec(
-			`INSERT INTO tracks(id, path, title, artist, album, duration) VALUES (?,?,?,?,?,?)
+			`INSERT INTO tracks(id, path, title, artist, album, duration, created_at, updated_at) VALUES (?,?,?,?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
 			 ON CONFLICT(id) DO UPDATE SET path=excluded.path, title=excluded.title, artist=excluded.artist, album=excluded.album`,
 			row.ID, path, row.Title, row.Artist, row.Album, row.Duration,
 		); err != nil {
@@ -34,12 +34,7 @@ func TestBlockArtistLeavesGeneratedMusic(t *testing.T) {
 	}
 	loadIndex(t, server, rows)
 
-	if _, err := server.Store.DB.Exec(`
-INSERT INTO playlists(id, kind, name, created_at) VALUES (1, 'daily', 'Daily', '2026-10-01T00:00:00Z');
-INSERT INTO playlist_tracks(playlist_id, position, track_id, explanation) VALUES
- (1,0,11,''),(1,1,22,''),(1,2,12,''),(1,3,33,'')`); err != nil {
-		t.Fatal(err)
-	}
+	seedPlaylist(t, server, "2026-10-01T00:00:00Z", 11, 22, 12, 33)
 	smart, err := server.Store.CreateUserPlaylist(db.UserPlaylist{Name: "Smart", Type: "smart", Kind: "user"})
 	if err != nil {
 		t.Fatal(err)

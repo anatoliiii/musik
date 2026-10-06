@@ -76,10 +76,21 @@ jobs:
         run: pip install 'numpy>=2.0.0' SQLAlchemy alembic 'psycopg[binary]' pydantic pydantic-settings
       - name: Prepare PostgreSQL schema
         env:
-          MUSIK_DATABASE_URL: postgresql://musik:musik-test@localhost:5432/musik
+          PGPASSWORD: musik-test
           PYTHONPATH: ../src
-        run: python -c 'import os; from pathlib import Path; from musik.db.migrations import migrate_database; migrate_database(os.environ["MUSIK_DATABASE_URL"], Path("/tmp/musik-ci.sqlite"))'
-      - name: Test
+        run: |
+          # musik serves the PostgreSQL-specific tests; musik_template is cloned
+          # per test when the whole suite runs on PostgreSQL.
+          createdb -h localhost -U musik musik_template
+          for name in musik musik_template; do
+            MUSIK_DATABASE_URL=postgresql://musik:musik-test@localhost:5432/$name \
+              python -c 'import os, sys; from pathlib import Path; from musik.db.migrations import migrate_database; migrate_database(os.environ["MUSIK_DATABASE_URL"], Path(sys.argv[1]))' "/tmp/musik-ci-$name.sqlite"
+          done
+      - name: Test on SQLite
+        run: go test ./...
+      - name: Test on PostgreSQL
+        env:
+          MUSIK_TEST_BACKEND: postgres
         run: go test ./...
       - name: Build
         run: go build -o /tmp/musik-player ./cmd/musik-player

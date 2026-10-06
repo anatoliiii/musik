@@ -17,7 +17,7 @@ func TestPersonalRepositoriesIsolateProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, b := root.ForProfile(pa.ID), root.ForProfile(pb.ID)
-	if _, err := root.DB.Exec(`INSERT INTO tracks(id,path,title) VALUES (1,'/a','A')`); err != nil {
+	if _, err := root.DB.Exec(`INSERT INTO tracks(id,path,title, created_at, updated_at) VALUES (1,'/a','A', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.FavoritesAdd(1); err != nil {

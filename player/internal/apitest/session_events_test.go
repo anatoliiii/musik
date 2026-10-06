@@ -2,6 +2,7 @@ package apitest
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/torwin-job/musik/player/internal/db"
@@ -103,8 +104,8 @@ func TestRadioStartRecordsImpressions(t *testing.T) {
 	})
 	for _, id := range []int64{1, 2, 3} {
 		if _, err := server.Store.DB.Exec(
-			`INSERT OR IGNORE INTO tracks(id, path, title) VALUES (?, ?, ?)`,
-			id, "/t.flac", "T",
+			`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z') ON CONFLICT DO NOTHING`,
+			id, fmt.Sprintf("/radio-%d.flac", id), "T",
 		); err != nil {
 			t.Fatal(err)
 		}

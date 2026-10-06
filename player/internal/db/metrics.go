@@ -164,7 +164,7 @@ WHERE i.legacy=0
   AND datetime(i.queued_at) >= datetime('now', ?)
 GROUP BY slice_key
 ORDER BY slice_key`, expression)
-	rows, err := s.DB.Query(query, fmt.Sprintf("-%d days", days))
+	rows, err := s.legacy.Query(query, fmt.Sprintf("-%d days", days))
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +207,7 @@ func (s *Store) baselineStatus() (BaselineStatus, error) {
 	}
 	var started string
 	var elapsed float64
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT COALESCE(MIN(played_at), ''),
        COALESCE(julianday('now') - julianday(MIN(played_at)), 0),
        COUNT(*)

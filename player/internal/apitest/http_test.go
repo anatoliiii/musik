@@ -3,6 +3,7 @@ package apitest
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/torwin-job/musik/player/internal/db"
 	"testing"
 	"time"
 )
@@ -179,11 +180,11 @@ func TestJobsLocalFallbackListGet(t *testing.T) {
 func TestDiscoverTipsProfileHealthStatusMetrics(t *testing.T) {
 	server := openTestServer(t)
 	if _, err := server.Store.DB.Exec(`
-INSERT INTO discover_tips(kind, artist, album, score, track_ids_json, explanation, created_at)
-VALUES ('new_album','Artist','Album',1.5,'[11,22]','fresh',?),
-       ('resurfaced','Artist','Album',0.5,'[33]','old',?)`,
-		time.Now().UTC().Format(time.RFC3339Nano),
-		time.Now().UTC().Format(time.RFC3339Nano),
+INSERT INTO discover_tips(kind, artist, album, score, track_ids_json, explanation, created_at, profile_id)
+VALUES ('new_album','Artist','Album',1.5,'[11,22]','fresh',?,?),
+       ('resurfaced','Artist','Album',0.5,'[33]','old',?,?)`,
+		time.Now().UTC().Format(time.RFC3339Nano), server.Store.ProfileID,
+		time.Now().UTC().Format(time.RFC3339Nano), server.Store.ProfileID,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -229,8 +230,12 @@ VALUES ('new_album','Artist','Album',1.5,'[11,22]','fresh',?),
 	if status["tracks"].(float64) != 3 {
 		t.Fatalf("status tracks=%v", status["tracks"])
 	}
-	if status["db_backend"] != "sqlite" {
-		t.Fatalf("status db_backend=%v, want sqlite", status["db_backend"])
+	wantBackend := "sqlite"
+	if server.Store.Dialect == db.Postgres {
+		wantBackend = "postgresql"
+	}
+	if status["db_backend"] != wantBackend {
+		t.Fatalf("status db_backend=%v, want %s", status["db_backend"], wantBackend)
 	}
 
 	rec = serve(server, jsonReq("GET", "/api/metrics/weekly", ""))

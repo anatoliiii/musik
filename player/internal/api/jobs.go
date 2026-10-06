@@ -44,7 +44,7 @@ func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ensureWorkerBeforeEnqueue()
-	payload := map[string]any{"profile_id": s.Store.DB.ProfileID}
+	payload := map[string]any{"profile_id": s.Store.ProfileID}
 	body, _ := json.Marshal(payload)
 	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": kind, "payload": payload})
 	if err != nil {

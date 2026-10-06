@@ -101,7 +101,7 @@ func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 		coverTrackID = &pl.CoverTrackID
 	}
 	record := PlaylistRecord{
-		ProfileID: s.DB.ProfileID, Kind: pl.Kind, Name: pl.Name, CreatedAt: pl.CreatedAt,
+		ProfileID: s.ProfileID, Kind: pl.Kind, Name: pl.Name, CreatedAt: pl.CreatedAt,
 		Type: pl.Type, Description: optionalString(pl.Description), UpdatedAt: &pl.UpdatedAt,
 		CoverTrackID: coverTrackID, CoverArtwork: optionalString(pl.CoverArtwork),
 		SortMode: pl.SortMode, RuleSchemaVersion: ruleVer, RuleJSON: ruleJSON,
@@ -132,7 +132,7 @@ func (s *Store) UpdateUserPlaylist(pl UserPlaylist) error {
 		}
 		ruleVer = sql.NullInt64{Int64: int64(pl.RuleSchema), Valid: true}
 	}
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE playlists SET
   name = COALESCE(NULLIF(?, ''), name),
   description = COALESCE(?, description),
@@ -152,19 +152,19 @@ WHERE playlists.profile_id=:musik_profile AND ( id = ?) `,
 
 func (s *Store) ArchiveUserPlaylist(id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`UPDATE playlists SET archived_at = ?, updated_at = ? WHERE playlists.profile_id=:musik_profile AND ( id = ?) `, now, now, id)
+	_, err := s.legacy.Exec(`UPDATE playlists SET archived_at = ?, updated_at = ? WHERE playlists.profile_id=:musik_profile AND ( id = ?) `, now, now, id)
 	return err
 }
 
 func (s *Store) DeleteUserPlaylist(id int64) error {
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 DELETE FROM playlists
 WHERE playlists.profile_id=:musik_profile AND ( id = ? AND (type IN ('manual','smart') OR kind = 'user')) `, id)
 	return err
 }
 
 func (s *Store) GetUserPlaylist(id int64) (*UserPlaylist, error) {
-	pl, err := s.scanUserPlaylist(s.DB.QueryRow(`
+	pl, err := s.scanUserPlaylist(s.legacy.QueryRow(`
 SELECT id, kind, COALESCE(type,'generated'), name, COALESCE(description,''), created_at,
        COALESCE(updated_at,''), COALESCE(cover_track_id,0), COALESCE(cover_artwork,''),
        COALESCE(sort_mode,'manual'), COALESCE(archived_at,''),
@@ -204,7 +204,7 @@ FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHER
 		q += ` AND archived_at IS NULL`
 	}
 	q += ` ORDER BY updated_at DESC, id DESC`
-	rows, err := s.DB.Query(q, args...)
+	rows, err := s.legacy.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -218,7 +218,7 @@ FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHER
 		if pl == nil {
 			continue
 		}
-		if err := s.DB.QueryRow(
+		if err := s.legacy.QueryRow(
 			`SELECT COUNT(*) FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) AS playlist_tracks WHERE playlist_id = ?`, pl.ID,
 		).Scan(&pl.TrackCount); err != nil {
 			return nil, err
@@ -229,7 +229,7 @@ FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHER
 }
 
 func (s *Store) ListPlaylistItems(playlistID int64) ([]UserPlaylistItem, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT COALESCE(pt.item_id,''), pt.position, COALESCE(pt.track_id,0),
        COALESCE(t.artist, pt.unresolved_artist, ''),
        COALESCE(t.title, pt.unresolved_title, ''),
@@ -271,12 +271,12 @@ func (s *Store) AddPlaylistItem(playlistID int64, item UserPlaylistItem) (UserPl
 		item.ItemID = NewID()
 	}
 	var allowDup int
-	if err := s.DB.QueryRow(`SELECT COALESCE(allow_duplicates,0) FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHERE id = ?`, playlistID).Scan(&allowDup); err != nil {
+	if err := s.legacy.QueryRow(`SELECT COALESCE(allow_duplicates,0) FROM (SELECT * FROM playlists WHERE profile_id=:musik_profile) AS playlists WHERE id = ?`, playlistID).Scan(&allowDup); err != nil {
 		return item, err
 	}
 	if allowDup == 0 && item.TrackID != 0 {
 		var n int
-		_ = s.DB.QueryRow(
+		_ = s.legacy.QueryRow(
 			`SELECT COUNT(*) FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) AS playlist_tracks WHERE playlist_id = ? AND track_id = ?`,
 			playlistID, item.TrackID,
 		).Scan(&n)
@@ -287,7 +287,7 @@ func (s *Store) AddPlaylistItem(playlistID int64, item UserPlaylistItem) (UserPl
 	if item.AddedAt == "" {
 		item.AddedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	}
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return item, err
 	}
@@ -312,7 +312,7 @@ INSERT INTO playlist_tracks(
 }
 
 func (s *Store) RemovePlaylistItem(playlistID int64, itemID string) error {
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -340,7 +340,7 @@ func (s *Store) RemovePlaylistItem(playlistID int64, itemID string) error {
 }
 
 func (s *Store) ReorderPlaylistItems(playlistID int64, itemIDs []string) error {
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -369,7 +369,7 @@ func (s *Store) ReorderPlaylistItems(playlistID int64, itemIDs []string) error {
 }
 
 func (s *Store) ReplacePlaylistItems(playlistID int64, items []UserPlaylistItem) error {
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -436,7 +436,7 @@ func (s *Store) DuplicateUserPlaylist(id int64) (*UserPlaylist, error) {
 }
 
 func (s *Store) ResolvePlaylistEntries() (int, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT item_id, playlist_id, unresolved_artist, unresolved_title, unresolved_path
 FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) AS playlist_tracks WHERE track_id IS NULL`)
 	if err != nil {
@@ -464,7 +464,7 @@ FROM (SELECT * FROM playlist_tracks WHERE profile_id=:musik_profile) AS playlist
 		if err != nil || !ok {
 			continue
 		}
-		if _, err := s.DB.Exec(`UPDATE playlist_tracks SET track_id = ? WHERE playlist_tracks.profile_id=:musik_profile AND ( item_id = ?) `, id, u.itemID); err != nil {
+		if _, err := s.legacy.Exec(`UPDATE playlist_tracks SET track_id = ? WHERE playlist_tracks.profile_id=:musik_profile AND ( item_id = ?) `, id, u.itemID); err != nil {
 			return matched, err
 		}
 		matched++
@@ -478,7 +478,7 @@ func (s *Store) matchUnresolvedTrack(artist, title, path string) (int64, bool, e
 	path = strings.TrimSpace(path)
 	if artist != "" && title != "" {
 		var id int64
-		err := s.DB.QueryRow(`
+		err := s.legacy.QueryRow(`
 SELECT id FROM tracks
 WHERE is_active = 1 AND lower(trim(artist)) = lower(?) AND lower(trim(title)) = lower(?)
 ORDER BY id LIMIT 1`, artist, title).Scan(&id)
@@ -495,7 +495,7 @@ ORDER BY id LIMIT 1`, artist, title).Scan(&id)
 			base = path[i+1:]
 		}
 		var id int64
-		err := s.DB.QueryRow(`
+		err := s.legacy.QueryRow(`
 SELECT id FROM tracks
 WHERE is_active = 1 AND (path = ? OR path LIKE ?)
 ORDER BY id LIMIT 1`, path, "%"+base).Scan(&id)
@@ -531,7 +531,7 @@ func (s *Store) scanUserPlaylist(row playlistScanner) (*UserPlaylist, error) {
 	return &pl, nil
 }
 
-func compactPlaylistPositions(tx *Tx, playlistID int64) error {
+func compactPlaylistPositions(tx *DatabaseTx, playlistID int64) error {
 	rows, err := tx.Query(`SELECT item_id FROM playlist_tracks WHERE playlist_id = ? AND profile_id=:musik_profile ORDER BY position`, playlistID)
 	if err != nil {
 		return err

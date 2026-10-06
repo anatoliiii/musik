@@ -20,10 +20,8 @@ import (
 
 func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.db")
-	if err := testdb.Create(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.Open(path)
+	databaseURL, path := testdb.Target(t, path)
+	store, err := db.OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +49,7 @@ func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB.Exec(`INSERT INTO tracks(id,path,title) VALUES (1,'/a','A')`); err != nil {
+	if _, err := store.DB.Exec(`INSERT INTO tracks(id,path,title, created_at, updated_at) VALUES (1,'/a','A', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
 		t.Fatal(err)
 	}
 	handler := server.Handler()

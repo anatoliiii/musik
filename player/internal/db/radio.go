@@ -18,7 +18,7 @@ type RadioShare struct {
 
 func (s *Store) CreateRadioShare(token, name string) (RadioShare, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO radio_shares(token, name, created_at, listen_count,profile_id)
 VALUES(?,?,?,0,:musik_profile)`, token, name, now)
 	if err != nil {
@@ -34,7 +34,7 @@ FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_share
 		q += ` WHERE revoked_at IS NULL`
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.DB.Query(q)
+	rows, err := s.legacy.Query(q)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +61,7 @@ FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_share
 func (s *Store) GetActiveRadioShare(token string) (RadioShare, bool, error) {
 	var sh RadioShare
 	var revoked, last sql.NullString
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT token, name, created_at, revoked_at, last_listen_at, listen_count
 FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_shares WHERE token = ?`, token).Scan(
 		&sh.Token, &sh.Name, &sh.CreatedAt, &revoked, &last, &sh.ListenCount)
@@ -84,7 +84,7 @@ FROM (SELECT * FROM radio_shares WHERE profile_id=:musik_profile) AS radio_share
 
 func (s *Store) RevokeRadioShare(token string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	res, err := s.DB.Exec(`UPDATE radio_shares SET revoked_at = ? WHERE radio_shares.profile_id=:musik_profile AND ( token = ? AND revoked_at IS NULL) `, now, token)
+	res, err := s.legacy.Exec(`UPDATE radio_shares SET revoked_at = ? WHERE radio_shares.profile_id=:musik_profile AND ( token = ? AND revoked_at IS NULL) `, now, token)
 	if err != nil {
 		return err
 	}
@@ -97,7 +97,7 @@ func (s *Store) RevokeRadioShare(token string) error {
 
 func (s *Store) TouchRadioShareListen(token string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE radio_shares SET listen_count = listen_count + 1, last_listen_at = ?
 WHERE radio_shares.profile_id=:musik_profile AND ( token = ? AND revoked_at IS NULL) `, now, token)
 	return err

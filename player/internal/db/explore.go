@@ -23,7 +23,7 @@ type ExploreArmRow struct {
 func (s *Store) LoadRadioPrefs() (RadioPrefs, error) {
 	prefs := RadioPrefs{ExploreLo: 0.10, ExploreHi: 0.40}
 	var lo, hi float64
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT explore_lo, explore_hi FROM (SELECT * FROM radio_prefs WHERE profile_id=:musik_profile) AS radio_prefs WHERE owner_scope='local'`).Scan(&lo, &hi)
 	if err == sql.ErrNoRows {
 		return prefs, nil
@@ -37,7 +37,7 @@ SELECT explore_lo, explore_hi FROM (SELECT * FROM radio_prefs WHERE profile_id=:
 
 func (s *Store) SaveRadioPrefs(lo, hi float64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO radio_prefs(owner_scope, explore_lo, explore_hi, updated_at,profile_id)
 VALUES ('local', ?, ?, ?,:musik_profile)
 ON CONFLICT(profile_id,owner_scope) DO UPDATE SET
@@ -47,7 +47,7 @@ ON CONFLICT(profile_id,owner_scope) DO UPDATE SET
 }
 
 func (s *Store) LoadExploreArms() ([]ExploreArmRow, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT arm_key, arm_kind, alpha, beta, successes, failures, COALESCE(last_decay_at, '')
 FROM (SELECT * FROM explore_arms WHERE profile_id=:musik_profile) AS explore_arms`)
 	if err != nil {
@@ -86,7 +86,7 @@ func (s *Store) UpdateExploreArm(key, kind string, success bool) error {
 	if kind == "aggregate" {
 		priorA, priorB = 2.0, 8.0
 	}
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO explore_arms(
   arm_key, arm_kind, alpha, beta, successes, failures, last_decay_at, updated_at, owner_scope
 ,profile_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'local',:musik_profile)
@@ -102,7 +102,7 @@ ON CONFLICT(profile_id,arm_key) DO UPDATE SET
 }
 
 func (s *Store) ExploreSourceOutcomeCounts() (map[string]int, error) {
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT source, COUNT(*)
 FROM (SELECT * FROM recommendation_impressions WHERE profile_id=:musik_profile) AS recommendation_impressions
 WHERE legacy=0

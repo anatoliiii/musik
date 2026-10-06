@@ -21,7 +21,7 @@ func (s *Store) ReplaceEntityVectors(model string, rows []EntityVector) error {
 	if model == "" {
 		model = EntityModelVersion
 	}
-	tx, err := s.DB.Begin()
+	tx, err := s.legacy.Begin()
 	if err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func (s *Store) LoadEntityVectors(model string) ([]EntityVector, error) {
 	if model == "" {
 		model = EntityModelVersion
 	}
-	rows, err := s.DB.Query(`
+	rows, err := s.legacy.Query(`
 SELECT entity_type, entity_key, embedding, embedding_dim, model_version, track_count, computed_at
 FROM entity_vectors WHERE model_version = ?`, model)
 	if err != nil {
@@ -74,7 +74,7 @@ func (s *Store) EntityVector(entityType, key, model string) (*EntityVector, erro
 		model = EntityModelVersion
 	}
 	var row EntityVector
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT entity_type, entity_key, embedding, embedding_dim, model_version, track_count, computed_at
 FROM entity_vectors WHERE entity_type = ? AND entity_key = ? AND model_version = ?`,
 		entityType, key, model).Scan(

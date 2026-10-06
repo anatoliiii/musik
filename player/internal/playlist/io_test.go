@@ -1,6 +1,7 @@
 package playlist
 
 import (
+	"fmt"
 	"path/filepath"
 	"testing"
 
@@ -10,23 +11,21 @@ import (
 
 func TestSmartPlaylistRoundTripAndImportExport(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pl.db")
-	if err := testdb.Create(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.Open(path)
+	databaseURL, path := testdb.Target(t, path)
+	store, err := db.OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	for id := 1; id <= 3; id++ {
 		if _, err := store.DB.Exec(
-			`INSERT INTO tracks(id, path, title, artist, album, year, duration) VALUES (?,?,?,?,?,?,?)`,
-			id, "/t.flac", "Title", "Artist", "Album", 2012, 180,
+			`INSERT INTO tracks(id, path, title, artist, album, year, duration, created_at, updated_at) VALUES (?,?,?,?,?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			id, fmt.Sprintf("/t-%d.flac", id), "Title", "Artist", "Album", 2012, 180,
 		); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := store.DB.Exec(`INSERT INTO favorites(track_id, added_at, position) VALUES (1,'now',0)`); err != nil {
+	if _, err := store.DB.Exec(`INSERT INTO favorites(track_id, added_at, position, profile_id) VALUES (1,'2026-01-01T00:00:00Z',0,?)`, store.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	rule := Rule{

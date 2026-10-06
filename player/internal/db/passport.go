@@ -27,7 +27,7 @@ func (s *Store) TrackPassport(id int64) (*TrackPassport, error) {
 		lufs, bpm            sql.NullFloat64
 		keyName, mode        sql.NullString
 	)
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT t.path, t.bitrate, t.sample_rate, t.channels, COALESCE(f.lufs, t.lufs), f.bpm, f.key_name, f.mode
 FROM tracks t
 LEFT JOIN features f ON f.track_id = t.id

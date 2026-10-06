@@ -80,7 +80,7 @@ func (s *Store) CreateRadioRule(rule RadioRule) (RadioRule, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	rule.CreatedAt = now
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 INSERT INTO radio_rules(
   rule_id, target_type, action, scope, target_key, strength,
   session_id, context_id, expires_at, created_at
@@ -95,7 +95,7 @@ func (s *Store) UpdateRadioRule(rule RadioRule) error {
 		return fmt.Errorf("rule_id required")
 	}
 	now := time.Now().UTC()
-	_, err := s.DB.Exec(`
+	_, err := s.legacy.Exec(`
 UPDATE radio_rules SET
   strength = CASE WHEN ? > 0 THEN ? ELSE strength END,
   expires_at = CASE WHEN ? THEN ? ELSE expires_at END,
@@ -111,13 +111,13 @@ WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `,
 
 func (s *Store) ArchiveRadioRule(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = ? WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ? AND archived_at IS NULL) `, now, id)
+	_, err := s.legacy.Exec(`UPDATE radio_rules SET archived_at = ? WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ? AND archived_at IS NULL) `, now, id)
 	return err
 }
 
 func (s *Store) UndoLastRadioRule() (*RadioRule, error) {
 	var id string
-	err := s.DB.QueryRow(`
+	err := s.legacy.QueryRow(`
 SELECT rule_id FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules
 WHERE archived_at IS NOT NULL
 ORDER BY archived_at DESC LIMIT 1`).Scan(&id)
@@ -127,14 +127,14 @@ ORDER BY archived_at DESC LIMIT 1`).Scan(&id)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `, id); err != nil {
+	if _, err := s.legacy.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE radio_rules.profile_id=:musik_profile AND ( rule_id = ?) `, id); err != nil {
 		return nil, err
 	}
 	return s.GetRadioRule(id)
 }
 
 func (s *Store) GetRadioRule(id string) (*RadioRule, error) {
-	row := s.DB.QueryRow(`
+	row := s.legacy.QueryRow(`
 SELECT rule_id, target_type, action, scope, target_key, strength,
        COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
        created_at, COALESCE(archived_at,'')
@@ -152,7 +152,7 @@ FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules`
 		q += ` WHERE archived_at IS NULL`
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.DB.Query(q)
+	rows, err := s.legacy.Query(q)
 	if err != nil {
 		return nil, err
 	}

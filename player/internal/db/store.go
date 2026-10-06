@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"net/url"
 	"path/filepath"
@@ -8,16 +9,24 @@ import (
 	"time"
 
 	"github.com/glebarez/sqlite"
+	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/jmoiron/sqlx"
 	gormpostgres "gorm.io/driver/postgres"
 	gorm "gorm.io/gorm"
 	"gorm.io/gorm/logger"
 )
 
+// Store is one profile's view of the configured database. ProfileID scopes
+// every personal-data query; catalog data is shared.
 type Store struct {
-	DB       *Database
-	ORM      *gorm.DB
-	Dialect  string
-	ReadOnly bool
+	DB        *DB
+	ProfileID string
+	Dialect   Dialect
+	ReadOnly  bool
+
+	// Transitional: repositories not yet converted to DB.
+	legacy *Database
+	ORM    *gorm.DB
 }
 
 const SupportedSchemaVersion = 8
@@ -55,88 +64,111 @@ type TrackRow struct {
 
 func Open(path string) (*Store, error) { return OpenDatabase("", path) }
 
-// OpenDatabase opens either configured backend through GORM. The compatibility
-// repository port shares GORM's pool and carries the active profile binding.
+// OpenDatabase opens the configured backend and validates that `musik db
+// migrate` has brought it to the supported schema; the player never migrates.
 func OpenDatabase(databaseURL, sqlitePath string) (*Store, error) {
-	dialect := "sqlite"
-	var orm *gorm.DB
-	var err error
-	if databaseURL == "" {
-		absolute, absErr := filepath.Abs(sqlitePath)
-		if absErr != nil {
-			return nil, absErr
-		}
-		dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String() +
-			"?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate"
-		orm, err = gorm.Open(sqlite.Open(dsn), &gorm.Config{
-			Logger:                                   logger.Default.LogMode(logger.Silent),
-			DisableForeignKeyConstraintWhenMigrating: true,
-		})
-	} else {
-		u, parseErr := url.Parse(databaseURL)
-		if parseErr != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || strings.Trim(u.Path, "/") == "" {
-			return nil, fmt.Errorf("invalid PostgreSQL MUSIK_DATABASE_URL")
-		}
-		dialect = "postgres"
-		orm, err = gorm.Open(gormpostgres.Open(databaseURL), &gorm.Config{
-			Logger:                                   logger.Default.LogMode(logger.Silent),
-			DisableForeignKeyConstraintWhenMigrating: true,
-		})
-	}
-	if err != nil {
-		return nil, err
-	}
-	sqlDB, err := orm.DB()
+	dialect, sqlDB, err := openPool(databaseURL, sqlitePath)
 	if err != nil {
 		return nil, err
 	}
 	sqlDB.SetMaxOpenConns(8)
 	sqlDB.SetMaxIdleConns(4)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
-	s := &Store{DB: &Database{DB: sqlDB, ORM: orm, Dialect: dialect}, ORM: orm, Dialect: dialect}
 	if err := sqlDB.Ping(); err != nil {
 		_ = sqlDB.Close()
 		return nil, err
 	}
-	if dialect == "postgres" {
-		if err := sqlDB.QueryRow(`SELECT pg_is_in_recovery()`).Scan(&s.ReadOnly); err != nil {
-			_ = sqlDB.Close()
-			return nil, fmt.Errorf("read PostgreSQL recovery state: %w", err)
-		}
-	}
-	if dialect == "sqlite" {
-		var version int
-		if err := sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-			_ = sqlDB.Close()
-			return nil, fmt.Errorf("read SQLite schema version: %w", err)
-		}
-		if version != SupportedSchemaVersion {
-			_ = sqlDB.Close()
-			return nil, fmt.Errorf("unsupported SQLite database schema version %d (player requires exactly %d); run `musik db migrate` before starting the player", version, SupportedSchemaVersion)
-		}
-		_, _ = sqlDB.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
-	}
-	var revision string
-	if err := sqlDB.QueryRow(`SELECT version_num FROM alembic_version`).Scan(&revision); err != nil {
+	s, err := newStore(dialect, sqlDB)
+	if err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("database migration history is missing; run `musik db migrate` first: %w", err)
+		return nil, err
 	}
-	if revision != SupportedSchemaRevision {
+	if err := s.validateSchema(); err != nil {
 		_ = sqlDB.Close()
-		return nil, fmt.Errorf("unsupported database migration revision %q (player requires %q)", revision, SupportedSchemaRevision)
-	}
-	if err := sqlDB.QueryRow(`SELECT value FROM installation_state WHERE key='legacy_profile_id'`).Scan(&s.DB.ProfileID); err != nil {
-		_ = sqlDB.Close()
-		return nil, fmt.Errorf("read installation profile: %w", err)
+		return nil, err
 	}
 	return s, nil
 }
 
+func openPool(databaseURL, sqlitePath string) (Dialect, *sql.DB, error) {
+	if databaseURL == "" {
+		absolute, err := filepath.Abs(sqlitePath)
+		if err != nil {
+			return "", nil, err
+		}
+		// _txlock=immediate: write transactions take the write lock at BEGIN,
+		// so read-then-write repository methods cannot interleave.
+		dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String() +
+			"?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate"
+		pool, err := sql.Open("sqlite", dsn)
+		return SQLite, pool, err
+	}
+	u, err := url.Parse(databaseURL)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+		return "", nil, fmt.Errorf("invalid PostgreSQL MUSIK_DATABASE_URL")
+	}
+	pool, err := sql.Open("pgx", databaseURL)
+	return Postgres, pool, err
+}
+
+func newStore(dialect Dialect, pool *sql.DB) (*Store, error) {
+	driver := "sqlite3"
+	var dialector gorm.Dialector = sqlite.Dialector{Conn: pool}
+	if dialect == Postgres {
+		driver = "pgx"
+		dialector = gormpostgres.New(gormpostgres.Config{Conn: pool})
+	}
+	orm, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+	if err != nil {
+		return nil, err
+	}
+	return &Store{
+		DB:      &DB{x: sqlx.NewDb(pool, driver), Dialect: dialect},
+		Dialect: dialect,
+		legacy:  &Database{DB: pool, ORM: orm, Dialect: string(dialect)},
+		ORM:     orm,
+	}, nil
+}
+
+func (s *Store) validateSchema() error {
+	if s.Dialect == Postgres {
+		if err := s.DB.QueryRow(`SELECT pg_is_in_recovery()`).Scan(&s.ReadOnly); err != nil {
+			return fmt.Errorf("read PostgreSQL recovery state: %w", err)
+		}
+	} else {
+		var version int
+		if err := s.DB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+			return fmt.Errorf("read SQLite schema version: %w", err)
+		}
+		if version != SupportedSchemaVersion {
+			return fmt.Errorf("unsupported SQLite database schema version %d (player requires exactly %d); run `musik db migrate` before starting the player", version, SupportedSchemaVersion)
+		}
+		_, _ = s.DB.Exec(`PRAGMA wal_checkpoint(TRUNCATE)`)
+	}
+	var revision string
+	if err := s.DB.QueryRow(`SELECT version_num FROM alembic_version`).Scan(&revision); err != nil {
+		return fmt.Errorf("database migration history is missing; run `musik db migrate` first: %w", err)
+	}
+	if revision != SupportedSchemaRevision {
+		return fmt.Errorf("unsupported database migration revision %q (player requires %q)", revision, SupportedSchemaRevision)
+	}
+	if err := s.DB.QueryRow(`SELECT value FROM installation_state WHERE key='legacy_profile_id'`).Scan(&s.ProfileID); err != nil {
+		return fmt.Errorf("read installation profile: %w", err)
+	}
+	s.legacy.ProfileID = s.ProfileID
+	return nil
+}
+
 func (s *Store) Close() error { return s.DB.Close() }
 
+// ForProfile returns a view of the same pool scoped to profileID.
 func (s *Store) ForProfile(profileID string) *Store {
-	database := *s.DB
-	database.ProfileID = profileID
-	database.ORM = s.ORM.Session(&gorm.Session{})
-	return &Store{DB: &database, ORM: database.ORM, Dialect: s.Dialect, ReadOnly: s.ReadOnly}
+	scoped := *s
+	scoped.ProfileID = profileID
+	legacy := *s.legacy
+	legacy.ProfileID = profileID
+	legacy.ORM = s.ORM.Session(&gorm.Session{})
+	scoped.legacy = &legacy
+	scoped.ORM = legacy.ORM
+	return &scoped
 }

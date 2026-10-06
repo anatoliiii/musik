@@ -2,6 +2,7 @@ package playback
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -17,10 +18,8 @@ import (
 func testEngine(t *testing.T) *Engine {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "playback-test.db")
-	if err := testdb.Create(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := db.Open(path)
+	databaseURL, path := testdb.Target(t, path)
+	store, err := db.OpenDatabase(databaseURL, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +254,8 @@ func insertPlaybackTracks(t *testing.T, engine *Engine) {
 	t.Helper()
 	for _, id := range []int64{11, 22, 33} {
 		if _, err := engine.Store.DB.Exec(
-			`INSERT INTO tracks(id, path, title, artist, duration) VALUES (?,?,?,?,?)`,
-			id, "/t.flac", "T", "Artist", 180,
+			`INSERT INTO tracks(id, path, title, artist, duration, created_at, updated_at) VALUES (?,?,?,?,?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+			id, fmt.Sprintf("/t-%d.flac", id), "T", "Artist", 180,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -332,7 +331,7 @@ func TestRadioStartAssignsImpressionAndIdempotentLifecycle(t *testing.T) {
 	end := Event{
 		Type: "track_end", EventID: "end-1", TrackID: session.Current,
 		ImpressionID: session.CurrentItem.ImpressionID,
-		DurationSec: &dur, ListenedSec: &listened, Reason: "completed",
+		DurationSec:  &dur, ListenedSec: &listened, Reason: "completed",
 	}
 	if result := engine.ApplyEvent(session, end); !result.OK || result.Ignored {
 		t.Fatalf("end=%+v", result)
@@ -432,7 +431,7 @@ func TestDislikeAndEarlySkipStayOffPositiveTaste(t *testing.T) {
 	engine.ApplyEvent(session, Event{
 		Type: "skip", EventID: "sk", TrackID: session.Current,
 		ImpressionID: session.CurrentItem.ImpressionID,
-		DurationSec: &dur, ListenedSec: &listened, Reason: "skipped",
+		DurationSec:  &dur, ListenedSec: &listened, Reason: "skipped",
 	})
 	if len(session.TasteState.Negative) == 0 {
 		t.Fatal("early skip should stay on session negatives")
