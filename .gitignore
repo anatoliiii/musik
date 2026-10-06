@@ -64,3 +64,8 @@ mobile/flutter/android/local.properties
 coverage/
 htmlcov/
 .coverage
+
+# iOS: the Xcode project is generated from ios/project.yml by XcodeGen
+ios/*.xcodeproj/
+ios/build/
+xcuserdata/

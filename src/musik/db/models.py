@@ -30,6 +30,10 @@ class Track(Base):
     lufs: Mapped[float | None]
     is_duplicate_of: Mapped[int | None] = mapped_column(ForeignKey("tracks.id"))
     is_active: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # Album tag carried a "(… Remaster)" marker; keeps editions apart in dedup.
+    is_remaster: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # JSON array of collaborator credits split at scan time.
+    artist_segments: Mapped[str | None] = mapped_column(Text)
     artwork_path: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(Text, nullable=False)
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)

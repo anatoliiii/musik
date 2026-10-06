@@ -83,6 +83,19 @@ func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 	check(call("POST", "/api/auth/oidc/default/link", "{}", tokenA, csrfA, "https://musik.test"), 503)
 	check(call("GET", "/api/admin/users", "", tokenA, "", ""), 200)
 	check(call("GET", "/api/admin/users", "", tokenB, "", ""), 403)
+	// Behind a same-host reverse proxy every request arrives from loopback;
+	// server settings (env file, directory browser, restart) stay admin-only.
+	viaProxy := func(path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("GET", "https://musik.test"+path, nil)
+		req.RemoteAddr = "127.0.0.1:40000"
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, req)
+		return out
+	}
+	check(viaProxy("/api/settings", tokenB), 403)
+	check(viaProxy("/api/settings/dirs", tokenB), 403)
+	check(viaProxy("/api/settings", tokenA), 200)
 	createdInvite := call("POST", "/api/admin/invitations", `{"ttl_hours":1}`, tokenA, csrfA, "https://musik.test")
 	check(createdInvite, 200)
 	var invitation struct {

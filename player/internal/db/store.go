@@ -22,37 +22,39 @@ type Store struct {
 	ReadOnly  bool
 }
 
-const SupportedSchemaVersion = 8
-const SupportedSchemaRevision = "musik_8"
+const SupportedSchemaVersion = 9
+const SupportedSchemaRevision = "musik_9"
 
 func mondayZeroWeekday(day time.Weekday) int { return (int(day) + 6) % 7 }
 
 type TrackRow struct {
-	ID           int64
-	Path         string
-	Title        string
-	Artist       string
-	Album        string
-	Duration     float64
-	FileMD5      string
-	CreatedAt    string
-	ArtworkPath  string
-	ClusterID    int
-	Embedding    []byte
-	Dim          int
-	Shown        int
-	SkipEarly    int
-	Completed    int
-	Year         int
-	BPM          float64
-	LUFS         float64
-	HasBPM       bool
-	HasLUFS      bool
-	KeyName      string
-	Plays        int
-	Finishes     int
-	EarlySkips   int
-	LastPlayedAt string
+	ID     int64
+	Path   string
+	Title  string
+	Artist string
+	// ArtistSegments is the collaborator split parsed at scan time (row.artists).
+	ArtistSegments []string
+	Album          string
+	Duration       float64
+	FileMD5        string
+	CreatedAt      string
+	ArtworkPath    string
+	ClusterID      int
+	Embedding      []byte
+	Dim            int
+	Shown          int
+	SkipEarly      int
+	Completed      int
+	Year           int
+	BPM            float64
+	LUFS           float64
+	HasBPM         bool
+	HasLUFS        bool
+	KeyName        string
+	Plays          int
+	Finishes       int
+	EarlySkips     int
+	LastPlayedAt   string
 }
 
 func Open(path string) (*Store, error) { return OpenDatabase("", path) }

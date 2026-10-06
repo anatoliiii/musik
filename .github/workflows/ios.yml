@@ -1,0 +1,67 @@
+name: ios
+
+# Build the SwiftUI client in ios/ on a macOS runner and publish an unsigned .ipa.
+# No Mac or paid Apple account is needed: sideload the artifact with Sideloadly or
+# AltStore (Windows works), which re-sign it with a free Apple ID. See ios/README.md.
+on:
+  push:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+    tags: ["ios-v*"]
+  pull_request:
+    paths: ["ios/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# A newer push to the same branch supersedes an in-flight build.
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install XcodeGen
+        run: brew install xcodegen
+      - name: Generate Xcode project
+        run: xcodegen generate
+      - name: Build (unsigned)
+        run: |
+          mkdir -p build
+          status=0
+          xcodebuild build \
+            -project Musik.xcodeproj -scheme Musik -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            > build/xcodebuild.log 2>&1 || status=$?
+          grep -E '(error:|BUILD SUCCEEDED|BUILD FAILED)' build/xcodebuild.log || true
+          exit $status
+      - name: Package .ipa
+        run: |
+          mkdir -p build/ipa/Payload
+          cp -R build/dd/Build/Products/Release-iphoneos/Musik.app build/ipa/Payload/
+          cd build/ipa && zip -qry ../Musik-unsigned.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Musik-unsigned-ipa
+          path: ios/build/Musik-unsigned.ipa
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xcodebuild-log
+          path: ios/build/xcodebuild.log
+          if-no-files-found: ignore
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/ios-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ios/build/Musik-unsigned.ipa

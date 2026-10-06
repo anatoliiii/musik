@@ -1,0 +1,33 @@
+# XcodeGen spec. Generate the Xcode project with `xcodegen generate`
+# (CI does this; the .xcodeproj itself is not committed).
+name: Musik
+options:
+  bundleIdPrefix: app.musik
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  Musik:
+    type: application
+    platform: iOS
+    sources:
+      - path: Musik
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: app.musik.ios
+        PRODUCT_NAME: Musik
+        INFOPLIST_FILE: Musik/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        TARGETED_DEVICE_FAMILY: "1,2"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        CODE_SIGN_STYLE: Automatic
+        ENABLE_PREVIEWS: YES
+    scheme: {}

@@ -5,7 +5,7 @@ import pytest
 from sqlalchemy import text
 
 from musik.db.deploy import prepare
-from musik.db.migrations import migrate_database
+from musik.db.migrations import LATEST_SCHEMA_VERSION, migrate_database
 from musik.db.orm import engine_for
 
 
@@ -30,7 +30,7 @@ def test_upgrade_requires_stopped_writers_and_backs_up_old_schema(tmp_path):
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == LATEST_SCHEMA_VERSION
     prepare(environment(tmp_path))
     assert len(list((tmp_path / "backups").glob("*.sqlite"))) == 1
 

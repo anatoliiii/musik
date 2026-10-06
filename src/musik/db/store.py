@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import numpy as np
@@ -26,6 +27,10 @@ def upsert_track(data: dict[str, Any]) -> int:
         "channels", "fingerprint", "lufs", "artwork_path",
     )
     values = {name: data.get(name) for name in fields}
+    values["is_remaster"] = 1 if data.get("is_remaster") else 0
+    values["artist_segments"] = json.dumps(
+        [str(segment) for segment in (data.get("artist_segments") or [])], ensure_ascii=False
+    )
     with connect() as conn:
         session = conn.session
         track = session.scalar(select(Track).where(Track.path == data["path"]))
@@ -122,87 +127,88 @@ def update_audio_scalars(
                 track.updated_at = utcnow()
 
 
+# First tie-breaker inside a duplicate group: container/format rank, lower wins.
+# FLAC beats WAV/AIFF beats Opus/OGG beats M4A/AAC beats MP3 beats anything else.
+# Lower rank wins a duplicate group: lossless first, then by codec quality.
+FORMAT_RANK = {".flac": 0, ".wav": 1, ".aiff": 1, ".aif": 1, ".opus": 2, ".ogg": 2,
+               ".m4a": 3, ".aac": 3, ".mp3": 4}
+
+# Copies whose durations differ by more than this are different takes
+# (live vs studio), even when artist, title and album agree.
 DUPLICATE_DURATION_TOLERANCE_SEC = 3.0
 
 
+def _format_rank(path: str) -> int:
+    lower = path.lower()
+    return next((rank for ext, rank in FORMAT_RANK.items() if lower.endswith(ext)), 5)
+
+
+def _norm(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
 def mark_duplicates() -> int:
-    """Mark duplicate catalog files by hash, fingerprint, then metadata."""
+    """Mark duplicates: same MD5, then fingerprint, then artist+title+album.
+
+    The winner of a group is the finest copy: format rank first (FLAC >
+    WAV/AIFF > Opus/OGG > M4A/AAC > MP3 > other), then highest bitrate,
+    then largest file (stable: lowest id). Album, year and the remaster flag
+    keep originals, remasters and other editions apart, and durations must
+    agree within DUPLICATE_DURATION_TOLERANCE_SEC so live and studio takes
+    that share one title never merge. Everyone else gets is_duplicate_of.
+    """
     with connect() as conn:
         session = conn.session
         session.query(Track).filter(
             Track.is_active == 1, Track.is_duplicate_of.is_not(None)
         ).update({Track.is_duplicate_of: None}, synchronize_session="fetch")
+        tracks = sorted(
+            session.scalars(select(Track).where(Track.is_active == 1)).all(),
+            key=lambda t: (_format_rank(t.path), -(t.bitrate or 0), -(t.file_size or 0), t.id),
+        )
+        now = utcnow()
         marked = 0
 
-        def mark_by(field: str) -> int:
-            column = getattr(Track, field)
-            tracks = session.scalars(
-                select(Track)
-                .where(
-                    Track.is_active == 1,
-                    Track.is_duplicate_of.is_(None),
-                    column.is_not(None),
-                    column != "",
-                )
-                .order_by(
-                    column,
-                    func.coalesce(Track.bitrate, 0).desc(),
-                    func.coalesce(Track.file_size, 0).desc(),
-                    Track.id.asc(),
-                )
-            ).all()
-            best_by_key: dict[str, int] = {}
+        def edition(track: Track) -> str:
+            return f"{track.year or ''}|{track.is_remaster or 0}"
+
+        def mark(key_of, *, tolerance: bool = False) -> int:
+            kept: dict[str, list[Track]] = {}
             duplicates = 0
-            now = utcnow()
             for track in tracks:
-                key = getattr(track, field)
-                if key not in best_by_key:
-                    best_by_key[key] = track.id
+                if track.is_duplicate_of is not None:
+                    continue
+                key = key_of(track)
+                if not key:
+                    continue
+                copies = kept.setdefault(key, [])
+                best = next(
+                    (c for c in copies
+                     if not tolerance
+                     or abs((c.duration or 0) - (track.duration or 0)) <= DUPLICATE_DURATION_TOLERANCE_SEC),
+                    None,
+                )
+                if best is None:
+                    copies.append(track)
                 else:
-                    track.is_duplicate_of = best_by_key[key]
+                    track.is_duplicate_of = best.id
                     track.updated_at = now
                     duplicates += 1
             return duplicates
 
-        marked += mark_by("file_md5")
-        marked += mark_by("fingerprint")
-
-        normalized_artist = func.lower(func.trim(Track.artist))
-        normalized_title = func.lower(func.trim(Track.title))
-        group_key = normalized_artist + literal("|") + normalized_title
-        metadata_rows = session.execute(
-            select(Track, group_key.label("group_key"))
-            .where(
-                Track.is_active == 1,
-                Track.is_duplicate_of.is_(None),
-                func.trim(func.coalesce(Track.artist, "")) != "",
-                func.trim(func.coalesce(Track.title, "")) != "",
-                Track.duration.is_not(None),
-                Track.duration > 0,
-            )
-            .order_by(
-                normalized_artist,
-                normalized_title,
-                func.coalesce(Track.bitrate, 0).desc(),
-                func.coalesce(Track.file_size, 0).desc(),
-                Track.id.asc(),
-            )
-        ).all()
-        kept: dict[str, list[tuple[int, float]]] = {}
-        now = utcnow()
-        for track, key in metadata_rows:
-            copies = kept.setdefault(key, [])
-            best = next(
-                (track_id for track_id, duration in copies
-                 if abs(duration - track.duration) <= DUPLICATE_DURATION_TOLERANCE_SEC),
-                None,
-            )
-            if best is None:
-                copies.append((track.id, track.duration))
-            else:
-                track.is_duplicate_of = best
-                track.updated_at = now
-                marked += 1
+        # 1) identical files
+        marked += mark(lambda t: t.file_md5 or "")
+        # 2) chromaprint; year and remaster flag keep editions apart even when
+        # the fingerprint survives mastering.
+        marked += mark(lambda t: f"{t.fingerprint}|{edition(t)}" if t.fingerprint else "")
+        # 3) same song metadata (different encodes / renames / editions)
+        marked += mark(
+            lambda t: (
+                f"{_norm(t.artist)}|{_norm(t.title)}|{_norm(t.album)}|{edition(t)}"
+                if _norm(t.artist) and _norm(t.title) and (t.duration or 0) > 0 else ""
+            ),
+            tolerance=True,
+        )
         return marked
 
 
@@ -332,3 +338,112 @@ def get_embedding(track_id: int) -> np.ndarray | None:
         if dim and arr.size != dim:
             return arr.astype(np.float32)
         return np.asarray(arr, dtype=np.float32)
+
+
+def list_tracks_needing_artwork(
+    *, limit: int | None = None, force: bool = False
+) -> list[dict[str, Any]]:
+    """Active non-duplicate tracks with an album to look up.
+
+    The caller checks the artwork file itself: a stored ``artwork_path`` may be
+    empty, point at a container path, or reference a file that was deleted.
+    Both cases ("empty path" or "file missing") are handled in Python, so the
+    query never discards a row because it happens to carry a non-empty string.
+    """
+    sql = """
+        SELECT t.id, t.path, t.file_md5, t.artist, t.album, t.artwork_path
+        FROM tracks t
+        WHERE t.is_active = 1 AND COALESCE(t.is_duplicate_of, 0) = 0
+          AND trim(COALESCE(t.artist, '')) != ''
+          AND trim(COALESCE(t.album, '')) != ''
+          AND t.file_md5 IS NOT NULL AND t.file_md5 != ''
+    """
+    sql += " ORDER BY t.artist, t.album, t.track_number"
+    if limit is not None:
+        sql += f" LIMIT {int(limit)}"
+    with connect() as conn:
+        return [dict(r) for r in conn.execute(sql).fetchall()]
+
+
+def recent_artwork_misses(since_iso: str) -> set[str]:
+    """Album keys looked up without a match on or after since_iso."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT album_key FROM artwork_lookups WHERE status = 'missing' AND checked_at >= :since",
+            {"since": since_iso},
+        ).fetchall()
+    return {str(r[0]) for r in rows}
+
+
+def record_artwork_lookup(album_key: str, found: bool) -> None:
+    with connect() as conn:
+        if found:
+            conn.execute("DELETE FROM artwork_lookups WHERE album_key = :key", {"key": album_key})
+        else:
+            conn.execute(
+                """
+                INSERT INTO artwork_lookups(album_key, status, checked_at)
+                VALUES (:key, 'missing', :now)
+                ON CONFLICT(album_key) DO UPDATE SET
+                  status = excluded.status, checked_at = excluded.checked_at
+                """,
+                {"key": album_key, "now": utcnow()},
+            )
+
+
+def list_library_artists() -> list[str]:
+    """Distinct artist names as the library shows them (collaborator segments)."""
+    with connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT artist, artist_segments FROM tracks
+            WHERE is_active = 1 AND COALESCE(is_duplicate_of, 0) = 0
+            """
+        ).fetchall()
+    seen: dict[str, str] = {}
+    for artist, segments_json in rows:
+        try:
+            segments = json.loads(segments_json) if segments_json else []
+        except ValueError:
+            segments = []
+        names = [str(s) for s in segments if str(s).strip()] or [str(artist or "")]
+        for name in names:
+            name = " ".join(name.split())
+            if name:
+                seen.setdefault(name.lower(), name)
+    return sorted(seen.values(), key=str.lower)
+
+
+def artist_photo_states() -> dict[str, dict[str, Any]]:
+    """name_key -> {status, path, checked_at} for every stored lookup."""
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT name_key, status, path, checked_at FROM artist_photos"
+        ).fetchall()
+    return {
+        str(r[0]): {"status": r[1], "path": r[2], "checked_at": r[3]} for r in rows
+    }
+
+
+def save_artist_photo(name_key: str, artist: str, path: str | None, source: str) -> None:
+    status = "found" if path else "missing"
+    with connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO artist_photos(name_key, artist, path, status, source, checked_at)
+            VALUES (:name_key, :artist, :path, :status, :source, :now)
+            ON CONFLICT(name_key) DO UPDATE SET
+              artist = excluded.artist, path = excluded.path, status = excluded.status,
+              source = excluded.source, checked_at = excluded.checked_at
+            """,
+            {"name_key": name_key, "artist": artist, "path": path, "status": status,
+             "source": source, "now": utcnow()},
+        )
+
+
+def save_artwork_path(track_id: int, path: str) -> None:
+    with connect() as conn:
+        conn.execute(
+            "UPDATE tracks SET artwork_path = :path, updated_at = :now WHERE id = :id",
+            {"path": path, "now": utcnow(), "id": track_id},
+        )

@@ -675,6 +675,48 @@ def _device_tokens(conn: sqlite3.Connection) -> None:
     )
 
 
+def _catalog_extras_and_playback_state(conn: sqlite3.Connection) -> None:
+    # Remaster flag and collaborator segments are parsed at scan time (the
+    # scanner keeps the full album tag; "Thomas / БИ-2 / Сплин" is split once
+    # so API and UI show the same credits).
+    _add_column(conn, "tracks", "is_remaster INTEGER NOT NULL DEFAULT 0")
+    _add_column(conn, "tracks", "artist_segments TEXT")
+    conn.executescript(
+        """
+        -- Where playback stopped, per profile and device scope, so a reload or
+        -- another device of the same profile resumes the track at that point.
+        CREATE TABLE IF NOT EXISTS playback_state (
+            profile_id   TEXT NOT NULL REFERENCES profiles(id),
+            owner_scope  TEXT NOT NULL DEFAULT 'local',
+            session_id   TEXT NOT NULL DEFAULT '',
+            track_id     INTEGER NOT NULL DEFAULT 0,
+            position_sec REAL NOT NULL DEFAULT 0,
+            listened_sec REAL NOT NULL DEFAULT 0,
+            playing      INTEGER NOT NULL DEFAULT 0,
+            client_id    TEXT NOT NULL DEFAULT '',
+            updated_at   TEXT NOT NULL,
+            PRIMARY KEY (profile_id, owner_scope)
+        );
+        -- Catalog lookups shared by every profile. status='missing' remembers
+        -- an online lookup without a match so hourly runs do not repeat it.
+        CREATE TABLE IF NOT EXISTS artist_photos (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name_key   TEXT NOT NULL UNIQUE,
+            artist     TEXT NOT NULL,
+            path       TEXT,
+            status     TEXT NOT NULL,
+            source     TEXT NOT NULL DEFAULT '',
+            checked_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS artwork_lookups (
+            album_key  TEXT PRIMARY KEY,
+            status     TEXT NOT NULL,
+            checked_at TEXT NOT NULL
+        );
+        """
+    )
+
+
 MIGRATIONS = (
     Migration(1, "baseline", _baseline),
     Migration(2, "future_data_foundation", _future_data_foundation),
@@ -684,6 +726,7 @@ MIGRATIONS = (
     Migration(6, "identity_foundation", _identity_foundation),
     Migration(7, "profile_ownership", _profile_ownership),
     Migration(8, "device_tokens_and_admin_guard", _device_tokens),
+    Migration(9, "catalog_extras_and_playback_state", _catalog_extras_and_playback_state),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

@@ -5,7 +5,7 @@ from pathlib import Path
 
 from sqlalchemy import text
 
-from musik.db.migrations import migrate_database
+from musik.db.migrations import LATEST_SCHEMA_VERSION, migrate_database
 from musik.db.orm import engine_for
 from musik.db.schema import connect, utcnow
 from musik.db.transfer import transfer_sqlite_to_postgres
@@ -53,8 +53,8 @@ def test_postgres_migration_and_verified_sqlite_transfer(tmp_path: Path, empty_p
             )
     finally:
         engine.dispose()
-    assert revision == "musik_8"
+    assert revision == f"musik_{LATEST_SCHEMA_VERSION}"
     assert history_profile == profile_id
     assert counts == (1, 1, 1)
-    assert report["schema_version"] == 8
+    assert report["schema_version"] == LATEST_SCHEMA_VERSION
     assert len(report["tables"]) >= 40

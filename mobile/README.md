@@ -12,5 +12,8 @@
 релиза. Исходники клиента в рамках этого изменения не менялись.
 
 Исторический план паритета с вебом: [docs/MOBILE.md](../docs/MOBILE.md) §B.
+
+Нативный iOS-клиент (SwiftUI) лежит в [`ios/`](../ios/README.md) и собирается
+в GitHub Actions без Mac.
 Общий порядок развития backend и нового event/impression-контракта:
 [docs/ROADMAP.md](../docs/ROADMAP.md).

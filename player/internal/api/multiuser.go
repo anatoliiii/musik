@@ -118,7 +118,7 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 			writeErr(w, 403, "device_token_scope", "operation is not available to device tokens")
 			return
 		}
-		adminOnly := strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/jobs") || path == "/api/library/upload" || path == "/api/library/rescan" || path == "/api/reload"
+		adminOnly := strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/jobs") || strings.HasPrefix(path, "/api/settings") || path == "/api/library/upload" || path == "/api/library/rescan" || path == "/api/reload"
 		if p.DeviceToken && strings.HasPrefix(path, "/api/jobs/") && (path == "/api/jobs/mix_pack" || deviceJobIDPath(r.Method, path)) {
 			adminOnly = false
 		}
@@ -142,7 +142,7 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 }
 
 func deviceRouteAllowed(method, path string) bool {
-	if strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/profiles") ||
+	if strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/profiles") || strings.HasPrefix(path, "/api/settings") ||
 		strings.HasPrefix(path, "/api/account/device-tokens") || strings.HasPrefix(path, "/api/auth/oidc/") {
 		return false
 	}
@@ -173,7 +173,7 @@ func (s *Server) requestServer(r *http.Request) (*Server, error) {
 		return s, nil
 	}
 	path := r.URL.Path
-	if strings.HasPrefix(path, "/api/auth/") || strings.HasPrefix(path, "/api/profiles") || strings.HasPrefix(path, "/api/admin/") || path == "/api/health" || path == "/api/themes" || path == "/api/openapi.json" || path == "/api/reload" || path == "/manifest.webmanifest" {
+	if strings.HasPrefix(path, "/api/auth/") || strings.HasPrefix(path, "/api/profiles") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/settings") || path == "/api/health" || path == "/api/themes" || path == "/api/openapi.json" || path == "/api/reload" || path == "/manifest.webmanifest" {
 		return s, nil
 	}
 	p, _ := r.Context().Value(principalKey{}).(*principal)

@@ -7,6 +7,7 @@ import (
 )
 
 type Config struct {
+	Root                 string // project root: .env, scripts/, .venv
 	DBPath               string
 	DatabaseURL          string
 	DataDir              string
@@ -52,6 +53,7 @@ func Load() Config {
 	db := env("MUSIK_DB_PATH", filepath.Join(root, "data", "db", "musik.db"))
 	dataDir := env("MUSIK_DATA_DIR", filepath.Dir(filepath.Dir(db)))
 	return Config{
+		Root:                 root,
 		DBPath:               db,
 		DatabaseURL:          env("MUSIK_DATABASE_URL", ""),
 		DataDir:              dataDir,
