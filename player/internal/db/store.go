@@ -8,12 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/glebarez/sqlite"
 	_ "github.com/jackc/pgx/v5/stdlib"
 	"github.com/jmoiron/sqlx"
-	gormpostgres "gorm.io/driver/postgres"
-	gorm "gorm.io/gorm"
-	"gorm.io/gorm/logger"
+	_ "modernc.org/sqlite"
 )
 
 // Store is one profile's view of the configured database. ProfileID scopes
@@ -23,9 +20,6 @@ type Store struct {
 	ProfileID string
 	Dialect   Dialect
 	ReadOnly  bool
-
-	// Transitional: identity, account and token repositories still use GORM.
-	ORM *gorm.DB
 }
 
 const SupportedSchemaVersion = 8
@@ -111,20 +105,13 @@ func openPool(databaseURL, sqlitePath string) (Dialect, *sql.DB, error) {
 }
 
 func newStore(dialect Dialect, pool *sql.DB) (*Store, error) {
-	driver := "sqlite3"
-	var dialector gorm.Dialector = sqlite.Dialector{Conn: pool}
+	driver := "sqlite3" // sqlx bind type: '?' placeholders
 	if dialect == Postgres {
 		driver = "pgx"
-		dialector = gormpostgres.New(gormpostgres.Config{Conn: pool})
-	}
-	orm, err := gorm.Open(dialector, &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
-	if err != nil {
-		return nil, err
 	}
 	return &Store{
 		DB:      &DB{x: sqlx.NewDb(pool, driver), Dialect: dialect},
 		Dialect: dialect,
-		ORM:     orm,
 	}, nil
 }
 
@@ -162,6 +149,5 @@ func (s *Store) Close() error { return s.DB.Close() }
 func (s *Store) ForProfile(profileID string) *Store {
 	scoped := *s
 	scoped.ProfileID = profileID
-	scoped.ORM = s.ORM.Session(&gorm.Session{})
 	return &scoped
 }

@@ -13,21 +13,21 @@ import (
 const ExportSchemaVersion = 1
 
 type ExportDoc struct {
-	SchemaVersion int            `json:"schema_version"`
-	Name          string         `json:"name"`
-	Type          string         `json:"type"`
-	Description   string         `json:"description,omitempty"`
-	RuleJSON      string         `json:"rule_json,omitempty"`
-	Tracks        []ExportTrack  `json:"tracks"`
+	SchemaVersion int           `json:"schema_version"`
+	Name          string        `json:"name"`
+	Type          string        `json:"type"`
+	Description   string        `json:"description,omitempty"`
+	RuleJSON      string        `json:"rule_json,omitempty"`
+	Tracks        []ExportTrack `json:"tracks"`
 }
 
 type ExportTrack struct {
-	Artist   string `json:"artist,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Album    string `json:"album,omitempty"`
+	Artist   string  `json:"artist,omitempty"`
+	Title    string  `json:"title,omitempty"`
+	Album    string  `json:"album,omitempty"`
 	Duration float64 `json:"duration,omitempty"`
-	Note     string `json:"note,omitempty"`
-	Path     string `json:"path,omitempty"`
+	Note     string  `json:"note,omitempty"`
+	Path     string  `json:"path,omitempty"`
 }
 
 func ExportJSON(pl *db.UserPlaylist, includePaths bool) ([]byte, error) {

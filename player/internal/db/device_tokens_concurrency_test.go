@@ -7,8 +7,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"gorm.io/gorm"
 )
 
 func TestPostgresDeviceTokenIssueDuringDisableDoesNotSurviveReenable(t *testing.T) {
@@ -38,7 +36,7 @@ func TestPostgresDeviceTokenIssueDuringDisableDoesNotSurviveReenable(t *testing.
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := issuer.ORM.Create(&UserRoleRecord{UserID: adminID, Role: "admin"}).Error; err != nil {
+			if _, err := issuer.DB.Exec(`INSERT INTO user_roles(user_id, role) VALUES (?, 'admin')`, adminID); err != nil {
 				t.Fatal(err)
 			}
 			userID, profile, err := issuer.CreateUserWithDefaultProfile(ctx, "Token race owner")
@@ -58,20 +56,16 @@ func TestPostgresDeviceTokenIssueDuringDisableDoesNotSurviveReenable(t *testing.
 			var once sync.Once
 			unblock := func() { once.Do(func() { close(release) }) }
 			defer unblock()
-			const callback = "test:pause_device_token_insert"
-			if err := issuer.ORM.Callback().Create().Before("gorm:create").Register(callback, func(tx *gorm.DB) {
-				if tx.Statement.Table == "device_tokens" {
-					close(ready)
-					select {
-					case <-release:
-					case <-ctx.Done():
-						tx.AddError(ctx.Err())
-					}
+			testHookBeforeDeviceTokenInsert = func(hookCtx context.Context) error {
+				close(ready)
+				select {
+				case <-release:
+					return nil
+				case <-hookCtx.Done():
+					return hookCtx.Err()
 				}
-			}); err != nil {
-				t.Fatal(err)
 			}
-			defer issuer.ORM.Callback().Create().Remove(callback)
+			defer func() { testHookBeforeDeviceTokenInsert = nil }()
 			type issued struct {
 				secret string
 				err    error
@@ -108,13 +102,13 @@ func TestPostgresDeviceTokenIssueDuringDisableDoesNotSurviveReenable(t *testing.
 				default:
 				}
 				var blocked int
-				if err := issuer.ORM.WithContext(ctx).Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%UPDATE "users"%'`).Scan(&blocked).Error; err != nil {
+				if err := adminStore.DB.Get(ctx, &blocked, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%UPDATE users%'`); err != nil {
 					t.Fatal(err)
 				}
 				// Replacement can also expose the old lock order by blocking
 				// disable's token revocation after it updated the owner.
 				if replace && blocked == 0 {
-					if err := issuer.ORM.WithContext(ctx).Raw(`SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%UPDATE "device_tokens"%'`).Scan(&blocked).Error; err != nil {
+					if err := adminStore.DB.Get(ctx, &blocked, `SELECT count(*) FROM pg_stat_activity WHERE datname=current_database() AND wait_event_type='Lock' AND query LIKE '%UPDATE device_tokens%'`); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -1,147 +1,76 @@
 package db
 
-// These mapped records back portable writes shared by the player and worker.
+// Row types for the identity, account, token and job tables. Columns map by
+// `db` tag through sqlx; nullable columns are pointers.
 
 type UserRecord struct {
-	ID          string `gorm:"primaryKey"`
-	Status      string `gorm:"not null"`
-	DisplayName string `gorm:"column:display_name;not null"`
-	CreatedAt   string `gorm:"column:created_at;not null"`
-	UpdatedAt   string `gorm:"column:updated_at;not null"`
+	ID          string `db:"id"`
+	Status      string `db:"status"`
+	DisplayName string `db:"display_name"`
+	CreatedAt   string `db:"created_at"`
+	UpdatedAt   string `db:"updated_at"`
 }
-
-func (UserRecord) TableName() string { return "users" }
-
-type UserRoleRecord struct {
-	UserID string `gorm:"column:user_id;primaryKey"`
-	Role   string `gorm:"primaryKey"`
-}
-
-func (UserRoleRecord) TableName() string { return "user_roles" }
 
 type ProfileRecord struct {
-	ID          string  `gorm:"primaryKey"`
-	OwnerUserID string  `gorm:"column:owner_user_id;not null;index"`
-	Name        string  `gorm:"not null"`
-	IsDefault   int     `gorm:"column:is_default;not null"`
-	CreatedAt   string  `gorm:"column:created_at;not null"`
-	UpdatedAt   string  `gorm:"column:updated_at;not null"`
-	DeletedAt   *string `gorm:"column:deleted_at"`
+	ID          string  `db:"id"`
+	OwnerUserID string  `db:"owner_user_id"`
+	Name        string  `db:"name"`
+	IsDefault   int     `db:"is_default"`
+	CreatedAt   string  `db:"created_at"`
+	UpdatedAt   string  `db:"updated_at"`
+	DeletedAt   *string `db:"deleted_at"`
 }
 
-func (ProfileRecord) TableName() string { return "profiles" }
+const profileColumns = `id, owner_user_id, name, is_default, created_at, updated_at, deleted_at`
 
 type AuthSessionRecord struct {
-	TokenHash       string  `gorm:"column:token_hash;primaryKey"`
-	UserID          string  `gorm:"column:user_id;not null"`
-	ActiveProfileID string  `gorm:"column:active_profile_id;not null"`
-	CSRFHash        string  `gorm:"column:csrf_hash;not null"`
-	CreatedAt       string  `gorm:"column:created_at;not null"`
-	ExpiresAt       string  `gorm:"column:expires_at;not null"`
-	RevokedAt       *string `gorm:"column:revoked_at"`
+	TokenHash       string  `db:"token_hash"`
+	UserID          string  `db:"user_id"`
+	ActiveProfileID string  `db:"active_profile_id"`
+	CSRFHash        string  `db:"csrf_hash"`
+	CreatedAt       string  `db:"created_at"`
+	ExpiresAt       string  `db:"expires_at"`
+	RevokedAt       *string `db:"revoked_at"`
 }
-
-func (AuthSessionRecord) TableName() string { return "auth_sessions" }
 
 type DeviceTokenRecord struct {
-	ID         string  `gorm:"primaryKey"`
-	SecretHash string  `gorm:"column:secret_hash;not null;uniqueIndex"`
-	UserID     string  `gorm:"column:user_id;not null;index"`
-	ProfileID  string  `gorm:"column:profile_id;not null;index"`
-	Name       string  `gorm:"not null"`
-	CreatedAt  string  `gorm:"column:created_at;not null"`
-	LastUsedAt *string `gorm:"column:last_used_at"`
-	ExpiresAt  string  `gorm:"column:expires_at;not null"`
-	RevokedAt  *string `gorm:"column:revoked_at"`
+	ID         string  `db:"id"`
+	SecretHash string  `db:"secret_hash"`
+	UserID     string  `db:"user_id"`
+	ProfileID  string  `db:"profile_id"`
+	Name       string  `db:"name"`
+	CreatedAt  string  `db:"created_at"`
+	LastUsedAt *string `db:"last_used_at"`
+	ExpiresAt  string  `db:"expires_at"`
+	RevokedAt  *string `db:"revoked_at"`
 }
-
-func (DeviceTokenRecord) TableName() string { return "device_tokens" }
-
-type ExternalIdentityRecord struct {
-	Issuer    string `gorm:"primaryKey"`
-	Subject   string `gorm:"primaryKey"`
-	UserID    string `gorm:"column:user_id;not null;index"`
-	CreatedAt string `gorm:"column:created_at;not null"`
-}
-
-func (ExternalIdentityRecord) TableName() string { return "external_identities" }
 
 type InvitationRecord struct {
-	ID           string  `gorm:"primaryKey"`
-	SecretHash   string  `gorm:"column:secret_hash;not null;uniqueIndex"`
-	CreatedBy    *string `gorm:"column:created_by"`
-	Issuer       *string
-	Email        *string
-	CreatedAt    string  `gorm:"column:created_at;not null"`
-	ExpiresAt    string  `gorm:"column:expires_at;not null"`
-	ConsumedAt   *string `gorm:"column:consumed_at"`
-	RevokedAt    *string `gorm:"column:revoked_at"`
-	ConsumedBy   *string `gorm:"column:consumed_by"`
-	TargetUserID *string `gorm:"column:target_user_id"`
+	ID           string  `db:"id"`
+	SecretHash   string  `db:"secret_hash"`
+	CreatedBy    *string `db:"created_by"`
+	Issuer       *string `db:"issuer"`
+	Email        *string `db:"email"`
+	CreatedAt    string  `db:"created_at"`
+	ExpiresAt    string  `db:"expires_at"`
+	ConsumedAt   *string `db:"consumed_at"`
+	RevokedAt    *string `db:"revoked_at"`
+	ConsumedBy   *string `db:"consumed_by"`
+	TargetUserID *string `db:"target_user_id"`
 }
 
-func (InvitationRecord) TableName() string { return "invitations" }
-
-type InstallationStateRecord struct {
-	Key   string `gorm:"primaryKey"`
-	Value string `gorm:"not null"`
-}
-
-func (InstallationStateRecord) TableName() string { return "installation_state" }
+const invitationColumns = `id, secret_hash, created_by, issuer, email, created_at, expires_at,
+consumed_at, revoked_at, consumed_by, target_user_id`
 
 type JobRecord struct {
-	ID          int64   `gorm:"primaryKey;autoIncrement"`
-	Kind        string  `gorm:"not null"`
-	Status      string  `gorm:"not null"`
-	PayloadJSON *string `gorm:"column:payload_json"`
-	ResultJSON  *string `gorm:"column:result_json"`
-	Error       *string `gorm:"column:error"`
-	CreatedAt   string  `gorm:"not null"`
-	UpdatedAt   string  `gorm:"not null"`
+	ID          int64   `db:"id"`
+	Kind        string  `db:"kind"`
+	Status      string  `db:"status"`
+	PayloadJSON *string `db:"payload_json"`
+	ResultJSON  *string `db:"result_json"`
+	Error       *string `db:"error"`
+	CreatedAt   string  `db:"created_at"`
+	UpdatedAt   string  `db:"updated_at"`
 }
 
-func (JobRecord) TableName() string { return "jobs" }
-
-type ListenRecord struct {
-	ID          int64  `gorm:"primaryKey;autoIncrement"`
-	ProfileID   string `gorm:"column:profile_id;not null;index"`
-	TrackID     int64  `gorm:"not null"`
-	TS          string `gorm:"column:ts;not null"`
-	Source      *string
-	Action      string `gorm:"not null"`
-	Daypart     *string
-	Weekday     *int
-	PositionSec *float64
-	DurationSec *float64
-	ListenedSec *float64
-	SessionID   *string `gorm:"column:session_id"`
-	Reason      *string
-}
-
-func (ListenRecord) TableName() string { return "listening_history" }
-
-type PlaylistRecord struct {
-	ID                int64  `gorm:"primaryKey;autoIncrement"`
-	ProfileID         string `gorm:"column:profile_id;not null;index"`
-	Kind              string `gorm:"not null"`
-	Name              string `gorm:"not null"`
-	CreatedAt         string `gorm:"not null"`
-	Type              string
-	Description       *string
-	UpdatedAt         *string
-	CoverTrackID      *int64 `gorm:"column:cover_track_id"`
-	CoverArtwork      *string
-	SortMode          string  `gorm:"column:sort_mode"`
-	RuleSchemaVersion *int64  `gorm:"column:rule_schema_version"`
-	RuleJSON          *string `gorm:"column:rule_json"`
-	AllowDuplicates   int     `gorm:"column:allow_duplicates"`
-}
-
-func (PlaylistRecord) TableName() string { return "playlists" }
-
-func optionalString(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
+const jobColumns = `id, kind, status, payload_json, result_json, error, created_at, updated_at`

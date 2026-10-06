@@ -53,24 +53,24 @@ func TestPostgreSQLStoreWhenConfigured(t *testing.T) {
 	}
 
 	payload := `{"test":true}`
-	id, err := store.EnqueueJob("gorm-smoke-"+NewID(), payload)
+	id, err := store.EnqueueJob("store-smoke-"+NewID(), payload)
 	if err != nil {
 		t.Fatal(err)
 	}
 	job, err := store.GetJob(id)
 	if err != nil || job == nil || job.Payload != payload {
-		t.Fatalf("ORM job roundtrip = %#v, %v", job, err)
+		t.Fatalf("job roundtrip = %#v, %v", job, err)
 	}
 	if _, err := store.DB.Exec(`DELETE FROM jobs WHERE id = ?`, id); err != nil {
 		t.Fatal(err)
 	}
 
-	playlist, err := store.CreateUserPlaylist(UserPlaylist{Name: "gorm-smoke-" + NewID()})
+	playlist, err := store.CreateUserPlaylist(UserPlaylist{Name: "store-smoke-" + NewID()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if playlist.ID == 0 {
-		t.Fatal("GORM create did not return the PostgreSQL playlist ID")
+		t.Fatal("playlist insert did not return the PostgreSQL ID")
 	}
 	if _, err := store.DB.Exec(`DELETE FROM playlists WHERE id = ?`, playlist.ID); err != nil {
 		t.Fatal(err)
@@ -131,24 +131,10 @@ func TestPostgreSQLProfilesAreIsolatedWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestPostgreSQLOIDCInvitationProvisioningWhenConfigured(t *testing.T) {
-	databaseURL := os.Getenv("MUSIK_TEST_POSTGRES_URL")
-	if databaseURL == "" {
-		t.Skip("set MUSIK_TEST_POSTGRES_URL to run PostgreSQL OIDC provisioning test")
-	}
-	store, err := OpenDatabase(databaseURL, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
+// Runs on a fresh database of the selected backend (MUSIK_TEST_BACKEND).
+func TestOIDCInvitationProvisioning(t *testing.T) {
+	store, _, _ := openTestTarget(t)
 	ctx := context.Background()
-	var activeAdmins int
-	if err := store.DB.QueryRowContext(ctx, `SELECT count(*) FROM users u JOIN user_roles r ON r.user_id=u.id WHERE u.status='active' AND r.role='admin'`).Scan(&activeAdmins); err != nil {
-		t.Fatal(err)
-	}
-	if activeAdmins != 0 {
-		t.Skip("PostgreSQL OIDC provisioning test requires a fresh database without an active admin")
-	}
 	issuer := "https://idp.example.test/realms/musik"
 	secret, err := store.BootstrapInvitation(ctx, issuer, time.Hour)
 	if err != nil {

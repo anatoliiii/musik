@@ -2,15 +2,12 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/url"
 	"os"
 	"testing"
 	"time"
-
-	gormpostgres "gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	"gorm.io/gorm/logger"
 )
 
 func TestConcurrentPostgresAdminRoleChangeAndDisableKeepsAnActiveAdmin(t *testing.T) {
@@ -20,20 +17,11 @@ func TestConcurrentPostgresAdminRoleChangeAndDisableKeepsAnActiveAdmin(t *testin
 	}
 
 	schema := "musik_test_" + NewID()
-	rootORM, err := gorm.Open(gormpostgres.Open(databaseURL), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
+	rootDB, err := sql.Open("pgx", databaseURL)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rootDB, err := rootORM.DB()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := rootDB.Ping(); err != nil {
-		t.Fatal(err)
-	}
-	if err := rootORM.Exec("CREATE SCHEMA \"" + schema + "\"").Error; err != nil {
+	if _, err := rootDB.Exec(`CREATE SCHEMA "` + schema + `"`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -105,18 +93,19 @@ $$;
 CREATE TRIGGER pause_admin_disable BEFORE UPDATE OF status ON users
   FOR EACH ROW WHEN (NEW.status = 'disabled') EXECUTE FUNCTION pause_admin_disable();
 `
-	if err := first.ORM.Exec(setup).Error; err != nil {
+	if _, err := first.DB.Exec(setup); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	adminA, adminB := NewID(), NewID()
 	for _, id := range []string{adminA, adminB} {
-		if err := first.ORM.Create(&UserRecord{
-			ID: id, Status: "active", DisplayName: id, CreatedAt: now, UpdatedAt: now,
-		}).Error; err != nil {
+		if _, err := first.DB.Exec(
+			`INSERT INTO users(id, status, display_name, created_at, updated_at) VALUES (?, 'active', ?, ?, ?)`,
+			id, id, now, now,
+		); err != nil {
 			t.Fatal(err)
 		}
-		if err := first.ORM.Create(&UserRoleRecord{UserID: id, Role: "admin"}).Error; err != nil {
+		if _, err := first.DB.Exec(`INSERT INTO user_roles(user_id, role) VALUES (?, 'admin')`, id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -149,11 +138,10 @@ CREATE TRIGGER pause_admin_disable BEFORE UPDATE OF status ON users
 		t.Fatalf("concurrent admin changes: succeeded=%d rejected_as_last_admin=%d, want one each", succeeded, rejected)
 	}
 
-	var activeAdmins int64
-	if err := first.ORM.Model(&UserRecord{}).
-		Joins("JOIN user_roles ON user_roles.user_id = users.id").
-		Where("users.status = ? AND user_roles.role = ?", "active", "admin").
-		Count(&activeAdmins).Error; err != nil {
+	var activeAdmins int
+	if err := first.DB.Get(context.Background(), &activeAdmins, `
+SELECT COUNT(*) FROM users JOIN user_roles ON user_roles.user_id = users.id
+WHERE users.status = 'active' AND user_roles.role = 'admin'`); err != nil {
 		t.Fatal(err)
 	}
 	if activeAdmins < 1 {

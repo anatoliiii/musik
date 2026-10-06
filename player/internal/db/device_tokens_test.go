@@ -49,7 +49,7 @@ func TestDeviceTokensBindProfilesExpireAndRevoke(t *testing.T) {
 		t.Fatalf("phone auth=%q/%+v/%q err=%v", user, profile, tokenID, err)
 	}
 	var lastUsed string
-	if err := store.ORM.Model(&DeviceTokenRecord{}).Select("last_used_at").Where("id = ?", phone.ID).Scan(&lastUsed).Error; err != nil || lastUsed == "" {
+	if err := store.DB.Get(ctx, &lastUsed, `SELECT last_used_at FROM device_tokens WHERE id = ?`, phone.ID); err != nil || lastUsed == "" {
 		t.Fatalf("last_used_at=%q err=%v", lastUsed, err)
 	}
 
@@ -67,8 +67,8 @@ func TestDeviceTokensBindProfilesExpireAndRevoke(t *testing.T) {
 		t.Fatalf("replacement auth profile=%+v err=%v", profile, err)
 	}
 
-	if err := store.ORM.Model(&DeviceTokenRecord{}).Where("id = ?", tablet.ID).
-		Update("expires_at", deviceTokenTimestamp(time.Now().Add(-time.Minute))).Error; err != nil {
+	if _, err := store.DB.Exec(`UPDATE device_tokens SET expires_at = ? WHERE id = ?`,
+		deviceTokenTimestamp(time.Now().Add(-time.Minute)), tablet.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, _, err := store.AuthenticateDeviceToken(ctx, tabletSecret); !errors.Is(err, ErrDeviceTokenInvalid) {

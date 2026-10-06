@@ -271,8 +271,8 @@ func TestMultiUserDeviceTokensPreserveLegacyBearerContractAndScope(t *testing.T)
 	check(call(http.MethodGet, "/api/favorites", "", "", "", phone.Token), http.StatusUnauthorized)
 	check(call(http.MethodGet, "/api/favorites", "", "", "", phoneReplacement.Token), http.StatusOK)
 
-	if err := store.ORM.Model(&db.DeviceTokenRecord{}).Where("id = ?", tablet.Device.ID).
-		Update("expires_at", time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano)).Error; err != nil {
+	if _, err := store.DB.Exec(`UPDATE device_tokens SET expires_at = ? WHERE id = ?`,
+		time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano), tablet.Device.ID); err != nil {
 		t.Fatal(err)
 	}
 	check(call(http.MethodGet, "/api/favorites", "", "", "", tablet.Token), http.StatusUnauthorized)

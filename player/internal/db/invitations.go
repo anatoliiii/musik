@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
+	"database/sql"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -12,8 +13,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 var ErrInvitationInvalid = errors.New("invitation invalid")
@@ -46,13 +45,6 @@ func randomSecret() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-func invitationPointer(value string) *string {
-	if value == "" {
-		return nil
-	}
-	return &value
-}
-
 // CreateInvitation returns the secret once. Only its hash is persisted.
 func (s *Store) CreateInvitation(ctx context.Context, adminID, issuer, email string, expires time.Time) (string, string, error) {
 	if !expires.After(time.Now()) {
@@ -63,23 +55,18 @@ func (s *Store) CreateInvitation(ctx context.Context, adminID, issuer, email str
 		return "", "", err
 	}
 	id := uuid.NewString()
-	createdBy := adminID
-	row := InvitationRecord{
-		ID: id, SecretHash: secretHash(secret), CreatedBy: &createdBy,
-		Issuer: invitationPointer(issuer), Email: invitationPointer(strings.ToLower(strings.TrimSpace(email))),
-		CreatedAt: time.Now().UTC().Format(time.RFC3339), ExpiresAt: expires.UTC().Format(time.RFC3339),
-	}
-	err = s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var admins int64
-		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
-			Where("users.id = ? AND users.status = ? AND user_roles.role = ?", adminID, "active", "admin").
-			Count(&admins).Error; err != nil {
+	err = s.DB.InTx(ctx, func(tx *Tx) error {
+		if n, err := activeAdminCount(ctx, tx, adminID); err != nil {
 			return err
-		}
-		if admins != 1 {
+		} else if n != 1 {
 			return ErrInvitationInvalid
 		}
-		return tx.Create(&row).Error
+		_, err := tx.ExecContext(ctx, `
+INSERT INTO invitations(id, secret_hash, created_by, issuer, email, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			id, secretHash(secret), adminID, nullStr(issuer), nullStr(strings.ToLower(strings.TrimSpace(email))),
+			time.Now().UTC().Format(time.RFC3339), expires.UTC().Format(time.RFC3339))
+		return err
 	})
 	if err != nil {
 		return "", "", err
@@ -99,16 +86,13 @@ func (s *Store) AcceptInvitation(ctx context.Context, secret string, identity Ve
 	}
 	userID := uuid.NewString()
 	profile := Profile{ID: uuid.NewString(), Name: "Main", IsDefault: true}
-	err := s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		query := tx.Where(
-			"secret_hash = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ? AND (issuer IS NULL OR issuer = ?) AND (email IS NULL OR email = ?)",
-			secretHash(secret), now, identity.Issuer, email,
-		)
-		if s.Dialect == "postgres" {
-			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
-		}
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
 		var invitation InvitationRecord
-		if err := query.Take(&invitation).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		err := tx.Get(ctx, &invitation, `SELECT `+invitationColumns+` FROM invitations
+WHERE secret_hash = ? AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?
+  AND (issuer IS NULL OR issuer = ?) AND (email IS NULL OR email = ?)`+tx.Dialect.LockForUpdate(),
+			secretHash(secret), now, identity.Issuer, email)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrInvitationInvalid
 		} else if err != nil {
 			return err
@@ -116,50 +100,43 @@ func (s *Store) AcceptInvitation(ctx context.Context, secret string, identity Ve
 
 		if invitation.TargetUserID != nil {
 			userID = *invitation.TargetUserID
-			var user UserRecord
-			if err := tx.Where("id = ? AND status = ?", userID, "disabled").Take(&user).Error; err != nil {
-				return ErrInvitationInvalid
-			}
-			var identityCount int64
-			if err := tx.Model(&ExternalIdentityRecord{}).Where("user_id = ?", userID).Count(&identityCount).Error; err != nil {
+			var disabled, identities int
+			if err := tx.Get(ctx, &disabled, `SELECT COUNT(*) FROM users WHERE id = ? AND status = 'disabled'`, userID); err != nil {
 				return err
 			}
-			if identityCount != 0 {
+			if err := tx.Get(ctx, &identities, `SELECT COUNT(*) FROM external_identities WHERE user_id = ?`, userID); err != nil {
+				return err
+			}
+			if disabled != 1 || identities != 0 {
 				return ErrInvitationInvalid
 			}
-			if err := tx.Model(&UserRecord{}).Where("id = ?", userID).
-				Updates(map[string]any{"status": "active", "display_name": identity.DisplayName, "updated_at": now}).Error; err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE users SET status = 'active', display_name = ?, updated_at = ? WHERE id = ?`,
+				identity.DisplayName, now, userID); err != nil {
 				return err
 			}
 			var defaultProfile ProfileRecord
-			if err := tx.Where("owner_user_id = ? AND is_default = 1 AND deleted_at IS NULL", userID).Take(&defaultProfile).Error; err != nil {
+			if err := tx.Get(ctx, &defaultProfile, `SELECT `+profileColumns+` FROM profiles
+WHERE owner_user_id = ? AND is_default = 1 AND deleted_at IS NULL`, userID); err != nil {
 				return ErrInvitationInvalid
 			}
 			profile = Profile{ID: defaultProfile.ID, Name: defaultProfile.Name, IsDefault: true}
-		} else {
-			user := UserRecord{ID: userID, Status: "active", DisplayName: identity.DisplayName, CreatedAt: now, UpdatedAt: now}
-			if err := tx.Create(&user).Error; err != nil {
-				return err
-			}
-			if err := tx.Create(&UserRoleRecord{UserID: userID, Role: "user"}).Error; err != nil {
-				return err
-			}
-			newProfile := ProfileRecord{ID: profile.ID, OwnerUserID: userID, Name: profile.Name, IsDefault: 1, CreatedAt: now, UpdatedAt: now}
-			if err := tx.Create(&newProfile).Error; err != nil {
-				return err
-			}
+		} else if err := insertUserWithProfile(ctx, tx, userID, identity.DisplayName, profile.ID, profile.Name, now); err != nil {
+			return err
 		}
-		linkedIdentity := ExternalIdentityRecord{Issuer: identity.Issuer, Subject: identity.Subject, UserID: userID, CreatedAt: now}
-		if err := tx.Create(&linkedIdentity).Error; err != nil {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO external_identities(issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)`,
+			identity.Issuer, identity.Subject, userID, now); err != nil {
 			return ErrInvitationInvalid
 		}
-		result := tx.Model(&InvitationRecord{}).
-			Where("id = ? AND consumed_at IS NULL AND revoked_at IS NULL", invitation.ID).
-			Updates(map[string]any{"consumed_at": now, "consumed_by": userID})
-		if result.Error != nil {
-			return result.Error
+		result, err := tx.ExecContext(ctx, `
+UPDATE invitations SET consumed_at = ?, consumed_by = ?
+WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL`, now, userID, invitation.ID)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected != 1 {
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
 			return ErrInvitationInvalid
 		}
 		return nil
@@ -182,44 +159,36 @@ func (s *Store) BootstrapInvitation(ctx context.Context, issuer string, ttl time
 	}
 	now := time.Now().UTC()
 	createdAt := now.Format(time.RFC3339)
-	var ownerID string
-	err = s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var installation InstallationStateRecord
-		if err := tx.Where("key = ?", "legacy_user_id").Take(&installation).Error; err != nil {
+	err = s.DB.InTx(ctx, func(tx *Tx) error {
+		var ownerID string
+		if err := tx.Get(ctx, &ownerID, `SELECT value FROM installation_state WHERE key = 'legacy_user_id'`); err != nil {
 			return ErrInvitationInvalid
 		}
-		ownerID = installation.Value
-		var owner UserRecord
-		ownerQuery := tx.Where("id = ? AND status = ?", ownerID, "disabled")
-		if s.Dialect == "postgres" {
-			ownerQuery = ownerQuery.Clauses(clause.Locking{Strength: "UPDATE"})
-		}
-		if err := ownerQuery.Take(&owner).Error; err != nil {
+		var owner string
+		if err := tx.Get(ctx, &owner, `SELECT id FROM users WHERE id = ? AND status = 'disabled'`+tx.Dialect.LockForUpdate(), ownerID); err != nil {
 			return ErrInvitationInvalid
 		}
-		var identities, admins int64
-		if err := tx.Model(&ExternalIdentityRecord{}).Where("user_id = ?", ownerID).Count(&identities).Error; err != nil {
+		var identities int
+		if err := tx.Get(ctx, &identities, `SELECT COUNT(*) FROM external_identities WHERE user_id = ?`, ownerID); err != nil {
 			return err
 		}
-		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
-			Where("users.status = ? AND user_roles.role = ?", "active", "admin").Count(&admins).Error; err != nil {
+		admins, err := activeAdminCount(ctx, tx, "")
+		if err != nil {
 			return err
 		}
 		if identities != 0 || admins != 0 {
 			return ErrInvitationInvalid
 		}
-		if err := tx.Model(&InvitationRecord{}).
-			Where("target_user_id = ? AND consumed_at IS NULL AND revoked_at IS NULL", ownerID).
-			Updates(map[string]any{"revoked_at": createdAt}).Error; err != nil {
+		if _, err := tx.ExecContext(ctx, `
+UPDATE invitations SET revoked_at = ?
+WHERE target_user_id = ? AND consumed_at IS NULL AND revoked_at IS NULL`, createdAt, ownerID); err != nil {
 			return err
 		}
-		targetUserID := ownerID
-		row := InvitationRecord{
-			ID: uuid.NewString(), SecretHash: secretHash(secret), Issuer: &issuer,
-			CreatedAt: createdAt, ExpiresAt: now.Add(ttl).Format(time.RFC3339),
-			TargetUserID: &targetUserID,
-		}
-		return tx.Create(&row).Error
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO invitations(id, secret_hash, issuer, created_at, expires_at, target_user_id)
+VALUES (?, ?, ?, ?, ?, ?)`,
+			uuid.NewString(), secretHash(secret), issuer, createdAt, now.Add(ttl).Format(time.RFC3339), ownerID)
+		return err
 	})
 	if err != nil {
 		return "", err
@@ -240,36 +209,31 @@ func (s *Store) IssueUserSession(ctx context.Context, userID string, ttl time.Du
 		return "", "", err
 	}
 	now := time.Now().UTC()
-	timestr := now.Format(time.RFC3339)
-	var principal struct {
-		UserID    string `gorm:"column:user_id"`
-		ProfileID string `gorm:"column:profile_id"`
+	var profileIDs []string
+	if err := s.DB.Select(ctx, &profileIDs, `
+SELECT profiles.id FROM users
+JOIN profiles ON profiles.owner_user_id = users.id
+WHERE users.id = ? AND users.status = 'active' AND profiles.is_default = 1 AND profiles.deleted_at IS NULL`,
+		userID); err != nil {
+		return "", "", err
 	}
-	query := s.ORM.WithContext(ctx).Table("users").
-		Select("users.id AS user_id, profiles.id AS profile_id").
-		Joins("JOIN profiles ON profiles.owner_user_id = users.id").
-		Where("users.id = ? AND users.status = ? AND profiles.is_default = 1 AND profiles.deleted_at IS NULL", userID, "active").
-		Scan(&principal)
-	if query.Error != nil {
-		return "", "", query.Error
-	}
-	if query.RowsAffected != 1 {
+	if len(profileIDs) != 1 {
 		return "", "", ErrProfileNotFound
 	}
-	row := AuthSessionRecord{
-		TokenHash: secretHash(token), UserID: userID, ActiveProfileID: principal.ProfileID,
-		CSRFHash: secretHash(csrf), CreatedAt: timestr, ExpiresAt: now.Add(ttl).Format(time.RFC3339),
-	}
-	if err := s.ORM.WithContext(ctx).Create(&row).Error; err != nil {
+	if _, err := s.DB.ExecContext(ctx, `
+INSERT INTO auth_sessions(token_hash, user_id, active_profile_id, csrf_hash, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?)`,
+		secretHash(token), userID, profileIDs[0], secretHash(csrf),
+		now.Format(time.RFC3339), now.Add(ttl).Format(time.RFC3339)); err != nil {
 		return "", "", err
 	}
 	return token, csrf, nil
 }
 
 func (s *Store) RevokeUserSession(ctx context.Context, token string) error {
-	return s.ORM.WithContext(ctx).Model(&AuthSessionRecord{}).
-		Where("token_hash = ? AND revoked_at IS NULL", secretHash(token)).
-		Updates(map[string]any{"revoked_at": time.Now().UTC().Format(time.RFC3339)}).Error
+	_, err := s.DB.ExecContext(ctx, `UPDATE auth_sessions SET revoked_at = ? WHERE token_hash = ? AND revoked_at IS NULL`,
+		time.Now().UTC().Format(time.RFC3339), secretHash(token))
+	return err
 }
 
 func (s *Store) UserSession(ctx context.Context, token string) (string, Profile, error) {
@@ -279,16 +243,16 @@ func (s *Store) UserSession(ctx context.Context, token string) (string, Profile,
 // IdentityUser never looks up by email: a different issuer/subject is a
 // different identity even when the provider reports the same email address.
 func (s *Store) IdentityUser(ctx context.Context, issuer, subject string) (string, error) {
-	var identity ExternalIdentityRecord
-	err := s.ORM.WithContext(ctx).Table("external_identities").
-		Select("external_identities.user_id").
-		Joins("JOIN users ON users.id = external_identities.user_id").
-		Where("external_identities.issuer = ? AND external_identities.subject = ? AND users.status = ?", issuer, subject, "active").
-		Take(&identity).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	var userID string
+	err := s.DB.Get(ctx, &userID, `
+SELECT external_identities.user_id FROM external_identities
+JOIN users ON users.id = external_identities.user_id
+WHERE external_identities.issuer = ? AND external_identities.subject = ? AND users.status = 'active'`,
+		issuer, subject)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrIdentityUnknown
 	}
-	return identity.UserID, err
+	return userID, err
 }
 
 // LinkExternalIdentity links a provider identity only to the user whose
@@ -298,33 +262,39 @@ func (s *Store) LinkExternalIdentity(ctx context.Context, sessionToken, userID, 
 		return ErrSessionInvalid
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	err := s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var sessions int64
-		if err := tx.Model(&AuthSessionRecord{}).Joins("JOIN users ON users.id = auth_sessions.user_id").
-			Where("auth_sessions.token_hash = ? AND auth_sessions.user_id = ? AND auth_sessions.revoked_at IS NULL AND auth_sessions.expires_at > ? AND users.status = ?", secretHash(sessionToken), userID, now, "active").
-			Count(&sessions).Error; err != nil {
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
+		var sessions int
+		if err := tx.Get(ctx, &sessions, `
+SELECT COUNT(*) FROM auth_sessions JOIN users ON users.id = auth_sessions.user_id
+WHERE auth_sessions.token_hash = ? AND auth_sessions.user_id = ? AND auth_sessions.revoked_at IS NULL
+  AND auth_sessions.expires_at > ? AND users.status = 'active'`,
+			secretHash(sessionToken), userID, now); err != nil {
 			return err
 		}
 		if sessions != 1 {
 			return ErrSessionInvalid
 		}
-		var existing ExternalIdentityRecord
-		err := tx.Where("issuer = ? AND subject = ?", issuer, subject).Take(&existing).Error
+		var existing string
+		err := tx.Get(ctx, &existing, `SELECT user_id FROM external_identities WHERE issuer = ? AND subject = ?`, issuer, subject)
 		if err == nil {
-			if existing.UserID == userID {
+			if existing == userID {
 				return nil
 			}
 			return ErrIdentityAlreadyLinked
 		}
-		if !errors.Is(err, gorm.ErrRecordNotFound) {
+		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		return tx.Create(&ExternalIdentityRecord{Issuer: issuer, Subject: subject, UserID: userID, CreatedAt: now}).Error
+		_, err = tx.ExecContext(ctx, `
+INSERT INTO external_identities(issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)`,
+			issuer, subject, userID, now)
+		return err
 	})
 	if err != nil && !errors.Is(err, ErrSessionInvalid) && !errors.Is(err, ErrIdentityAlreadyLinked) {
-		var claimed ExternalIdentityRecord
-		lookupErr := s.ORM.WithContext(ctx).Where("issuer = ? AND subject = ?", issuer, subject).Take(&claimed).Error
-		if lookupErr == nil && claimed.UserID != userID {
+		// A concurrent link may have won the unique key; report it as such.
+		var claimed string
+		lookupErr := s.DB.Get(ctx, &claimed, `SELECT user_id FROM external_identities WHERE issuer = ? AND subject = ?`, issuer, subject)
+		if lookupErr == nil && claimed != userID {
 			return ErrIdentityAlreadyLinked
 		}
 	}
@@ -333,23 +303,21 @@ func (s *Store) LinkExternalIdentity(ctx context.Context, sessionToken, userID, 
 
 func (s *Store) RevokeInvitation(ctx context.Context, adminID, invitationID string) error {
 	now := time.Now().UTC().Format(time.RFC3339)
-	return s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var admins int64
-		if err := tx.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
-			Where("users.id = ? AND users.status = ? AND user_roles.role = ?", adminID, "active", "admin").
-			Count(&admins).Error; err != nil {
+	return s.DB.InTx(ctx, func(tx *Tx) error {
+		if n, err := activeAdminCount(ctx, tx, adminID); err != nil {
 			return err
-		}
-		if admins != 1 {
+		} else if n != 1 {
 			return ErrInvitationInvalid
 		}
-		result := tx.Model(&InvitationRecord{}).
-			Where("id = ? AND consumed_at IS NULL AND revoked_at IS NULL", invitationID).
-			Updates(map[string]any{"revoked_at": now})
-		if result.Error != nil {
-			return result.Error
+		result, err := tx.ExecContext(ctx, `
+UPDATE invitations SET revoked_at = ? WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL`,
+			now, invitationID)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected != 1 {
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
 			return ErrInvitationInvalid
 		}
 		return nil
@@ -357,27 +325,26 @@ func (s *Store) RevokeInvitation(ctx context.Context, adminID, invitationID stri
 }
 
 func (s *Store) BootstrapReady(ctx context.Context) (bool, error) {
-	var admins, invitations int64
-	db := s.ORM.WithContext(ctx)
-	if err := db.Model(&UserRecord{}).Joins("JOIN user_roles ON user_roles.user_id = users.id").
-		Where("users.status = ? AND user_roles.role = ?", "active", "admin").Count(&admins).Error; err != nil {
-		return false, err
-	}
-	if err := db.Model(&InvitationRecord{}).
-		Where("target_user_id IS NOT NULL AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?", time.Now().UTC().Format(time.RFC3339)).
-		Count(&invitations).Error; err != nil {
-		return false, err
-	}
-	return admins+invitations > 0, nil
+	var ready int
+	err := s.DB.Get(ctx, &ready, `
+SELECT
+  (SELECT COUNT(*) FROM users u JOIN user_roles r ON r.user_id = u.id
+   WHERE u.status = 'active' AND r.role = 'admin')
++ (SELECT COUNT(*) FROM invitations
+   WHERE target_user_id IS NOT NULL AND consumed_at IS NULL AND revoked_at IS NULL AND expires_at > ?)`,
+		time.Now().UTC().Format(time.RFC3339))
+	return ready > 0, err
 }
 
 func (s *Store) ValidUserCSRF(ctx context.Context, token, csrf string) bool {
 	if token == "" || csrf == "" {
 		return false
 	}
-	var session AuthSessionRecord
-	err := s.ORM.WithContext(ctx).Where("token_hash = ? AND revoked_at IS NULL AND expires_at > ?", secretHash(token), time.Now().UTC().Format(time.RFC3339)).Take(&session).Error
-	return err == nil && subtle.ConstantTimeCompare([]byte(session.CSRFHash), []byte(secretHash(csrf))) == 1
+	var csrfHash string
+	err := s.DB.Get(ctx, &csrfHash, `
+SELECT csrf_hash FROM auth_sessions WHERE token_hash = ? AND revoked_at IS NULL AND expires_at > ?`,
+		secretHash(token), time.Now().UTC().Format(time.RFC3339))
+	return err == nil && subtle.ConstantTimeCompare([]byte(csrfHash), []byte(secretHash(csrf))) == 1
 }
 
 func (s *Store) ActivateUserProfile(ctx context.Context, token, userID, profileID string) error {
@@ -385,17 +352,15 @@ func (s *Store) ActivateUserProfile(ctx context.Context, token, userID, profileI
 }
 
 func (s *Store) RadioShareProfile(ctx context.Context, token string) (string, error) {
-	var result struct {
-		ProfileID string `gorm:"column:profile_id"`
-	}
-	err := s.ORM.WithContext(ctx).Table("radio_shares AS shares").
-		Select("shares.profile_id").
-		Joins("JOIN profiles ON profiles.id = shares.profile_id").
-		Joins("JOIN users ON users.id = profiles.owner_user_id").
-		Where("shares.token = ? AND shares.revoked_at IS NULL AND profiles.deleted_at IS NULL AND users.status = ?", token, "active").
-		Take(&result).Error
-	if errors.Is(err, gorm.ErrRecordNotFound) {
+	var profileID string
+	err := s.DB.Get(ctx, &profileID, `
+SELECT shares.profile_id FROM radio_shares shares
+JOIN profiles ON profiles.id = shares.profile_id
+JOIN users ON users.id = profiles.owner_user_id
+WHERE shares.token = ? AND shares.revoked_at IS NULL AND profiles.deleted_at IS NULL AND users.status = 'active'`,
+		token)
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", ErrProfileNotFound
 	}
-	return result.ProfileID, err
+	return profileID, err
 }

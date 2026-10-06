@@ -2,13 +2,12 @@ package db
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
-	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 )
 
 const DeviceTokenLifetime = 180 * 24 * time.Hour
@@ -23,15 +22,15 @@ var ErrDeviceTokenNotFound = errors.New("device token not found")
 var ErrDeviceTokenNameRequired = errors.New("device name is required")
 
 type DeviceTokenInfo struct {
-	ID          string  `json:"id"`
-	UserID      string  `json:"user_id"`
-	ProfileID   string  `json:"profile_id"`
-	ProfileName string  `json:"profile_name"`
-	Name        string  `json:"name"`
-	CreatedAt   string  `json:"created_at"`
-	LastUsedAt  *string `json:"last_used_at,omitempty"`
-	ExpiresAt   string  `json:"expires_at"`
-	RevokedAt   *string `json:"revoked_at,omitempty"`
+	ID          string  `json:"id" db:"id"`
+	UserID      string  `json:"user_id" db:"user_id"`
+	ProfileID   string  `json:"profile_id" db:"profile_id"`
+	ProfileName string  `json:"profile_name" db:"profile_name"`
+	Name        string  `json:"name" db:"name"`
+	CreatedAt   string  `json:"created_at" db:"created_at"`
+	LastUsedAt  *string `json:"last_used_at,omitempty" db:"last_used_at"`
+	ExpiresAt   string  `json:"expires_at" db:"expires_at"`
+	RevokedAt   *string `json:"revoked_at,omitempty" db:"revoked_at"`
 }
 
 // CreateDeviceToken creates a fixed profile-bound token and returns its raw
@@ -43,9 +42,9 @@ func (s *Store) CreateDeviceToken(ctx context.Context, userID, profileID, name s
 	}
 	var info DeviceTokenInfo
 	var secret string
-	err := s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
 		var err error
-		info, secret, err = s.createDeviceToken(tx, userID, profileID, name)
+		info, secret, err = createDeviceToken(ctx, tx, userID, profileID, name)
 		return err
 	})
 	if err != nil {
@@ -54,31 +53,25 @@ func (s *Store) CreateDeviceToken(ctx context.Context, userID, profileID, name s
 	return info, secret, nil
 }
 
-func (s *Store) lockDeviceTokenOwner(tx *gorm.DB, userID string) error {
-	query := tx.Where("id = ? AND status = ?", userID, "active")
-	if s.Dialect == "postgres" {
-		// Account disable updates this row before revoking its tokens.
-		query = query.Clauses(clause.Locking{Strength: "UPDATE"})
-	}
-	var user UserRecord
-	if err := query.Take(&user).Error; err != nil {
-		return ErrProfileNotFound
-	}
-	return nil
-}
+// testHookBeforeDeviceTokenInsert lets tests pause token issue after the
+// owner lock and profile check; it is always nil in production.
+var testHookBeforeDeviceTokenInsert func(context.Context) error
 
-func (s *Store) createDeviceToken(tx *gorm.DB, userID, profileID, name string) (DeviceTokenInfo, string, error) {
-	if err := s.lockDeviceTokenOwner(tx, userID); err != nil {
+func createDeviceToken(ctx context.Context, tx *Tx, userID, profileID, name string) (DeviceTokenInfo, string, error) {
+	// Account disable updates the owner row before revoking its tokens.
+	if err := lockActiveUser(ctx, tx, userID); err != nil {
 		return DeviceTokenInfo{}, "", ErrProfileNotFound
 	}
-	query := tx.Model(&ProfileRecord{}).Where("owner_user_id = ? AND deleted_at IS NULL", userID)
+	query := `SELECT ` + profileColumns + ` FROM profiles WHERE owner_user_id = ? AND deleted_at IS NULL`
+	args := []any{userID}
 	if profileID != "" {
-		query = query.Where("id = ?", profileID)
+		query += ` AND id = ?`
+		args = append(args, profileID)
 	} else {
-		query = query.Order("is_default DESC, created_at, id")
+		query += ` ORDER BY is_default DESC, created_at, id LIMIT 1`
 	}
 	var profile ProfileRecord
-	if err := query.Take(&profile).Error; err != nil {
+	if err := tx.Get(ctx, &profile, query, args...); err != nil {
 		return DeviceTokenInfo{}, "", ErrProfileNotFound
 	}
 	secret, err := randomSecret()
@@ -86,50 +79,52 @@ func (s *Store) createDeviceToken(tx *gorm.DB, userID, profileID, name string) (
 		return DeviceTokenInfo{}, "", err
 	}
 	now := time.Now().UTC()
-	createdAt := deviceTokenTimestamp(now)
 	info := DeviceTokenInfo{
 		ID: uuid.NewString(), UserID: userID, ProfileID: profile.ID,
-		ProfileName: profile.Name, Name: name, CreatedAt: createdAt,
+		ProfileName: profile.Name, Name: name, CreatedAt: deviceTokenTimestamp(now),
 		ExpiresAt: deviceTokenTimestamp(now.Add(DeviceTokenLifetime)),
 	}
-	row := DeviceTokenRecord{
-		ID: info.ID, SecretHash: secretHash(secret), UserID: userID,
-		ProfileID: profile.ID, Name: name, CreatedAt: info.CreatedAt,
-		ExpiresAt: info.ExpiresAt,
+	if testHookBeforeDeviceTokenInsert != nil {
+		if err := testHookBeforeDeviceTokenInsert(ctx); err != nil {
+			return DeviceTokenInfo{}, "", err
+		}
 	}
-	if err := tx.Create(&row).Error; err != nil {
+	if _, err := tx.ExecContext(ctx, `
+INSERT INTO device_tokens(id, secret_hash, user_id, profile_id, name, created_at, expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		info.ID, secretHash(secret), userID, profile.ID, name, info.CreatedAt, info.ExpiresAt); err != nil {
 		return DeviceTokenInfo{}, "", err
 	}
 	return info, secret, nil
 }
 
 func (s *Store) ListDeviceTokens(ctx context.Context, userID string) ([]DeviceTokenInfo, error) {
-	var tokens []DeviceTokenInfo
-	err := s.ORM.WithContext(ctx).Table("device_tokens AS d").
-		Select("d.id, d.user_id, d.profile_id, p.name AS profile_name, d.name, d.created_at, d.last_used_at, d.expires_at, d.revoked_at").
-		Joins("JOIN profiles AS p ON p.id = d.profile_id AND p.owner_user_id = d.user_id").
-		Where("d.user_id = ?", userID).
-		Order("d.created_at DESC, d.id").Scan(&tokens).Error
-	if tokens == nil && err == nil {
-		tokens = []DeviceTokenInfo{}
-	}
+	tokens := []DeviceTokenInfo{}
+	err := s.DB.Select(ctx, &tokens, `
+SELECT d.id, d.user_id, d.profile_id, p.name AS profile_name, d.name, d.created_at,
+       d.last_used_at, d.expires_at, d.revoked_at
+FROM device_tokens d
+JOIN profiles p ON p.id = d.profile_id AND p.owner_user_id = d.user_id
+WHERE d.user_id = ?
+ORDER BY d.created_at DESC, d.id`, userID)
 	return tokens, err
 }
 
 func (s *Store) RevokeDeviceToken(ctx context.Context, userID, tokenID string) error {
 	now := deviceTokenTimestamp(time.Now())
-	result := s.ORM.WithContext(ctx).Model(&DeviceTokenRecord{}).
-		Where("id = ? AND user_id = ? AND revoked_at IS NULL", tokenID, userID).
-		Update("revoked_at", now)
-	if result.Error != nil {
-		return result.Error
+	result, err := s.DB.ExecContext(ctx, `
+UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+		now, tokenID, userID)
+	if err != nil {
+		return err
 	}
-	if result.RowsAffected != 0 {
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 0 {
 		return nil
 	}
-	var count int64
-	if err := s.ORM.WithContext(ctx).Model(&DeviceTokenRecord{}).
-		Where("id = ? AND user_id = ?", tokenID, userID).Count(&count).Error; err != nil {
+	var count int
+	if err := s.DB.Get(ctx, &count, `SELECT COUNT(*) FROM device_tokens WHERE id = ? AND user_id = ?`, tokenID, userID); err != nil {
 		return err
 	}
 	if count == 0 {
@@ -143,34 +138,34 @@ func (s *Store) RevokeDeviceToken(ctx context.Context, userID, tokenID string) e
 func (s *Store) ReplaceDeviceToken(ctx context.Context, userID, tokenID string) (DeviceTokenInfo, string, error) {
 	var info DeviceTokenInfo
 	var secret string
-	err := s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
 		// Use the same owner-before-token lock order as account disable.
-		if err := s.lockDeviceTokenOwner(tx, userID); err != nil {
+		if err := lockActiveUser(ctx, tx, userID); err != nil {
 			return err
 		}
-		query := tx.Where("id = ? AND user_id = ? AND revoked_at IS NULL", tokenID, userID)
-		if s.Dialect == "postgres" {
-			query = query.Clauses(clause.Locking{Strength: "UPDATE"})
-		}
 		var old DeviceTokenRecord
-		if err := query.Take(&old).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+		err := tx.Get(ctx, &old, `
+SELECT id, secret_hash, user_id, profile_id, name, created_at, last_used_at, expires_at, revoked_at
+FROM device_tokens WHERE id = ? AND user_id = ? AND revoked_at IS NULL`+tx.Dialect.LockForUpdate(),
+			tokenID, userID)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrDeviceTokenNotFound
 		} else if err != nil {
 			return err
 		}
-		var err error
-		info, secret, err = s.createDeviceToken(tx, userID, old.ProfileID, old.Name)
+		info, secret, err = createDeviceToken(ctx, tx, userID, old.ProfileID, old.Name)
 		if err != nil {
 			return err
 		}
-		now := deviceTokenTimestamp(time.Now())
-		result := tx.Model(&DeviceTokenRecord{}).
-			Where("id = ? AND user_id = ? AND revoked_at IS NULL", tokenID, userID).
-			Update("revoked_at", now)
-		if result.Error != nil {
-			return result.Error
+		result, err := tx.ExecContext(ctx, `
+UPDATE device_tokens SET revoked_at = ? WHERE id = ? AND user_id = ? AND revoked_at IS NULL`,
+			deviceTokenTimestamp(time.Now()), tokenID, userID)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected != 1 {
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
 			return ErrDeviceTokenNotFound
 		}
 		return nil
@@ -185,56 +180,54 @@ func (s *Store) AuthenticateDeviceToken(ctx context.Context, secret string) (str
 	if secret == "" {
 		return "", Profile{}, "", ErrDeviceTokenInvalid
 	}
-	var userID, profileID, profileName, tokenID string
-	var isDefault int
+	var row struct {
+		ID        string `db:"id"`
+		UserID    string `db:"user_id"`
+		ProfileID string `db:"profile_id"`
+		Name      string `db:"profile_name"`
+		IsDefault int    `db:"is_default"`
+	}
 	now := deviceTokenTimestamp(time.Now())
 	hash := secretHash(secret)
-	err := s.ORM.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		var row struct {
-			ID        string `gorm:"column:id"`
-			UserID    string `gorm:"column:user_id"`
-			ProfileID string `gorm:"column:profile_id"`
-			Name      string `gorm:"column:profile_name"`
-			IsDefault int    `gorm:"column:is_default"`
-		}
-		queryErr := tx.Table("device_tokens AS d").
-			Select("d.id, d.user_id, d.profile_id, p.name AS profile_name, p.is_default").
-			Joins("JOIN users AS u ON u.id = d.user_id").
-			Joins("JOIN profiles AS p ON p.id = d.profile_id AND p.owner_user_id = d.user_id").
-			Where("d.secret_hash = ? AND d.revoked_at IS NULL AND d.expires_at > ? AND u.status = ? AND p.deleted_at IS NULL", hash, now, "active").
-			Take(&row).Error
-		if errors.Is(queryErr, gorm.ErrRecordNotFound) {
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
+		err := tx.Get(ctx, &row, `
+SELECT d.id, d.user_id, d.profile_id, p.name AS profile_name, p.is_default
+FROM device_tokens d
+JOIN users u ON u.id = d.user_id
+JOIN profiles p ON p.id = d.profile_id AND p.owner_user_id = d.user_id
+WHERE d.secret_hash = ? AND d.revoked_at IS NULL AND d.expires_at > ?
+  AND u.status = 'active' AND p.deleted_at IS NULL`, hash, now)
+		if errors.Is(err, sql.ErrNoRows) {
 			return ErrDeviceTokenInvalid
 		}
-		if queryErr != nil {
-			return queryErr
+		if err != nil {
+			return err
 		}
 		if s.ReadOnly {
 			// Validate replicated token/account/profile without writing usage
 			// metadata. Primary authentication retains the conditional update.
-			tokenID, userID, profileID, profileName, isDefault = row.ID, row.UserID, row.ProfileID, row.Name, row.IsDefault
 			return nil
 		}
-		result := tx.Model(&DeviceTokenRecord{}).
-			Where("id = ? AND secret_hash = ? AND revoked_at IS NULL AND expires_at > ?", row.ID, hash, now).
-			Update("last_used_at", now)
-		if result.Error != nil {
-			return result.Error
+		result, err := tx.ExecContext(ctx, `
+UPDATE device_tokens SET last_used_at = ?
+WHERE id = ? AND secret_hash = ? AND revoked_at IS NULL AND expires_at > ?`, now, row.ID, hash, now)
+		if err != nil {
+			return err
 		}
-		if result.RowsAffected != 1 {
+		if n, err := result.RowsAffected(); err != nil {
+			return err
+		} else if n != 1 {
 			return ErrDeviceTokenInvalid
 		}
-		tokenID, userID, profileID, profileName, isDefault = row.ID, row.UserID, row.ProfileID, row.Name, row.IsDefault
 		return nil
 	})
 	if err != nil {
 		return "", Profile{}, "", err
 	}
-	return userID, Profile{ID: profileID, Name: profileName, IsDefault: isDefault != 0}, tokenID, nil
+	return row.UserID, Profile{ID: row.ProfileID, Name: row.Name, IsDefault: row.IsDefault != 0}, row.ID, nil
 }
 
-func (s *Store) RevokeUserDeviceTokens(ctx context.Context, tx *gorm.DB, userID, now string) error {
-	return tx.WithContext(ctx).Model(&DeviceTokenRecord{}).
-		Where("user_id = ? AND revoked_at IS NULL", userID).
-		Update("revoked_at", now).Error
+func revokeUserDeviceTokens(ctx context.Context, tx *Tx, userID, now string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE device_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, now, userID)
+	return err
 }
