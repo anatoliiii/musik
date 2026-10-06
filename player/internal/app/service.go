@@ -62,6 +62,9 @@ func (s *Service) Reload() error {
 		s.Taste.Maturity(s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt))
 	s.Play.ReloadTransitions()
 	s.Play.ReloadRanker()
+	if s.Store.ReadOnly {
+		return nil
+	}
 	entityRows := s.Idx.EntityVectorRows(db.EntityModelVersion)
 	go func() {
 		if err := s.Store.ReplaceEntityVectors(db.EntityModelVersion, entityRows); err != nil {
@@ -157,7 +160,10 @@ func (s *Service) EnsureWorker() {
 	log.Printf("worker autostart: still not healthy at %s (check %s)", s.Cfg.WorkerURL, logPath)
 }
 
-func (s *Service) WatchJobs() {
+func (s *Service) WatchJobs(reload func() error) {
+	if reload == nil {
+		reload = s.Reload
+	}
 	after := time.Now().UTC().Format(time.RFC3339Nano)
 	ticker := time.NewTicker(3 * time.Second)
 	go func() {
@@ -175,7 +181,7 @@ func (s *Service) WatchJobs() {
 				}
 			}
 			if needReload {
-				if err := s.Reload(); err != nil {
+				if err := reload(); err != nil {
 					log.Printf("auto-reload after job: %v", err)
 				}
 			}

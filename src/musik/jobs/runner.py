@@ -266,7 +266,10 @@ def process_job(job: dict[str, Any]) -> dict[str, Any]:
 
 def run_one() -> dict[str, Any] | None:
     """Claim and process a single pending job. Returns job summary or None."""
-    job = claim_next()
+    kinds = get_settings().worker_job_kinds
+    if kinds is not None and not set(kinds).issubset(JOB_KINDS):
+        raise ValueError("worker_job_kinds contains an unknown job kind")
+    job = claim_next(kinds=kinds)
     if not job:
         return None
     job_id = int(job["id"])

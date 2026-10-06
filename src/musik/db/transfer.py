@@ -37,11 +37,16 @@ def _canonical(value: Any) -> Any:
 
 def _checksum(rows: list[dict[str, Any]]) -> str:
     digest = hashlib.sha256()
+    encoded_rows = []
     for row in rows:
         encoded = json.dumps(
             {key: _canonical(value) for key, value in row.items()},
             ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
+        encoded_rows.append(encoded)
+    # SQL ORDER BY uses each database's text collation. Compare the complete
+    # row multiset in a shared byte order, retaining duplicate rows as well.
+    for encoded in sorted(encoded_rows):
         digest.update(len(encoded).to_bytes(8, "big"))
         digest.update(encoded)
     return digest.hexdigest()
@@ -175,10 +180,23 @@ def transfer_sqlite_to_postgres(source_path: Path, destination_url: str, *, comp
                 _check_empty_destination(destination, target_metadata)
                 for table in target_metadata.sorted_tables:
                     source_rows = rows_by_table[table.name]
+                    # Duplicate links may point to a track with a higher ID.
+                    # Populate all tracks before restoring their self-reference.
+                    insert_rows = (
+                        [dict(row, is_duplicate_of=None) for row in source_rows]
+                        if table.name == "tracks" else source_rows
+                    )
                     for offset in range(0, len(source_rows), 500):
-                        batch = source_rows[offset : offset + 500]
+                        batch = insert_rows[offset : offset + 500]
                         if batch:
                             destination.execute(table.insert(), batch)
+                    if table.name == "tracks":
+                        for row in source_rows:
+                            if row["is_duplicate_of"] is not None:
+                                destination.execute(
+                                    table.update().where(table.c.id == row["id"])
+                                    .values(is_duplicate_of=row["is_duplicate_of"])
+                                )
 
                 for table in target_metadata.sorted_tables:
                     primary_key = list(table.primary_key.columns)

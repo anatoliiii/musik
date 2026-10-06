@@ -209,6 +209,12 @@ func (s *Store) AuthenticateDeviceToken(ctx context.Context, secret string) (str
 		if queryErr != nil {
 			return queryErr
 		}
+		if s.ReadOnly {
+			// Validate replicated token/account/profile without writing usage
+			// metadata. Primary authentication retains the conditional update.
+			tokenID, userID, profileID, profileName, isDefault = row.ID, row.UserID, row.ProfileID, row.Name, row.IsDefault
+			return nil
+		}
 		result := tx.Model(&DeviceTokenRecord{}).
 			Where("id = ? AND secret_hash = ? AND revoked_at IS NULL AND expires_at > ?", row.ID, hash, now).
 			Update("last_used_at", now)

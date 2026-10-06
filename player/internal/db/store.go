@@ -14,9 +14,10 @@ import (
 )
 
 type Store struct {
-	DB      *Database
-	ORM     *gorm.DB
-	Dialect string
+	DB       *Database
+	ORM      *gorm.DB
+	Dialect  string
+	ReadOnly bool
 }
 
 const SupportedSchemaVersion = 8
@@ -97,6 +98,12 @@ func OpenDatabase(databaseURL, sqlitePath string) (*Store, error) {
 		_ = sqlDB.Close()
 		return nil, err
 	}
+	if dialect == "postgres" {
+		if err := sqlDB.QueryRow(`SELECT pg_is_in_recovery()`).Scan(&s.ReadOnly); err != nil {
+			_ = sqlDB.Close()
+			return nil, fmt.Errorf("read PostgreSQL recovery state: %w", err)
+		}
+	}
 	if dialect == "sqlite" {
 		var version int
 		if err := sqlDB.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
@@ -131,5 +138,5 @@ func (s *Store) ForProfile(profileID string) *Store {
 	database := *s.DB
 	database.ProfileID = profileID
 	database.ORM = s.ORM.Session(&gorm.Session{})
-	return &Store{DB: &database, ORM: database.ORM, Dialect: s.Dialect}
+	return &Store{DB: &database, ORM: database.ORM, Dialect: s.Dialect, ReadOnly: s.ReadOnly}
 }

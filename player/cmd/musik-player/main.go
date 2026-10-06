@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/torwin-job/musik/player/internal/api"
@@ -84,6 +86,15 @@ func main() {
 	}
 
 	srv.EnsureWorker()
+	reloads := make(chan os.Signal, 1)
+	signal.Notify(reloads, syscall.SIGHUP)
+	go func() {
+		for range reloads {
+			if err := srv.Reload(); err != nil {
+				log.Printf("SIGHUP reload: %v", err)
+			}
+		}
+	}()
 	srv.WatchJobs()
 
 	if cfg.MultiUser {

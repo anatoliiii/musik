@@ -84,7 +84,7 @@ func mobileContentType(format string) string {
 // Tiny already-lossy files need no re-encode.
 func skipMobileTranscode(srcPath string) bool {
 	switch strings.ToLower(filepath.Ext(srcPath)) {
-	case ".mp3", ".m4a", ".aac", ".opus", ".ogg":
+	case ".mp3", ".m4a", ".aac":
 		st, err := os.Stat(srcPath)
 		if err != nil {
 			return false
@@ -379,29 +379,25 @@ func (s *Service) serveMobileCached(w http.ResponseWriter, r *http.Request, id i
 	return false
 }
 
-// ServeMobile serves the stable mobile or original variant with Range support.
+// ServeMobile prepares one compatible representation before serving any bytes.
+// Android players commonly start with Range; that must not select the original
+// FLAC/Opus file or change the representation between successive range requests.
 func (s *Service) ServeMobile(w http.ResponseWriter, r *http.Request, id int64, srcPath string) {
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 
-	if r.Header.Get("Range") != "" {
-		if variant, ok := s.mobileVariant.Load(id); ok {
-			if variant.(string) == "mobile" && s.serveMobileCached(w, r, id, srcPath) {
-				return
-			}
-			serveFile(w, r, srcPath, contentType(srcPath))
-			return
-		}
-		s.mobileVariant.Store(id, "original")
-		serveFile(w, r, srcPath, contentType(srcPath))
-		return
-	}
-
 	if s.serveMobileCached(w, r, id, srcPath) {
-		s.mobileVariant.Store(id, "mobile")
 		return
 	}
-	s.mobileVariant.Store(id, "original")
-	s.scheduleMobileTranscode(id, srcPath)
-	serveFile(w, r, srcPath, contentType(srcPath))
+	path, ctype, err := s.ensureMobileFile(id, srcPath)
+	if err != nil {
+		log.Printf("mobile transcode %d: %v", id, err)
+		if os.IsNotExist(err) {
+			http.Error(w, "file missing", http.StatusNotFound)
+		} else {
+			http.Error(w, "mobile audio preparation failed", http.StatusBadGateway)
+		}
+		return
+	}
+	serveFile(w, r, path, ctype)
 }

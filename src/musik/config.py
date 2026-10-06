@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     explore_ratio: float = 0.25
     worker_addr: str = "127.0.0.1:8790"
     worker_poll_sec: float = 5.0
+    # None accepts all jobs. Separate CPU/GPU consumers can use disjoint lists.
+    worker_job_kinds: tuple[str, ...] | None = None
     # Rebuild all recommendation shelves once per night. "local" uses the
     # worker host/container timezone; an IANA name (e.g. Europe/Moscow) is safer
     # for containers whose system timezone is UTC.

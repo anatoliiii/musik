@@ -1,6 +1,8 @@
 package library
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -86,20 +88,37 @@ func SaveFile(root, rel string, src io.Reader) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	absoluteRoot, err := filepath.Abs(root)
+	if err != nil {
+		return 0, err
+	}
+	relative, err := filepath.Rel(absoluteRoot, dest)
+	if err != nil {
+		return 0, err
+	}
+	contained, err := os.OpenRoot(absoluteRoot)
+	if err != nil {
+		return 0, errors.New("библиотека недоступна")
+	}
+	defer contained.Close()
+	if err := contained.MkdirAll(filepath.Dir(relative), 0o755); err != nil {
 		return 0, errors.New("не удалось создать папку")
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(dest), ".upload-*.part")
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return 0, err
+	}
+	tmpName := filepath.Join(filepath.Dir(relative), ".upload-"+hex.EncodeToString(nonce[:])+".part")
+	tmp, err := contained.OpenFile(tmpName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
 		return 0, errors.New("не удалось создать временный файл")
 	}
-	tmpName := tmp.Name()
 	cleanup := true
 	defer func() {
 		_ = tmp.Close()
 		if cleanup {
-			_ = os.Remove(tmpName)
+			_ = contained.Remove(tmpName)
 		}
 	}()
 
@@ -110,10 +129,13 @@ func SaveFile(root, rel string, src io.Reader) (int64, error) {
 	if n > MaxFileBytes {
 		return 0, errors.New("файл слишком большой")
 	}
+	if err := tmp.Chmod(0644); err != nil {
+		return 0, errors.New("ошибка прав файла")
+	}
 	if err := tmp.Close(); err != nil {
 		return 0, errors.New("ошибка записи")
 	}
-	if err := os.Rename(tmpName, dest); err != nil {
+	if err := contained.Rename(tmpName, relative); err != nil {
 		return 0, errors.New("не удалось сохранить файл")
 	}
 	cleanup = false

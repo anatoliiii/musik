@@ -1,9 +1,10 @@
-"""Persist generated playlists in SQLite."""
+"""Persist generated playlists in the configured database."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
+from uuid import uuid4
 
 from musik.db.schema import connect, utcnow
 
@@ -34,9 +35,9 @@ def save_playlist(
                 INSERT INTO playlist_tracks(
                     item_id, playlist_id, position, track_id, added_at, source, explanation
                 ,profile_id)
-                VALUES (lower(hex(randomblob(16))),?,?,?,?, 'rule', ?,:musik_profile)
+                VALUES (?,?,?,?,?, 'rule', ?,:musik_profile)
                 """,
-                (pid, pos, int(e["track_id"]), now, e.get("explanation")),
+                (uuid4().hex, pid, pos, int(e["track_id"]), now, e.get("explanation")),
             )
         if retain > 0:
             conn.execute(

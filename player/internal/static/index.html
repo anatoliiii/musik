@@ -476,14 +476,14 @@
 
       <section id="view-upload" class="view">
         <h1 class="page-title">Загрузка</h1>
-        <p class="sub">Перетащи файлы или папку альбома. Можно выбрать и кнопками ниже.</p>
-        <input id="upload-file" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,audio/*" hidden />
-        <input id="upload-files" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,audio/*" multiple hidden />
-        <input id="upload-folder" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,audio/*" webkitdirectory directory multiple hidden />
+        <p class="sub">Перетащи музыку, архив или папку альбома. Можно выбрать и кнопками ниже.</p>
+        <input id="upload-file" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,.zip,.tar,.tar.gz,.tgz,audio/*" hidden />
+        <input id="upload-files" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,.zip,.tar,.tar.gz,.tgz,audio/*" multiple hidden />
+        <input id="upload-folder" type="file" accept=".mp3,.flac,.m4a,.wav,.ogg,.opus,.zip,.tar,.tar.gz,.tgz,audio/*" webkitdirectory directory multiple hidden />
         <div class="dropzone" id="upload-drop" tabindex="0">
           <span class="upload-card-kicker">Перетащи сюда</span>
           <strong>Брось музыку</strong>
-          <span>Один трек, пачка файлов или целая папка. Структура альбома сохранится.</span>
+          <span>Треки, папка или ZIP/TAR/TAR.GZ. Структура альбома сохранится.</span>
         </div>
         <div class="upload-grid">
           <button type="button" class="upload-card" id="btn-upload-file">
@@ -510,7 +510,7 @@
           <div class="op-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="op-track">
             <div class="op-fill" id="op-fill"></div>
           </div>
-          <p class="op-detail" id="op-detail">MP3, FLAC, M4A, WAV, OGG и Opus. Скрытые файлы и прочие форматы пропускаются.</p>
+          <p class="op-detail" id="op-detail">MP3, FLAC, M4A, WAV, OGG, Opus и архивы ZIP/TAR/TAR.GZ. В архиве: до 2000 записей и 8 ГиБ после распаковки; сам архив — до 1 ГиБ. Скрытые и посторонние файлы пропускаются.</p>
         </div>
         <section class="jobs-panel" aria-labelledby="jobs-title">
           <div class="jobs-head">

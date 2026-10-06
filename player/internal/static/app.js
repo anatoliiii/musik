@@ -2522,7 +2522,13 @@ function wireAudio() {
 }
 
 const AUDIO_EXTS = new Set([".mp3", ".flac", ".m4a", ".wav", ".ogg", ".opus"]);
+const ARCHIVE_EXTS = [".zip", ".tar", ".tar.gz", ".tgz"];
 const UPLOAD_BATCH = 8;
+
+function uploadSupported(name) {
+  const lower = String(name || "").toLowerCase();
+  return AUDIO_EXTS.has(audioExt(lower)) || ARCHIVE_EXTS.some((ext) => lower.endsWith(ext));
+}
 
 function audioExt(name) {
   const i = String(name || "").lastIndexOf(".");
@@ -2743,14 +2749,14 @@ function queueMusicUpload(fileList) {
 
 async function uploadMusicFiles(fileList) {
   const all = [...fileList];
-  const files = all.filter((f) => AUDIO_EXTS.has(audioExt(f.name)));
+  const files = all.filter((f) => uploadSupported(f.name));
   const skippedExt = all.length - files.length;
   if (!files.length) {
     setOpBar({
       state: "error",
-      title: "Нет аудиофайлов",
+      title: "Нет музыки или поддерживаемых архивов",
       detail: skippedExt
-        ? `Пропущено ${skippedExt}: нужны MP3, FLAC, M4A, WAV, OGG или Opus.`
+        ? `Пропущено ${skippedExt}: нужны аудиофайлы, ZIP, TAR или TAR.GZ.`
         : "Файлы не выбраны.",
       pct: 0,
     });
@@ -2798,7 +2804,7 @@ async function uploadMusicFiles(fileList) {
       setOpBar({
         state: "run",
         title: "Загрузка на диск",
-        detail: `${done} из ${files.length} · сохранено ${saved}${skipped ? ` · пропущено ${skipped}` : ""}`,
+        detail: `${done} из ${files.length} · треков сохранено ${saved}${skipped ? ` · пропущено ${skipped}` : ""}`,
         pct: (done / files.length) * 55,
       });
     }

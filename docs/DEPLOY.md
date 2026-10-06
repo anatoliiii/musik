@@ -1,12 +1,17 @@
+# Deploy musik
+
 ## Обновление контейнеров и PostgreSQL
 
-Для установки из CI-образов используйте `docker-compose.images.yml`, `.env.example`
-и `./scripts/update-compose.sh`. PostgreSQL включается через `COMPOSE_PROFILES=postgres`
-в `.env`; отдельный сервис `migrate` выполняет бэкап, миграцию и первичное приглашение
-администратора. Общий тег ветки задаётся `MUSIK_IMAGE_TAG=branch-main` (или тегом fork).
-Подробные настройки и перенос SQLite: [UPGRADE-v8.md](UPGRADE-v8.md#автоматическое-обновление-через-compose-рекомендуется).
+Для стандартной установки из согласованных CI-образов используйте
+`docker-compose.images.yml`, `.env.example` и `scripts/update-compose.sh`.
+PostgreSQL включается через `COMPOSE_PROFILES=postgres`; `migrate` подготавливает
+БД перед запуском приложений. Скрипт останавливает только player/worker:
+внешних писателей и backup конфигурации нужно обработать отдельно.
 
-# Deploy musik
+Перед выбором тега проверить [готовность версии и порядок обновления](UPGRADE-v8.md).
+Локальные исправления после внедрения не следует считать уже опубликованными
+в GHCR. Для внешнего GPU и standby:
+[инструкция установки на трёх серверах](THREE-HOST-OPERATIONS.md).
 
 Для существующей установки: [пошаговое обновление до схемы v8 и откат](UPGRADE-v8.md).
 
@@ -15,7 +20,7 @@
 
 ## Auth (fail-closed)
 
-Без `MUSIK_PASSWORD` и/или `MUSIK_API_TOKEN` player **не стартует**, пока явно не задано `MUSIK_AUTH_DISABLED=1` (только localhost-отладка).
+В single-user без `MUSIK_PASSWORD` и/или `MUSIK_API_TOKEN` player **не стартует**, пока явно не задано `MUSIK_AUTH_DISABLED=1` (только localhost-отладка).
 
 | Переменная | Назначение |
 |------------|------------|
@@ -48,14 +53,16 @@ MUSIK_OIDC_CLIENT_ID=musik
 MUSIK_OIDC_CLIENT_SECRET=...
 ```
 
-После обычного шага `musik db migrate` создай первое приглашение администратора
-в той же выбранной базе. Для PostgreSQL передай `MUSIK_DATABASE_URL` в окружении;
-`--db` нужен только для SQLite:
+В стандартном CI Compose первое приглашение создаёт migrate через
+`MUSIK_BOOTSTRAP_INVITE`; порядок описан в [инструкции обновления](UPGRADE-v8.md).
+Альтернатива после миграции — ручной bootstrap с окружением выбранной БД:
 
 ```bash
-musik-player admin bootstrap --db data/db/musik.db \
-  --issuer "$MUSIK_OIDC_ISSUER" --ttl 1h
+musik-player admin bootstrap --issuer "$MUSIK_OIDC_ISSUER" --ttl 1h
 ```
+
+Не добавляй `--db`, если задан `MUSIK_DATABASE_URL`. Для отдельного запуска
+SQLite без URL укажи проверенный путь через `--db`.
 
 Команда один раз выведет секрет приглашения. Открой его по адресу
 `https://music.example.com/api/auth/oidc/default/start?invitation=<secret>`.
@@ -83,11 +90,15 @@ player и worker. Worker не публикуется наружу; подклю�
 
 Порядок старта Compose намеренно строгий:
 
-1. worker выполняет `musik db migrate`;
-2. worker начинает отвечать на `/health`;
-3. только после успешного healthcheck запускается player;
+1. одноразовый migrate готовит базу и завершается успешно;
+2. worker запускается и начинает отвечать на `/health`;
+3. после успешного healthcheck запускается player;
 4. player проверяет общий Alembic migration head; для SQLite дополнительно
    проверяется `PRAGMA user_version` (схема v8).
+
+Для обновления существующей базы использовать скрипт и остановить внешних
+писателей. Один `compose up` не обеспечивает этого. Healthcheck не заменяет
+проверку данных, новой загрузки и мобильного воспроизведения.
 
 Go player никогда не создаёт и не изменяет таблицы.
 
@@ -172,6 +183,10 @@ data/themes/ink/
 
 ## Bare-metal
 
+Следующий пример — для новой single-user установки. Для обновления существующей
+сначала выполнить подготовку и backup из [UPGRADE-v8.md](UPGRADE-v8.md);
+scan/embed для самой миграции не нужны.
+
 ```bash
 export MUSIK_PASSWORD=… MUSIK_API_TOKEN=…
 export MUSIK_DATABASE_URL="sqlite:///$PWD/data/db/musik.db" MUSIK_LIBRARY=/path/to/music
@@ -189,8 +204,8 @@ worker проверяют один migration head и сами схему не и
 
 ### PostgreSQL и перенос с SQLite
 
-Подготовь пустую PostgreSQL базу и передай SQLite backup после остановки player
-и worker. Команда оставляет исходный файл нетронутым, создаёт согласованный
+Подготовь пустую PostgreSQL базу и передай SQLite backup после остановки player,
+worker и всех внешних писателей. Сначала проверь [готовность версии](UPGRADE-v8.md#2-готовность-версии). Команда оставляет исходный файл нетронутым, создаёт согласованный
 snapshot, проверяет SQLite integrity и foreign keys, копирует строки и сравнивает
 число строк и SHA-256 по каждой таблице. Перенос требует SQLite v8 и копирует
 данные существующего владельца/профиля вместе с персональными строками,
@@ -206,9 +221,10 @@ musik db transfer --source /backup/musik.db \
 Укажи в `MUSIK_TRANSFER_DATABASE_URL` URL только целевой PostgreSQL, а после
 успешного отчёта переключи `MUSIK_DATABASE_URL` обоих сервисов. Музыкальные и
 обложечные файлы база не переносит: их пути должны быть доступны на новом хосте.
-Для первого OIDC входа после переноса отдельно создай одноразовое приглашение
-администратору через `musik-player admin bootstrap --issuer "$MUSIK_OIDC_ISSUER"`;
-при PostgreSQL достаточно передать ту же `MUSIK_DATABASE_URL`, флаг `--db` не нужен.
+Если владелец ещё не активирован через OIDC, первое приглашение создаётся
+через migrate либо ручной bootstrap из раздела авторизации. Если OIDC уже
+работал до переноса, повторный bootstrap не нужен: учётные записи переносятся
+вместе с данными. При PostgreSQL передать ту же `MUSIK_DATABASE_URL`, без `--db`.
 
 Подробнее: [ROADMAP.md](ROADMAP.md) · [API.md](API.md) · [MOBILE.md](MOBILE.md) ·
 **[CAPACITY.md](CAPACITY.md)** (ресурсы под 50k треков).

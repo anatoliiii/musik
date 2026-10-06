@@ -50,6 +50,21 @@ func (s *Server) handleLibraryUpload(w http.ResponseWriter, r *http.Request) {
 		if i < len(paths) && strings.TrimSpace(paths[i]) != "" {
 			raw = paths[i]
 		}
+		if library.IsArchive(raw) {
+			src, err := hdr.Open()
+			if err != nil {
+				skipped = append(skipped, library.Skipped{Path: raw, Reason: "не удалось открыть архив"})
+				continue
+			}
+			files, ignored, err := library.SaveArchive(root, raw, src)
+			_ = src.Close()
+			saved = append(saved, files...)
+			skipped = append(skipped, ignored...)
+			if err != nil {
+				skipped = append(skipped, library.Skipped{Path: raw, Reason: err.Error()})
+			}
+			continue
+		}
 		rel, err := library.SanitizeRelPath(raw)
 		if err != nil {
 			skipped = append(skipped, library.Skipped{Path: raw, Reason: err.Error()})

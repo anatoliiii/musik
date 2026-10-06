@@ -30,6 +30,10 @@ def reference_metadata(*, postgresql: bool = False) -> MetaData:
     sqlite_default = re.compile(r"randomblob\s*\(|strftime\s*\(", re.I)
     for table in metadata.tables.values():
         for index in table.indexes:
+            if table.name == "tracks" and index.name == "idx_tracks_fp":
+                # Chromaprint strings can exceed PostgreSQL's B-tree entry limit.
+                # This non-unique equality index does not need ordered entries.
+                index.dialect_options["postgresql"]["using"] = "hash"
             # SQLAlchemy reflects SQLite partial indexes as sqlite_where; keep
             # the same predicate when compiling the shared contract for PG.
             sqlite_where = index.dialect_options["sqlite"].get("where")

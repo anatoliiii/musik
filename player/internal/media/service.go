@@ -4,7 +4,6 @@ package media
 import (
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/torwin-job/musik/player/internal/config"
 	"github.com/torwin-job/musik/player/internal/index"
@@ -15,9 +14,8 @@ type Service struct {
 	cfg config.Config
 	idx *index.Index
 
-	mobileFlight  mobileFlight
-	mobileVariant sync.Map
-	warm          *streamWarm
+	mobileFlight mobileFlight
+	warm         *streamWarm
 }
 
 // New creates a media service.
