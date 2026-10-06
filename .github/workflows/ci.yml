@@ -40,7 +40,18 @@ jobs:
           cache: pip
       - name: Install
         run: pip install -e ".[dev]"
-      - name: Test
+      - name: Prepare PostgreSQL template
+        env:
+          PGPASSWORD: musik-test
+        run: |
+          createdb -h localhost -U musik musik_template
+          MUSIK_DATABASE_URL=postgresql://musik:musik-test@localhost:5432/musik_template \
+            python -c 'import os; from pathlib import Path; from musik.db.migrations import migrate_database; migrate_database(os.environ["MUSIK_DATABASE_URL"], Path("/tmp/musik-ci-template.sqlite"))'
+      - name: Test on SQLite
+        run: pytest
+      - name: Test on PostgreSQL
+        env:
+          MUSIK_TEST_BACKEND: postgres
         run: pytest
 
   go:

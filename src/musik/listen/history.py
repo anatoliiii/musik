@@ -49,28 +49,24 @@ def record_listen(
     weekday = now.weekday()
 
     with connect() as conn:
-        cur = conn.execute(
+        hid = int(conn.execute(
             """
             INSERT INTO listening_history(
                 track_id, ts, source, action, daypart, weekday,
-                position_sec, duration_sec, listened_sec, session_id, reason
-            ,profile_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,:musik_profile)
+                position_sec, duration_sec, listened_sec, session_id, reason, profile_id
+            ) VALUES (
+                :track_id, :ts, :source, :action, :daypart, :weekday,
+                :position_sec, :duration_sec, :listened_sec, :session_id, :reason, :profile
+            )
+            RETURNING id
             """,
-            (
-                track_id,
-                ts,
-                source,
-                action,
-                daypart,
-                weekday,
-                position_sec,
-                duration_sec,
-                listened_sec,
-                session_id,
-                reason,
-            ),
-        )
-        hid = int(cur.lastrowid)
+            {
+                "track_id": track_id, "ts": ts, "source": source, "action": action,
+                "daypart": daypart, "weekday": weekday, "position_sec": position_sec,
+                "duration_sec": duration_sec, "listened_sec": listened_sec,
+                "session_id": session_id, "reason": reason, "profile": conn.profile_id,
+            },
+        ).scalar_one())
 
         if prev_track_id is not None and prev_track_id != track_id and action in {
             "start",
@@ -80,13 +76,14 @@ def record_listen(
             w = float(transition_weight) if transition_weight is not None else 1.0
             conn.execute(
                 """
-                INSERT INTO transitions(from_id, to_id, weight, updated_at,profile_id)
-                VALUES (?,?,?,?,:musik_profile)
-                ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
-                    weight = weight + excluded.weight,
+                INSERT INTO transitions(from_id, to_id, weight, updated_at, profile_id)
+                VALUES (:from_id, :to_id, :weight, :now, :profile)
+                ON CONFLICT(profile_id, from_id, to_id) DO UPDATE SET
+                    weight = transitions.weight + excluded.weight,
                     updated_at = excluded.updated_at
                 """,
-                (prev_track_id, track_id, w, utcnow()),
+                {"from_id": prev_track_id, "to_id": track_id, "weight": w,
+                 "now": utcnow(), "profile": conn.profile_id},
             )
         return hid
 
@@ -102,15 +99,16 @@ def bump_rec_stats(
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at,profile_id)
-            VALUES (?, ?, ?, ?, ?,:musik_profile)
-            ON CONFLICT(profile_id,track_id) DO UPDATE SET
-                shown = shown + excluded.shown,
-                skipped_early = skipped_early + excluded.skipped_early,
-                completed = completed + excluded.completed,
+            INSERT INTO rec_stats(track_id, shown, skipped_early, completed, updated_at, profile_id)
+            VALUES (:track_id, :shown, :skipped_early, :completed, :now, :profile)
+            ON CONFLICT(profile_id, track_id) DO UPDATE SET
+                shown = rec_stats.shown + excluded.shown,
+                skipped_early = rec_stats.skipped_early + excluded.skipped_early,
+                completed = rec_stats.completed + excluded.completed,
                 updated_at = excluded.updated_at
             """,
-            (track_id, shown, skipped_early, completed, now),
+            {"track_id": track_id, "shown": shown, "skipped_early": skipped_early,
+             "completed": completed, "now": now, "profile": conn.profile_id},
         )
 
 
@@ -121,12 +119,13 @@ def recent_history(limit: int = 50) -> list[dict[str, Any]]:
             SELECT h.id, h.track_id, h.ts, h.action, h.daypart, h.weekday,
                    h.listened_sec, h.duration_sec, h.reason, h.session_id,
                    t.artist, t.title
-            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) h
+            FROM listening_history h
             JOIN tracks t ON t.id = h.track_id
+            WHERE h.profile_id = :profile
             ORDER BY h.id DESC
-            LIMIT ?
+            LIMIT :limit
             """,
-            (limit,),
+            {"profile": conn.profile_id, "limit": limit},
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -134,7 +133,8 @@ def recent_history(limit: int = 50) -> list[dict[str, Any]]:
 def history_counts() -> dict[str, int]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT action, COUNT(*) AS n FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history GROUP BY action"
+            "SELECT action, COUNT(*) AS n FROM listening_history WHERE profile_id = :profile GROUP BY action",
+            {"profile": conn.profile_id},
         ).fetchall()
         out = {r["action"]: int(r["n"]) for r in rows}
         out["total"] = sum(out.values())
@@ -148,12 +148,13 @@ def top_transitions(limit: int = 20) -> list[dict[str, Any]]:
             SELECT tr.from_id, tr.to_id, tr.weight,
                    a.artist AS from_artist, a.title AS from_title,
                    b.artist AS to_artist, b.title AS to_title
-            FROM (SELECT * FROM transitions WHERE profile_id=:musik_profile) tr
+            FROM transitions tr
             JOIN tracks a ON a.id = tr.from_id
             JOIN tracks b ON b.id = tr.to_id
+            WHERE tr.profile_id = :profile
             ORDER BY tr.weight DESC
-            LIMIT ?
+            LIMIT :limit
             """,
-            (limit,),
+            {"profile": conn.profile_id, "limit": limit},
         ).fetchall()
         return [dict(r) for r in rows]

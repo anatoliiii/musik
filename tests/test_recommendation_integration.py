@@ -57,10 +57,10 @@ def _save_online_taste(vector: np.ndarray) -> None:
     with connect() as conn:
         conn.execute(
             """
-            INSERT INTO user_profile_snapshots(context, embedding, created_at)
-            VALUES ('global', ?, ?)
+            INSERT INTO user_profile_snapshots(context, embedding, created_at, profile_id)
+            VALUES ('global', :embedding, :now, :profile)
             """,
-            (normalized.astype(np.float32).tobytes(), utcnow()),
+            {"embedding": normalized.astype(np.float32).tobytes(), "now": utcnow(), "profile": conn.profile_id},
         )
 
 
@@ -72,22 +72,18 @@ def _insert_tracks(index: EmbeddingIndex) -> None:
                 """
                 INSERT INTO tracks(
                     id, path, title, artist, album, is_active, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                ) VALUES (:id, :path, :title, :artist, :album, 1, :now, :now)
                 """,
-                (
-                    meta["id"],
-                    f"/music/{meta['id']}.flac",
-                    meta["title"],
-                    meta["artist"],
-                    meta["album"],
-                    now,
-                    now,
-                ),
+                {
+                    "id": meta["id"], "path": f"/music/{meta['id']}.flac",
+                    "title": meta["title"], "artist": meta["artist"],
+                    "album": meta["album"], "now": now,
+                },
             )
 
 
-def test_feedback_changes_taste_and_next_mix_pack(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "musik.db"))
+def test_feedback_changes_taste_and_next_mix_pack(monkeypatch, tmp_path, test_database) -> None:
+    test_database(tmp_path / "musik.db")
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     init_db()
@@ -116,10 +112,10 @@ def test_feedback_changes_taste_and_next_mix_pack(monkeypatch, tmp_path) -> None
         for action in ("start", "like"):
             conn.execute(
                 """
-                INSERT INTO listening_history(track_id, ts, source, action, weekday)
-                VALUES (?, ?, 'integration-test', ?, 5)
+                INSERT INTO listening_history(track_id, ts, source, action, weekday, profile_id)
+                VALUES (:track_id, :now, 'integration-test', :action, 5, :profile)
                 """,
-                (liked_track, utcnow(), action),
+                {"track_id": liked_track, "now": utcnow(), "action": action, "profile": conn.profile_id},
             )
     taste_after = 0.25 * taste_before + 0.75 * index.matrix[liked_track - 1]
     _save_online_taste(taste_after)
@@ -154,9 +150,9 @@ def test_feedback_changes_taste_and_next_mix_pack(monkeypatch, tmp_path) -> None
 
 def test_mix_pack_has_distinct_shelf_openings_without_weekday_history(
     monkeypatch,
-    tmp_path,
+    tmp_path, test_database,
 ) -> None:
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "musik.db"))
+    test_database(tmp_path / "musik.db")
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     init_db()

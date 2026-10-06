@@ -45,13 +45,14 @@ def blocked_track_ids() -> set[int]:
             rules = conn.execute(
                 """
                 SELECT target_type, target_key
-                FROM (SELECT * FROM radio_rules WHERE profile_id=:musik_profile) AS radio_rules
-                WHERE action = 'block'
+                FROM radio_rules
+                WHERE profile_id = :profile
+                  AND action = 'block'
                   AND scope = 'global'
                   AND archived_at IS NULL
-                  AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)
+                  AND (expires_at IS NULL OR expires_at = '' OR expires_at > :now)
                 """,
-                (now,),
+                {"profile": conn.profile_id, "now": now},
             ).fetchall()
             if not rules:
                 return set()

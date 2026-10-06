@@ -40,15 +40,16 @@ def _weekday_taste(index: EmbeddingIndex, weekday: int) -> tuple[np.ndarray, str
         rows = conn.execute(
             """
             SELECT track_id, COUNT(*) AS c
-            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-            WHERE weekday = ?
+            FROM listening_history
+            WHERE profile_id = :profile
+              AND weekday = :weekday
               AND action IN ('like', 'finish', 'track_end')
               AND (reason IS NULL OR reason != 'skipped')
             GROUP BY track_id
             ORDER BY c DESC
             LIMIT 40
             """,
-            (weekday,),
+            {"profile": conn.profile_id, "weekday": weekday},
         ).fetchall()
     if not rows:
         return base, src, 0
@@ -82,15 +83,19 @@ def _for_you_forbidden_rows(
     previous = latest_playlist("for_you")
     if previous:
         track_ids.update(int(t["track_id"]) for t in previous["tracks"])
+    # Stored instants are UTC ISO-8601 text; a whole-second cutoff without a
+    # zone suffix orders correctly against both "Z" and "+00:00" forms.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=max(1, recent_days))).strftime("%Y-%m-%dT%H:%M:%S")
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT DISTINCT track_id
-            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-            WHERE datetime(ts) >= datetime('now', ?)
+            FROM listening_history
+            WHERE profile_id = :profile
+              AND ts >= :cutoff
               AND action IN ('start', 'finish', 'track_end', 'like', 'dislike')
             """,
-            (f"-{max(1, recent_days)} days",),
+            {"profile": conn.profile_id, "cutoff": cutoff},
         ).fetchall()
     track_ids.update(int(r["track_id"]) for r in rows)
     return {
@@ -264,10 +269,11 @@ def generate_new_releases(
     with connect() as conn:
         tip_rows = conn.execute(
             """
-            SELECT track_ids_json, score FROM (SELECT * FROM discover_tips WHERE profile_id=:musik_profile) AS discover_tips
-            WHERE kind = 'new_album'
+            SELECT track_ids_json, score FROM discover_tips
+            WHERE profile_id = :profile AND kind = 'new_album'
             ORDER BY score DESC LIMIT 30
-            """
+            """,
+            {"profile": conn.profile_id},
         ).fetchall()
         track_rows = conn.execute(
             """
@@ -450,54 +456,46 @@ def mix_catalog() -> list[dict[str, Any]]:
 
 def _later_count() -> int:
     with connect() as conn:
-        row = conn.execute("SELECT COUNT(*) AS c FROM (SELECT * FROM listen_later WHERE profile_id=:musik_profile) AS listen_later").fetchone()
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM listen_later WHERE profile_id = :profile",
+            {"profile": conn.profile_id},
+        ).fetchone()
     return int(row["c"]) if row else 0
 
 
-def ensure_later_table() -> None:
-    with connect() as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS listen_later (
-                track_id INTEGER PRIMARY KEY,
-                added_at TEXT NOT NULL,
-                position INTEGER NOT NULL DEFAULT 0
-            )
-            """
-        )
-
-
 def later_list() -> list[dict[str, Any]]:
-    ensure_later_table()
     with connect() as conn:
         rows = conn.execute(
             """
             SELECT l.track_id, l.added_at, l.position,
                    t.artist, t.title, t.duration
-            FROM (SELECT * FROM listen_later WHERE profile_id=:musik_profile) l
+            FROM listen_later l
             JOIN tracks t ON t.id = l.track_id
+            WHERE l.profile_id = :profile
             ORDER BY l.position ASC, l.added_at DESC
-            """
+            """,
+            {"profile": conn.profile_id},
         ).fetchall()
     return [dict(r) for r in rows]
 
 
 def later_add(track_id: int) -> None:
-    ensure_later_table()
     now = utcnow()
     with connect() as conn:
-        row = conn.execute("SELECT COALESCE(MAX(position),0) AS m FROM (SELECT * FROM listen_later WHERE profile_id=:musik_profile) AS listen_later").fetchone()
-        pos = int(row["m"]) + 1
         conn.execute(
             """
-            INSERT INTO listen_later(track_id, added_at, position,profile_id) VALUES (?,?,?,:musik_profile)
-            ON CONFLICT(profile_id,track_id) DO UPDATE SET added_at=excluded.added_at
+            INSERT INTO listen_later(track_id, added_at, position, profile_id)
+            SELECT :track_id, :now, COALESCE(MAX(position), 0) + 1, :profile
+            FROM listen_later WHERE profile_id = :profile
+            ON CONFLICT(profile_id, track_id) DO UPDATE SET added_at = excluded.added_at
             """,
-            (track_id, now, pos),
+            {"track_id": track_id, "now": now, "profile": conn.profile_id},
         )
 
 
 def later_remove(track_id: int) -> None:
-    ensure_later_table()
     with connect() as conn:
-        conn.execute("DELETE FROM listen_later WHERE listen_later.profile_id=:musik_profile AND ( track_id = ?) ", (track_id,))
+        conn.execute(
+            "DELETE FROM listen_later WHERE profile_id = :profile AND track_id = :track_id",
+            {"profile": conn.profile_id, "track_id": track_id},
+        )

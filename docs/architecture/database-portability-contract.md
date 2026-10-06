@@ -1,27 +1,30 @@
 # SQLite and PostgreSQL portability contract
 
 Status: integrated schema v8 is verified on SQLite and PostgreSQL 17, including
-profile ownership, device tokens and the offline SQLite-to-PostgreSQL transfer. Every player
-and worker repository now executes through the selected GORM or SQLAlchemy
-session. Identity, account, profile, job, and catalog paths use mapped models;
-complex legacy queries still pass through GORM Raw or SQLAlchemy text at the
-compatibility boundary, where backend differences are contained.
+profile ownership, device tokens and the offline SQLite-to-PostgreSQL transfer. Go
+repositories run explicit SQL through sqlx; Python repositories use SQLAlchemy
+expressions or text SQL with named parameters. Queries are written once in the
+SQL both engines accept and are sent as written: no statement is rewritten at
+runtime. The whole Go and Python test suites run on both backends.
 
 The same musik build and logical schema must run on SQLite or PostgreSQL. Selecting a backend must not change API behavior, account/profile isolation, queue ordering, recommendation outcomes, migration safety, or worker behavior. SQLite remains the default and supported deployment; PostgreSQL is an optional backend.
 
 ## Current boundary and portability gaps
 
-- GORM opens either SQLite or PostgreSQL and owns the shared connection pool. All Go repository calls pass through its query, execution, and transaction APIs; mapped records cover identity, profiles, accounts, jobs, catalog writes, listens and playlists. Complex query reads still use GORM Raw behind the compatibility boundary.
-- Python runtime repositories use SQLAlchemy sessions. Catalog and job operations use mapped entities and SQLAlchemy expressions; other query shapes use `Session.execute(text(...))` through the shared compatibility boundary. It binds values and adapts the legacy SQLite functions exercised by PostgreSQL tests.
+- Go opens one `database/sql` pool (modernc SQLite or pgx) behind a small sqlx wrapper (`player/internal/db/sqlx.go`). Repository SQL uses `?` placeholders, which sqlx rebinds for the driver; nothing else in the statement changes. The few real dialect differences are `Dialect` methods (`HourUTC`, `DateUTC`, `LockForUpdate`) visible at the call site.
+- Every personal-data query binds `profile_id` explicitly (`Store.ProfileID` in Go, `conn.profile_id` in Python). There is no implicit profile token. `Store.ForProfile` returns a view of the same pool for another profile.
+- Python runtime repositories use SQLAlchemy sessions. Catalog and job operations use mapped entities and SQLAlchemy expressions; other queries are `text()` SQL with named parameters (`:profile`, `:track_id`) through `ORMConnection`, sent unchanged.
+- Time windows are computed in application code and compared as UTC ISO-8601 text (whole-second cutoffs order correctly against `Z` and `+00:00` suffixes). Upserts qualify the target table on the right-hand side of `DO UPDATE SET` (`t.col + excluded.col`); PostgreSQL rejects the unqualified form as ambiguous.
 - Python runtime connections are SQLAlchemy sessions. The remaining direct `sqlite3` usage is limited to legacy migrations, SQLite snapshot/transfer checks, and SQLite-specific test setup.
 - Alembic owns migration history through `musik_8`. Go requires that shared head and additionally checks `PRAGMA user_version` on SQLite; it does not migrate at startup.
-- PostgreSQL 17 migration, profile isolation, worker schema, and offline transfer checks run in CI. Conformance coverage is still narrower than the full behavioral contract below; broader rollback, concurrency, and service-path parity remains future work.
+- Tests: the Go fixture `player/internal/testdb/schema.sql` is generated from the migrations (`scripts/go_test_schema.py`; a Python test rejects drift). `MUSIK_TEST_BACKEND=postgres` runs the whole Go and Python suites against per-test clones of a migrated PostgreSQL template; CI runs both backends. A repository smoke test reaches every Go repository method.
+- Known gap: `profile_id` columns still carry the owner profile as a column DEFAULT inherited from the SQLite adoption migration. Repositories always bind the profile, but the default should be dropped in a later migration so a forgotten value fails instead of landing in the owner's profile.
 
 ## Required architecture
 
 ### Domain, ORM and repository boundary
 
-- Go uses GORM for backend creation, query execution, transactions and mapped writes; Python uses SQLAlchemy sessions, mapped models and expressions. Compatibility ports for complex legacy query shapes share those same ORM-managed sessions and pools.
+- Go uses sqlx over `database/sql` for backend creation, query execution and transactions; Python uses SQLAlchemy sessions, mapped models, expressions and named-parameter text SQL. Both share one pool per process.
 - Repositories own SQL and transaction boundaries. Use interfaces by use case (catalog, playback, profile, library jobs, migrations), not one generic CRUD abstraction and not a generic SQL-builder leaking into services.
 - The Python worker has its own SQLAlchemy persistence port. It must not bypass the selected backend through `sqlite3.connect` in a command, job or helper path.
 - The application receives a storage configuration at startup and constructs one backend. Go player, Python worker, CLI and migration command must resolve the same backend and database identity; secret DSNs are never logged.
@@ -78,7 +81,7 @@ Run the same repository and service contract cases against SQLite and PostgreSQL
 
 ## Resolved architecture choices
 
-- Resolved: GORM is the Go ORM, SQLAlchemy is the Python ORM, Alembic owns migrations, and `musik db migrate` is the operator command. All runtime repositories execute through those ORM boundaries; mapped entity conversion continues for complex legacy SQL where it improves safety or portability.
+- Resolved: Go uses sqlx with explicit SQL (GORM was removed: most queries are analytical and ran through raw SQL anyway), SQLAlchemy is the Python data layer, Alembic owns migrations, and `musik db migrate` is the operator command. No runtime SQL rewriting.
 - Implemented for schema v8: offline SQLite-to-PostgreSQL transfer verifies row counts and SHA-256 checksums and maps the legacy owner/profile. Device-token hashes and profile binding transfer with the database; raw secrets are never stored. Music and artwork files remain external; database rows and embedded binary payloads are transferred.
 - PostgreSQL 17 is the CI and release minimum. SQLite requires a version supporting the migration's `RETURNING` behavior.
 - SQLite in-memory test compatibility and PostgreSQL CI service image/version are implementation choices; the behavioral cases above are mandatory regardless of tool.

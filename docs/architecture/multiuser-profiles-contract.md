@@ -29,7 +29,7 @@ This contract separates a person who can sign in (`User`) from listening state (
 - Multi-user startup fails closed when OIDC or the initial administrator invitation is missing. `MUSIK_PASSWORD`, shared `MUSIK_API_TOKEN`, and `MUSIK_AUTH_DISABLED` are rejected in this mode.
 - Device tokens belong to a user and reference one owned profile. Only their SHA-256 hashes are stored; the secret is returned at creation/replacement and expires after 180 days. Deleting the selected profile or disabling its owner invalidates tokens; re-enabling an account does not restore them.
 - Browser-only routes manage device tokens with cookie-session and CSRF/Origin checks. A device token cannot manage tokens/accounts/profiles/shared-library jobs and can enqueue only its profile's `mix_pack` job.
-- Go and Python repositories use profile-scoped stores. Their queries execute through GORM/SQLAlchemy-managed sessions; mapped models handle identity and catalog paths while remaining complex queries pass through profile-bound compatibility adapters.
+- Go and Python repositories use profile-scoped stores. Every personal-data query binds `profile_id` explicitly (sqlx in Go, SQLAlchemy in Python); no adapter injects or rewrites it.
 
 ## Domain contract
 

@@ -7,9 +7,9 @@ from musik.index.brute import EmbeddingIndex, load_index
 from musik.index.clusters import _kmeans
 
 
-def test_neighbors_self_excluded(tmp_path, monkeypatch):
+def test_neighbors_self_excluded(tmp_path, monkeypatch, test_database):
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "data" / "db" / "t.db"))
+    test_database(tmp_path / "data" / "db" / "t.db")
     monkeypatch.setenv("MUSIK_EMBEDDINGS_CACHE", str(tmp_path / "data" / "cache" / "e"))
     monkeypatch.setenv("MUSIK_ARTWORK_CACHE", str(tmp_path / "data" / "cache" / "a"))
     from musik.config import get_settings

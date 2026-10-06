@@ -27,7 +27,7 @@ def test_md5_and_tags(tmp_path: Path):
     assert tags.title == "Test Song"
 
 
-def test_scan_library(tmp_path: Path, monkeypatch):
+def test_scan_library(tmp_path: Path, monkeypatch, test_database):
     lib = tmp_path / "lib"
     lib.mkdir()
     _make_wav(lib / "a.wav", freq=440)
@@ -36,7 +36,7 @@ def test_scan_library(tmp_path: Path, monkeypatch):
     # Point settings at temp dirs
     monkeypatch.setenv("MUSIK_LIBRARY", str(lib))
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path / "data"))
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "data" / "db" / "t.db"))
+    test_database(tmp_path / "data" / "db" / "t.db")
     monkeypatch.setenv("MUSIK_EMBEDDINGS_CACHE", str(tmp_path / "data" / "cache" / "embeddings"))
     monkeypatch.setenv("MUSIK_ARTWORK_CACHE", str(tmp_path / "data" / "cache" / "artwork"))
 

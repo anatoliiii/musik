@@ -59,8 +59,8 @@ def test_logistic_improves_separable_holdout() -> None:
     assert metrics["auc"] > 0.7
 
 
-def test_train_ranker_rejects_small_dataset(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "musik.db"))
+def test_train_ranker_rejects_small_dataset(monkeypatch, tmp_path, test_database) -> None:
+    test_database(tmp_path / "musik.db")
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     init_db()

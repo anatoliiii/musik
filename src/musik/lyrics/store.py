@@ -13,9 +13,9 @@ def get_lyrics(track_id: int) -> dict[str, Any] | None:
             """
             SELECT track_id, plain_lyrics, synced_lyrics, source, source_id,
                    instrumental, status, error, updated_at
-            FROM lyrics WHERE track_id = ?
+            FROM lyrics WHERE track_id = :track_id
             """,
-            (track_id,),
+            {"track_id": track_id},
         ).fetchone()
     return dict(row) if row else None
 
@@ -38,7 +38,10 @@ def upsert_lyrics(
             INSERT INTO lyrics (
                 track_id, plain_lyrics, synced_lyrics, source, source_id,
                 instrumental, status, error, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (
+                :track_id, :plain_lyrics, :synced_lyrics, :source, :source_id,
+                :instrumental, :status, :error, :now
+            )
             ON CONFLICT(track_id) DO UPDATE SET
                 plain_lyrics = excluded.plain_lyrics,
                 synced_lyrics = excluded.synced_lyrics,
@@ -49,17 +52,11 @@ def upsert_lyrics(
                 error = excluded.error,
                 updated_at = excluded.updated_at
             """,
-            (
-                track_id,
-                plain_lyrics,
-                synced_lyrics,
-                source,
-                source_id,
-                1 if instrumental else 0,
-                status,
-                error,
-                now,
-            ),
+            {
+                "track_id": track_id, "plain_lyrics": plain_lyrics, "synced_lyrics": synced_lyrics,
+                "source": source, "source_id": source_id, "instrumental": 1 if instrumental else 0,
+                "status": status, "error": error, "now": now,
+            },
         )
 
 

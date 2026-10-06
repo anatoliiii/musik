@@ -337,14 +337,16 @@ def db_rebuild_transitions(
 
     init_db(path)
     with connect(path) as conn:
-        conn.execute("DELETE FROM transition_stats WHERE transition_stats.profile_id=:musik_profile ")
+        profile = {"profile": conn.profile_id}
+        conn.execute("DELETE FROM transition_stats WHERE profile_id = :profile", profile)
         rows = conn.execute(
             """
             SELECT track_id, action, COALESCE(reason,''), COALESCE(source,''), ts, COALESCE(session_id,'')
-            FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
-            WHERE action IN ('track_end','skip','finish')
-            ORDER BY session_id, ts
-            """
+            FROM listening_history
+            WHERE profile_id = :profile AND action IN ('track_end','skip','finish')
+            ORDER BY COALESCE(session_id,''), ts
+            """,
+            profile,
         ).fetchall()
         prev: dict[str, int] = {}
         n = 0
@@ -372,17 +374,21 @@ def db_rebuild_transitions(
                     INSERT INTO transition_stats(
                       from_id, to_id, manual_count, radio_count, finished_count,
                       partial_count, skip_count, decayed_weight, updated_at
-                    ,profile_id) VALUES (?,?,?,?,?,?,?,?,?,:musik_profile)
-                    ON CONFLICT(profile_id,from_id, to_id) DO UPDATE SET
-                      manual_count = manual_count + excluded.manual_count,
-                      radio_count = radio_count + excluded.radio_count,
-                      finished_count = finished_count + excluded.finished_count,
-                      partial_count = partial_count + excluded.partial_count,
-                      skip_count = skip_count + excluded.skip_count,
-                      decayed_weight = decayed_weight + excluded.decayed_weight,
+                    , profile_id) VALUES (
+                      :from_id, :to_id, :manual, :radio, :finished, :partial, :skip, :delta, :ts, :profile
+                    )
+                    ON CONFLICT(profile_id, from_id, to_id) DO UPDATE SET
+                      manual_count = transition_stats.manual_count + excluded.manual_count,
+                      radio_count = transition_stats.radio_count + excluded.radio_count,
+                      finished_count = transition_stats.finished_count + excluded.finished_count,
+                      partial_count = transition_stats.partial_count + excluded.partial_count,
+                      skip_count = transition_stats.skip_count + excluded.skip_count,
+                      decayed_weight = transition_stats.decayed_weight + excluded.decayed_weight,
                       updated_at = excluded.updated_at
                     """,
-                    (from_id, track_id, manual, radio, finished, partial, skip, delta, row[4]),
+                    {"from_id": from_id, "to_id": track_id, "manual": manual, "radio": radio,
+                     "finished": finished, "partial": partial, "skip": skip, "delta": delta,
+                     "ts": row[4], **profile},
                 )
                 n += 1
             prev[session] = track_id

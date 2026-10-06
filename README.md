@@ -175,7 +175,7 @@ musik/
 | `cmd/musik-player/main.go` | точка входа |
 | `internal/config/` | env Go-плеера |
 | `internal/auth/` | пароль, cookie, Bearer, rate-limit логина |
-| `internal/db/` | GORM для SQLite/PostgreSQL, репозитории и общий schema-version gate; миграций в Go нет |
+| `internal/db/` | sqlx для SQLite/PostgreSQL, репозитории с явным SQL и общий schema-version gate; миграций в Go нет |
 | `internal/index/` | матрица эмбеддингов в RAM, `TopK`, `SimsTo`, fused exact scan |
 | `internal/taste/` | EMA-вкус |
 | `internal/queue/` | единое ядро очереди: candidates → features → score → select |

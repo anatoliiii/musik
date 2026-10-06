@@ -56,10 +56,12 @@ def build_profile(*, context: str = CONTEXT_OFFLINE, persist: bool = True) -> Ta
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT track_id, action FROM (SELECT * FROM listening_history WHERE profile_id=:musik_profile) AS listening_history
+            SELECT track_id, action FROM listening_history
+            WHERE profile_id = :profile
             ORDER BY id DESC
             LIMIT 500
-            """
+            """,
+            {"profile": conn.profile_id},
         ).fetchall()
 
     if not rows:
@@ -98,10 +100,10 @@ def build_profile(*, context: str = CONTEXT_OFFLINE, persist: bool = True) -> Ta
         with connect() as conn:
             conn.execute(
                 """
-                INSERT INTO user_profile_snapshots(context, embedding, created_at,profile_id)
-                VALUES (?,?,?,:musik_profile)
+                INSERT INTO user_profile_snapshots(context, embedding, created_at, profile_id)
+                VALUES (:context, :embedding, :now, :profile)
                 """,
-                (write_context, blob, utcnow()),
+                {"context": write_context, "embedding": blob, "now": utcnow(), "profile": conn.profile_id},
             )
     return TasteProfile(vec, n_pos, n_neg, write_context)
 
@@ -110,11 +112,11 @@ def latest_profile(context: str = CONTEXT_ONLINE) -> TasteProfile | None:
     with connect() as conn:
         row = conn.execute(
             """
-            SELECT embedding FROM (SELECT * FROM user_profile_snapshots WHERE profile_id=:musik_profile) AS user_profile_snapshots
-            WHERE context = ?
+            SELECT embedding FROM user_profile_snapshots
+            WHERE profile_id = :profile AND context = :context
             ORDER BY id DESC LIMIT 1
             """,
-            (context,),
+            {"profile": conn.profile_id, "context": context},
         ).fetchone()
     if not row:
         return None

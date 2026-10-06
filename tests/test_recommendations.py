@@ -130,8 +130,8 @@ def test_for_you_small_catalog_falls_back_when_everything_is_recent(monkeypatch)
     assert len(set(ids)) == index.size
 
 
-def test_nightly_mix_pack_is_queued_once(monkeypatch, tmp_path) -> None:
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "musik.db"))
+def test_nightly_mix_pack_is_queued_once(monkeypatch, tmp_path, test_database) -> None:
+    test_database(tmp_path / "musik.db")
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("MUSIK_NIGHTLY_MIXES_ENABLED", "1")
     monkeypatch.setenv("MUSIK_NIGHTLY_MIXES_HOUR", "3")

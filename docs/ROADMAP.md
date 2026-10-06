@@ -24,7 +24,7 @@
 | Этап | Содержание | Статус |
 |------|------------|--------|
 | **0A** | Alembic migrations, `musik db migrate`, общий schema head и точный Go gate | **готово** |
-| **0E** | SQLite/PostgreSQL portability через SQLAlchemy и GORM, проверенный SQLite transfer | **реализовано в ветке** |
+| **0E** | SQLite/PostgreSQL portability через SQLAlchemy и sqlx, проверенный SQLite transfer | **реализовано в ветке** |
 | **0B** | Упорядоченный startup worker → healthcheck → player | **готово** |
 | **0C** | Foundation-схема requests/events/contexts/rules/entities/models | **готово** |
 | **0D** | Детерминированный listener simulator и 2k/50k exact benchmarks | **готово** |

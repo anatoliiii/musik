@@ -12,30 +12,30 @@ from musik.jobs import runner
 def _add_active_profiles(db_path: Path) -> list[str]:
     now = "2026-10-04T00:00:00+00:00"
     profiles = [str(uuid4()), str(uuid4())]
-    with connect(db_path) as conn:
+    with connect() as conn:
         for index, profile_id in enumerate(profiles):
             user_id = str(uuid4())
             conn.execute(
-                "INSERT INTO users(id,status,display_name,created_at,updated_at) VALUES (?,?,?,?,?)",
-                (user_id, "active", f"User {index}", now, now),
+                "INSERT INTO users(id,status,display_name,created_at,updated_at) "
+                "VALUES (:id, 'active', :name, :now, :now)",
+                {"id": user_id, "name": f"User {index}", "now": now},
             )
             conn.execute(
-                "INSERT INTO user_roles(user_id,role) VALUES (?, 'user')", (user_id,)
+                "INSERT INTO user_roles(user_id,role) VALUES (:id, 'user')", {"id": user_id}
             )
             conn.execute(
                 "INSERT INTO profiles(id,owner_user_id,name,is_default,created_at,updated_at) "
-                "VALUES (?,?,?,1,?,?)",
-                (profile_id, user_id, f"Profile {index}", now, now),
+                "VALUES (:id, :owner, :name, 1, :now, :now)",
+                {"id": profile_id, "owner": user_id, "name": f"Profile {index}", "now": now},
             )
     return profiles
 
 
 def test_process_job_uses_explicit_profile_in_multi_user_mode(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, test_database
 ) -> None:
     db_path = tmp_path / "worker-explicit-profile.sqlite"
-    monkeypatch.delenv("MUSIK_DATABASE_URL", raising=False)
-    monkeypatch.setenv("MUSIK_DB_PATH", str(db_path))
+    test_database(db_path)
     monkeypatch.setenv("MUSIK_MULTI_USER", "true")
     get_settings.cache_clear()
     try:
@@ -60,11 +60,10 @@ def test_process_job_uses_explicit_profile_in_multi_user_mode(
 
 
 def test_process_job_runs_unselected_profile_jobs_for_each_active_profile(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, test_database
 ) -> None:
     db_path = tmp_path / "worker-all-profiles.sqlite"
-    monkeypatch.delenv("MUSIK_DATABASE_URL", raising=False)
-    monkeypatch.setenv("MUSIK_DB_PATH", str(db_path))
+    test_database(db_path)
     monkeypatch.setenv("MUSIK_MULTI_USER", "true")
     get_settings.cache_clear()
     try:

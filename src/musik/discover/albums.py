@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import numpy as np
+from sqlalchemy import bindparam, text
 
 from musik.db.schema import connect, utcnow
 from musik.index.brute import EmbeddingIndex, load_index
@@ -32,15 +33,11 @@ def _album_groups(index: EmbeddingIndex) -> dict[tuple[str, str], list[int]]:
     track_ids = [int(m["id"]) for m in index.meta]
     album_by_id: dict[int, tuple[str, str]] = {}
     if track_ids:
-        placeholders = ",".join("?" * len(track_ids))
+        query = text("SELECT id, artist, album FROM tracks WHERE id IN :ids").bindparams(
+            bindparam("ids", expanding=True)
+        )
         with connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT id, artist, album FROM tracks
-                WHERE id IN ({placeholders})
-                """,
-                track_ids,
-            ).fetchall()
+            rows = conn.execute(query, {"ids": track_ids}).fetchall()
         for r in rows:
             album_by_id[int(r["id"])] = (
                 (r["artist"] or "").strip(),
@@ -71,7 +68,8 @@ def _track_created_at() -> dict[int, str]:
 def _rec_completed() -> dict[int, int]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT track_id, completed FROM (SELECT * FROM rec_stats WHERE profile_id=:musik_profile) AS rec_stats"
+            "SELECT track_id, completed FROM rec_stats WHERE profile_id = :profile",
+            {"profile": conn.profile_id},
         ).fetchall()
     return {int(r["track_id"]): int(r["completed"]) for r in rows}
 
@@ -105,23 +103,23 @@ def _top_track_ids(
 def _save_tips(kind: str, tips: list[dict[str, Any]]) -> int:
     now = utcnow()
     with connect() as conn:
-        conn.execute("DELETE FROM discover_tips WHERE discover_tips.profile_id=:musik_profile AND ( kind = ?) ", (kind,))
+        conn.execute(
+            "DELETE FROM discover_tips WHERE profile_id = :profile AND kind = :kind",
+            {"profile": conn.profile_id, "kind": kind},
+        )
         for tip in tips:
             conn.execute(
                 """
                 INSERT INTO discover_tips(
-                    kind, artist, album, score, track_ids_json, explanation, created_at
-                ,profile_id) VALUES (?, ?, ?, ?, ?, ?, ?,:musik_profile)
+                    kind, artist, album, score, track_ids_json, explanation, created_at, profile_id
+                ) VALUES (:kind, :artist, :album, :score, :track_ids, :explanation, :now, :profile)
                 """,
-                (
-                    kind,
-                    tip.get("artist"),
-                    tip.get("album"),
-                    float(tip["score"]),
-                    json.dumps(tip["track_ids"], ensure_ascii=False),
-                    tip.get("explanation"),
-                    now,
-                ),
+                {
+                    "kind": kind, "artist": tip.get("artist"), "album": tip.get("album"),
+                    "score": float(tip["score"]),
+                    "track_ids": json.dumps(tip["track_ids"], ensure_ascii=False),
+                    "explanation": tip.get("explanation"), "now": now, "profile": conn.profile_id,
+                },
             )
     return len(tips)
 
@@ -139,7 +137,7 @@ def rebuild_discover_tips(
     index = load_index()
     if index.size == 0:
         with connect() as conn:
-            conn.execute("DELETE FROM discover_tips WHERE discover_tips.profile_id=:musik_profile ")
+            conn.execute("DELETE FROM discover_tips WHERE profile_id = :profile", {"profile": conn.profile_id})
         return {"new_album": 0, "resurfaced": 0, "reason": "empty index"}
 
     taste = _taste_vector(index)

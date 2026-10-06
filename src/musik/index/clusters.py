@@ -67,22 +67,22 @@ def assign_clusters(k: int = 8, *, seed: int = 42) -> ClusterResult:
     with connect() as conn:
         for tid, lab in zip(index.track_ids.tolist(), labels.tolist(), strict=True):
             conn.execute(
-                "UPDATE features SET cluster_id = ? WHERE track_id = ?",
-                (int(lab), int(tid)),
+                "UPDATE features SET cluster_id = :cluster WHERE track_id = :track_id",
+                {"cluster": int(lab), "track_id": int(tid)},
             )
         conn.execute(
             """
-            INSERT INTO scan_state(key, value) VALUES('cluster_k', ?)
+            INSERT INTO scan_state(key, value) VALUES('cluster_k', :value)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (str(int(labels.max()) + 1 if labels.size else 0),),
+            {"value": str(int(labels.max()) + 1 if labels.size else 0)},
         )
         conn.execute(
             """
-            INSERT INTO scan_state(key, value) VALUES('cluster_updated_at', ?)
+            INSERT INTO scan_state(key, value) VALUES('cluster_updated_at', :value)
             ON CONFLICT(key) DO UPDATE SET value = excluded.value
             """,
-            (now,),
+            {"value": now},
         )
 
     counts: dict[int, int] = {}
@@ -99,11 +99,11 @@ def cluster_members(cluster_id: int, *, limit: int = 50) -> list[dict]:
             FROM tracks t
             JOIN features f ON f.track_id = t.id
             WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
-              AND f.cluster_id = ?
+              AND f.cluster_id = :cluster
             ORDER BY t.artist, t.title
-            LIMIT ?
+            LIMIT :limit
             """,
-            (cluster_id, limit),
+            {"cluster": cluster_id, "limit": limit},
         ).fetchall()
         return [dict(r) for r in rows]
 

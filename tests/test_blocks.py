@@ -28,8 +28,8 @@ def test_track_album_and_song_blocks():
     assert not track_is_blocked(track, [("artist", "other")])
 
 
-def test_mix_pack_omits_blocked_artist(monkeypatch, tmp_path):
-    monkeypatch.setenv("MUSIK_DB_PATH", str(tmp_path / "musik.db"))
+def test_mix_pack_omits_blocked_artist(monkeypatch, tmp_path, test_database):
+    test_database(tmp_path / "musik.db")
     monkeypatch.setenv("MUSIK_DATA_DIR", str(tmp_path))
     get_settings.cache_clear()
     init_db()
@@ -63,24 +63,25 @@ def test_mix_pack_omits_blocked_artist(monkeypatch, tmp_path):
             conn.execute(
                 """
                 INSERT INTO tracks(id, path, title, artist, album, is_active, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                VALUES (:id, :path, :title, :artist, :album, 1, :now, :now)
                 """,
-                (item["id"], f"/music/{item['id']}.flac", item["title"], item["artist"], item["album"], now, now),
+                {"id": item["id"], "path": f"/music/{item['id']}.flac", "title": item["title"],
+                 "artist": item["artist"], "album": item["album"], "now": now},
             )
         conn.execute(
             """
             INSERT INTO radio_rules(
-                rule_id, target_type, action, scope, target_key, strength, created_at
-            ) VALUES ('block-gone', 'artist', 'block', 'global', 'gone', 1, ?)
+                rule_id, target_type, action, scope, target_key, strength, created_at, profile_id
+            ) VALUES ('block-gone', 'artist', 'block', 'global', 'gone', 1, :now, :profile)
             """,
-            (utcnow(),),
+            {"now": utcnow(), "profile": conn.profile_id},
         )
         conn.execute(
             """
-            INSERT INTO user_profile_snapshots(context, embedding, created_at)
-            VALUES ('global', ?, ?)
+            INSERT INTO user_profile_snapshots(context, embedding, created_at, profile_id)
+            VALUES ('global', :embedding, :now, :profile)
             """,
-            (matrix[4].astype(np.float32).tobytes(), utcnow()),
+            {"embedding": matrix[4].astype(np.float32).tobytes(), "now": utcnow(), "profile": conn.profile_id},
         )
 
     assert blocked_track_ids() == {1, 2, 3, 4}
@@ -101,6 +102,6 @@ def test_mix_pack_omits_blocked_artist(monkeypatch, tmp_path):
 
     past = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
     with connect() as conn:
-        conn.execute("UPDATE radio_rules SET expires_at = ? WHERE rule_id = 'block-gone'", (past,))
+        conn.execute("UPDATE radio_rules SET expires_at = :past WHERE rule_id = 'block-gone'", {"past": past})
     assert blocked_track_ids() == set()
     get_settings.cache_clear()

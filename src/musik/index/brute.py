@@ -200,11 +200,12 @@ def find_tracks(query: str, *, limit: int = 20) -> list[dict]:
             FROM tracks t
             LEFT JOIN features f ON f.track_id = t.id
             WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
-              AND (t.title LIKE ? OR t.artist LIKE ? OR t.path LIKE ?)
+              AND (lower(t.title) LIKE lower(:q) OR lower(t.artist) LIKE lower(:q)
+                   OR lower(t.path) LIKE lower(:q))
             ORDER BY t.artist, t.title
-            LIMIT ?
+            LIMIT :limit
             """,
-            (q, q, q, limit),
+            {"q": q, "limit": limit},
         ).fetchall()
         return [dict(r) for r in rows]
 
@@ -216,9 +217,9 @@ def get_track(track_id: int) -> dict | None:
             SELECT t.id, t.artist, t.title, t.path, t.file_md5, f.status, f.cluster_id
             FROM tracks t
             LEFT JOIN features f ON f.track_id = t.id
-            WHERE t.id = ?
+            WHERE t.id = :track_id
             """,
-            (track_id,),
+            {"track_id": track_id},
         ).fetchone()
         return dict(row) if row else None
 

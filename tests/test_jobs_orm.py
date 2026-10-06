@@ -8,11 +8,10 @@ from musik.jobs.queue import claim_next, enqueue_job, finish_job, get_job
 
 
 def test_job_queue_uses_mapped_sqlalchemy_model_and_claims_once(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, test_database
 ) -> None:
     db_path = tmp_path / "jobs.sqlite"
-    monkeypatch.delenv("MUSIK_DATABASE_URL", raising=False)
-    monkeypatch.setenv("MUSIK_DB_PATH", str(db_path))
+    test_database(db_path)
     get_settings.cache_clear()
     try:
         init_db()

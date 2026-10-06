@@ -1,12 +1,10 @@
-"""SQLAlchemy ORM sessions and the small legacy-query bridge.
+"""SQLAlchemy engines and sessions for the configured database.
 
-Repositories are moved incrementally to mapped entities. The bridge lets older
-repository query shapes run through SQLAlchemy's dialect and bind handling while
-they are converted; it does not open a second SQLite connection.
+Repositories use mapped entities and SQLAlchemy expressions, or portable text
+SQL with named parameters through ORMConnection; one engine per database URL.
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -95,100 +93,10 @@ class MappingRow:
         return self._mapping.get(key, default)
 
 
-def _qmark_template(sql: str) -> tuple[str, list[str]]:
-    """Convert DB-API qmarks outside SQL strings/comments to named binds."""
-    result: list[str] = []
-    names: list[str] = []
-    index = 0
-    i = 0
-    state = "normal"
-    while i < len(sql):
-        char = sql[i]
-        nxt = sql[i + 1] if i + 1 < len(sql) else ""
-        if state == "normal":
-            if char == "'": state = "single"
-            elif char == '"': state = "double"
-            elif char == "`": state = "backtick"
-            elif char == "[": state = "bracket"
-            elif char == "-" and nxt == "-": state = "line_comment"
-            elif char == "/" and nxt == "*": state = "block_comment"
-            elif char == "?":
-                name = f"musik_arg_{index}"
-                result.append(f":{name}")
-                names.append(name)
-                index += 1
-                i += 1
-                continue
-        elif state == "single" and char == "'":
-            if nxt == "'":
-                result.extend((char, nxt)); i += 2; continue
-            state = "normal"
-        elif state == "double" and char == '"':
-            if nxt == '"':
-                result.extend((char, nxt)); i += 2; continue
-            state = "normal"
-        elif state == "backtick" and char == "`":
-            state = "normal"
-        elif state == "bracket" and char == "]":
-            state = "normal"
-        elif state == "line_comment" and char == "\n":
-            state = "normal"
-        elif state == "block_comment" and char == "*" and nxt == "/":
-            result.extend((char, nxt)); i += 2; state = "normal"; continue
-        result.append(char)
-        i += 1
-    return "".join(result), names
-
-
-def _bind_qmark(
-    sql: str,
-    parameters: Sequence[Any] | Mapping[str, Any] | None,
-    profile_id: str | None = None,
-) -> tuple[str, dict[str, Any]]:
-    if parameters is None:
-        bound: dict[str, Any] = {}
-        if ":musik_profile" in sql:
-            bound["musik_profile"] = profile_id or ""
-        return sql, bound
-    if isinstance(parameters, Mapping):
-        bound = dict(parameters)
-        if ":musik_profile" in sql:
-            bound["musik_profile"] = profile_id or ""
-        return sql, bound
-    template, names = _qmark_template(sql)
-    values = list(parameters)
-    if len(names) != len(values):
-        raise ValueError(f"query has {len(names)} placeholders but {len(values)} values")
-    bound = dict(zip(names, values, strict=True))
-    if ":musik_profile" in template:
-        bound["musik_profile"] = profile_id or ""
-    return template, bound
-
-
-def _adapt_sql(sql: str, dialect_name: str) -> str:
-    """Keep backend syntax at this adapter boundary while repositories migrate."""
-    if dialect_name == "postgresql":
-        ignore_conflict = bool(re.search(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", sql, re.I))
-        if ignore_conflict:
-            sql = re.sub(r"\bINSERT\s+OR\s+IGNORE\s+INTO\b", "INSERT INTO", sql, flags=re.I)
-        if ignore_conflict and not re.search(r"\bON\s+CONFLICT\b", sql, re.I):
-            sql = sql.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
-        sql = re.sub(r"datetime\(\s*'now'\s*\)", "CURRENT_TIMESTAMP", sql, flags=re.I)
-        sql = re.sub(r"datetime\(\s*'now'\s*,\s*(:[A-Za-z_][A-Za-z0-9_]*)\s*\)", r"(CURRENT_TIMESTAMP + CAST(\1 AS INTERVAL))", sql, flags=re.I)
-        sql = re.sub(r"\bdatetime\(\s*([^(),]+)\s*\)", r"CAST(\1 AS TIMESTAMPTZ)", sql, flags=re.I)
-        sql = re.sub(r"CAST\(strftime\('%H',\s*([^)]*)\)\s+AS\s+INTEGER\)", r"CAST(EXTRACT(HOUR FROM CAST(\1 AS TIMESTAMPTZ)) AS INTEGER)", sql, flags=re.I)
-        sql = re.sub(r"\bdate\(\s*([^()]+)\s*\)", r"CAST(CAST(\1 AS TIMESTAMPTZ) AS DATE)", sql, flags=re.I)
-    return sql
-
-
-_RETURNING_ID = re.compile(r"^\s*INSERT\s+INTO\s+(tracks|listening_history|jobs|playlists)\b", re.I)
-
-
 class QueryResult:
-    def __init__(self, result: CursorResult[Any], lastrowid: int | None = None):
+    def __init__(self, result: CursorResult[Any]):
         self._result = result
         self.rowcount = result.rowcount
-        self.lastrowid = lastrowid
 
     def fetchone(self) -> MappingRow | None:
         row = self._result.fetchone()
@@ -196,6 +104,9 @@ class QueryResult:
 
     def fetchall(self) -> list[MappingRow]:
         return [MappingRow(row) for row in self._result.fetchall()]
+
+    def scalar_one(self) -> Any:
+        return self._result.scalar_one()
 
     def __iter__(self):
         """Keep the small result bridge compatible with sqlite3 cursors."""
@@ -206,36 +117,24 @@ class QueryResult:
 
 
 class ORMConnection:
-    """One SQLAlchemy session exposed to repositories during one transaction."""
+    """One SQLAlchemy session exposed to repositories during one transaction.
+
+    Text SQL uses SQLAlchemy named parameters (``:name``) and is sent as
+    written; it must use syntax both SQLite and PostgreSQL accept. Personal
+    data queries pass ``profile_id`` explicitly as a bound value.
+    """
 
     def __init__(self, session: Session, profile_id: str | None = None):
         self.session = session
         self.profile_id = profile_id
 
-    def execute(self, statement: Any, parameters: Sequence[Any] | Mapping[str, Any] | None = None) -> QueryResult:
-        if not isinstance(statement, str):
-            return QueryResult(self.session.execute(statement, parameters or {}))
-        sql, bindings = _bind_qmark(statement, parameters, self.profile_id)
-        sql = _adapt_sql(sql, self.dialect_name)
-        returning = False
-        if self.session.bind is not None and self.session.bind.dialect.name == "postgresql" and not re.search(r"\bRETURNING\b", sql, re.I):
-            if _RETURNING_ID.match(sql):
-                sql += " RETURNING id"
-                returning = True
-        result = self.session.execute(text(sql), bindings)
-        lastrowid = None
-        if returning:
-            row = result.fetchone()
-            lastrowid = int(row[0]) if row is not None else None
-        elif self.dialect_name == "sqlite" and not result.returns_rows:
-            lastrowid = getattr(result, "lastrowid", None)
-        return QueryResult(result, lastrowid)
+    def execute(self, statement: Any, parameters: Mapping[str, Any] | None = None) -> QueryResult:
+        if isinstance(statement, str):
+            statement = text(statement)
+        return QueryResult(self.session.execute(statement, dict(parameters or {})))
 
-    def executemany(self, statement: str, parameters: Sequence[Sequence[Any]]) -> QueryResult:
-        sql, _ = _qmark_template(statement)
-        sql = _adapt_sql(sql, self.dialect_name)
-        bound = [_bind_qmark(statement, values, self.profile_id)[1] for values in parameters]
-        return QueryResult(self.session.execute(text(sql), bound))
+    def executemany(self, statement: str, parameters: Sequence[Mapping[str, Any]]) -> QueryResult:
+        return QueryResult(self.session.execute(text(statement), [dict(row) for row in parameters]))
 
     def commit(self) -> None:
         self.session.commit()
