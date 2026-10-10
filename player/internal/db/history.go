@@ -28,7 +28,9 @@ func (s *Store) RecentTrackIDs(hours int, limit int) ([]int64, error) {
 		limit = 40
 	}
 	cutoff := time.Now().UTC().Add(-time.Duration(hours) * time.Hour).Format(time.RFC3339Nano)
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, id *int64) error {
+		return rows.Scan(id)
+	}, `
 SELECT track_id FROM (
   SELECT track_id, MAX(ts) AS last_ts
   FROM listening_history
@@ -38,19 +40,6 @@ SELECT track_id FROM (
   LIMIT ?
 ) recent
 `, s.ProfileID, cutoff, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) InsertListen(trackID int64, action, source, sessionID, reason string,

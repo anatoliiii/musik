@@ -1,6 +1,7 @@
 package playlist
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -116,20 +117,9 @@ WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL`
 	}
 	q += " LIMIT ?"
 	args = append(args, limit)
-	rows, err := store.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return db.QueryAll(store.DB, func(rows *sql.Rows, id *int64) error {
+		return rows.Scan(id)
+	}, q, args...)
 }
 
 func compileGroup(clauses []Clause, join, profileID string) (string, []any, error) {

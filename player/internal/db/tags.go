@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -26,25 +27,14 @@ func (s *Store) CreateCustomTag(name string) (CustomTag, error) {
 }
 
 func (s *Store) ListCustomTags() ([]CustomTag, error) {
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, tag *CustomTag) error {
+		return rows.Scan(&tag.ID, &tag.Name, &tag.CreatedAt, &tag.ArchivedAt, &tag.TrackCount)
+	}, `
 SELECT t.tag_id, t.name, t.created_at, COALESCE(t.archived_at,''),
        (SELECT COUNT(*) FROM track_tags tt WHERE tt.profile_id = t.profile_id AND tt.tag_id = t.tag_id)
 FROM custom_tags t
 WHERE t.profile_id = ? AND t.archived_at IS NULL
 ORDER BY t.name`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []CustomTag
-	for rows.Next() {
-		var tag CustomTag
-		if err := rows.Scan(&tag.ID, &tag.Name, &tag.CreatedAt, &tag.ArchivedAt, &tag.TrackCount); err != nil {
-			return nil, err
-		}
-		out = append(out, tag)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) TagTrack(tagID string, trackID int64) error {

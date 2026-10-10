@@ -39,93 +39,47 @@ ORDER BY p.id DESC LIMIT 1`, s.ProfileID, kind).Scan(&id, &name, &createdAt, &n,
 	return
 }
 
-func (s *Store) LaterList() ([]PlaylistTrack, error) {
-	rows, err := s.DB.Query(`
-SELECT l.position, l.track_id, COALESCE(t.artist,''), COALESCE(t.title,''),
-       COALESCE(t.duration,0), ''
-FROM listen_later l
+// listen_later and favorites are ordered track lists of the same shape.
+func (s *Store) trackList(table string) ([]PlaylistTrack, error) {
+	return QueryAll(s.DB, func(rows *sql.Rows, t *PlaylistTrack) error {
+		return rows.Scan(&t.Position, &t.TrackID, &t.Artist, &t.Title, &t.Duration)
+	}, `
+SELECT l.position, l.track_id, COALESCE(t.artist,''), COALESCE(t.title,''), COALESCE(t.duration,0)
+FROM `+table+` l
 JOIN tracks t ON t.id = l.track_id
 WHERE l.profile_id = ?
 ORDER BY l.position ASC, l.added_at DESC`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []PlaylistTrack
-	for rows.Next() {
-		var t PlaylistTrack
-		if err := rows.Scan(&t.Position, &t.TrackID, &t.Artist, &t.Title, &t.Duration, &t.Explanation); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
 }
 
-func (s *Store) LaterAdd(trackID int64) error {
+func (s *Store) trackListAdd(table string, trackID int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.Exec(`
-INSERT INTO listen_later(track_id, added_at, position, profile_id)
-SELECT ?, ?, COALESCE(MAX(position),0)+1, ? FROM listen_later WHERE profile_id = ?
+INSERT INTO `+table+`(track_id, added_at, position, profile_id)
+SELECT ?, ?, COALESCE(MAX(position),0)+1, ? FROM `+table+` WHERE profile_id = ?
 ON CONFLICT(profile_id,track_id) DO UPDATE SET added_at=excluded.added_at`,
 		trackID, now, s.ProfileID, s.ProfileID)
 	return err
 }
 
-func (s *Store) LaterRemove(trackID int64) error {
-	_, err := s.DB.Exec(`DELETE FROM listen_later WHERE profile_id = ? AND track_id = ?`, s.ProfileID, trackID)
+func (s *Store) trackListRemove(table string, trackID int64) error {
+	_, err := s.DB.Exec(`DELETE FROM `+table+` WHERE profile_id = ? AND track_id = ?`, s.ProfileID, trackID)
 	return err
 }
 
-func (s *Store) LaterCount() int {
+func (s *Store) trackListCount(table string) int {
 	var n int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM listen_later WHERE profile_id = ?`, s.ProfileID).Scan(&n)
+	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE profile_id = ?`, s.ProfileID).Scan(&n)
 	return n
 }
 
-func (s *Store) FavoritesList() ([]PlaylistTrack, error) {
-	rows, err := s.DB.Query(`
-SELECT f.position, f.track_id, COALESCE(t.artist,''), COALESCE(t.title,''),
-       COALESCE(t.duration,0), ''
-FROM favorites f
-JOIN tracks t ON t.id = f.track_id
-WHERE f.profile_id = ?
-ORDER BY f.position ASC, f.added_at DESC`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []PlaylistTrack
-	for rows.Next() {
-		var t PlaylistTrack
-		if err := rows.Scan(&t.Position, &t.TrackID, &t.Artist, &t.Title, &t.Duration, &t.Explanation); err != nil {
-			return nil, err
-		}
-		out = append(out, t)
-	}
-	return out, rows.Err()
-}
-
-func (s *Store) FavoritesAdd(trackID int64) error {
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
-INSERT INTO favorites(track_id, added_at, position, profile_id)
-SELECT ?, ?, COALESCE(MAX(position),0)+1, ? FROM favorites WHERE profile_id = ?
-ON CONFLICT(profile_id,track_id) DO UPDATE SET added_at=excluded.added_at`,
-		trackID, now, s.ProfileID, s.ProfileID)
-	return err
-}
-
-func (s *Store) FavoritesRemove(trackID int64) error {
-	_, err := s.DB.Exec(`DELETE FROM favorites WHERE profile_id = ? AND track_id = ?`, s.ProfileID, trackID)
-	return err
-}
-
-func (s *Store) FavoritesCount() int {
-	var n int
-	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM favorites WHERE profile_id = ?`, s.ProfileID).Scan(&n)
-	return n
-}
+func (s *Store) LaterList() ([]PlaylistTrack, error)     { return s.trackList("listen_later") }
+func (s *Store) LaterAdd(trackID int64) error            { return s.trackListAdd("listen_later", trackID) }
+func (s *Store) LaterRemove(trackID int64) error         { return s.trackListRemove("listen_later", trackID) }
+func (s *Store) LaterCount() int                         { return s.trackListCount("listen_later") }
+func (s *Store) FavoritesList() ([]PlaylistTrack, error) { return s.trackList("favorites") }
+func (s *Store) FavoritesAdd(trackID int64) error        { return s.trackListAdd("favorites", trackID) }
+func (s *Store) FavoritesRemove(trackID int64) error     { return s.trackListRemove("favorites", trackID) }
+func (s *Store) FavoritesCount() int                     { return s.trackListCount("favorites") }
 
 func (s *Store) FavoritesHas(trackID int64) bool {
 	var n int
@@ -147,20 +101,9 @@ type FavAlbum struct {
 }
 
 func (s *Store) FavArtistsList() ([]FavArtist, error) {
-	rows, err := s.DB.Query(`SELECT artist, position, added_at FROM favorite_artists WHERE profile_id = ? ORDER BY position ASC, added_at DESC`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []FavArtist
-	for rows.Next() {
-		var a FavArtist
-		if err := rows.Scan(&a.Artist, &a.Position, &a.AddedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
+	return QueryAll(s.DB, func(rows *sql.Rows, a *FavArtist) error {
+		return rows.Scan(&a.Artist, &a.Position, &a.AddedAt)
+	}, `SELECT artist, position, added_at FROM favorite_artists WHERE profile_id = ? ORDER BY position ASC, added_at DESC`, s.ProfileID)
 }
 
 func (s *Store) FavArtistAdd(artist string) error {
@@ -194,20 +137,9 @@ func (s *Store) FavArtistCount() int {
 }
 
 func (s *Store) FavAlbumsList() ([]FavAlbum, error) {
-	rows, err := s.DB.Query(`SELECT artist, album, position, added_at FROM favorite_albums WHERE profile_id = ? ORDER BY position ASC, added_at DESC`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []FavAlbum
-	for rows.Next() {
-		var a FavAlbum
-		if err := rows.Scan(&a.Artist, &a.Album, &a.Position, &a.AddedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
+	return QueryAll(s.DB, func(rows *sql.Rows, a *FavAlbum) error {
+		return rows.Scan(&a.Artist, &a.Album, &a.Position, &a.AddedAt)
+	}, `SELECT artist, album, position, added_at FROM favorite_albums WHERE profile_id = ? ORDER BY position ASC, added_at DESC`, s.ProfileID)
 }
 
 func (s *Store) FavAlbumAdd(artist, album string) error {
@@ -302,20 +234,12 @@ FROM discover_tips WHERE profile_id = ?`
 	}
 	q += ` ORDER BY score DESC, id DESC LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []DiscoverTip
-	for rows.Next() {
-		var t DiscoverTip
+	return QueryAll(s.DB, func(rows *sql.Rows, t *DiscoverTip) error {
 		var idsJSON string
 		if err := rows.Scan(&t.ID, &t.Kind, &t.Artist, &t.Album, &t.Score, &idsJSON, &t.Explanation, &t.CreatedAt); err != nil {
-			return nil, err
+			return err
 		}
 		_ = json.Unmarshal([]byte(idsJSON), &t.TrackIDs)
-		out = append(out, t)
-	}
-	return out, rows.Err()
+		return nil
+	}, q, args...)
 }

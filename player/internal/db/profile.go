@@ -64,7 +64,9 @@ func (s *Store) TopArtists(limit int) ([]ArtistCount, error) {
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, a *ArtistCount) error {
+		return rows.Scan(&a.Artist, &a.Count)
+	}, `
 SELECT COALESCE(t.artist,'(unknown)'), COUNT(*) AS c
 FROM listening_history h
 JOIN tracks t ON t.id = h.track_id
@@ -73,19 +75,6 @@ WHERE h.profile_id = ? AND h.action IN ('like','finish','track_end')
 GROUP BY 1
 ORDER BY c DESC
 LIMIT ?`, s.ProfileID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ArtistCount
-	for rows.Next() {
-		var a ArtistCount
-		if err := rows.Scan(&a.Artist, &a.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, a)
-	}
-	return out, rows.Err()
 }
 
 type ClusterCount struct {
@@ -135,28 +124,20 @@ ON CONFLICT(profile_id,state_key) DO UPDATE SET
 }
 
 func (s *Store) LoadTasteStates() ([]TasteStateRow, error) {
-	rows, err := s.DB.Query(`
-SELECT state_key, positive_vector, COALESCE(embedding_dim,0),
-       positive_samples, negative_samples,
-       COALESCE(negative_prototypes_json,'')
-FROM taste_states WHERE profile_id = ? ORDER BY state_key`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TasteStateRow
-	for rows.Next() {
-		var row TasteStateRow
+	return QueryAll(s.DB, func(rows *sql.Rows, row *TasteStateRow) error {
 		if err := rows.Scan(
 			&row.Key, &row.PositiveVector, &row.EmbeddingDim,
 			&row.PositiveSamples, &row.NegativeSamples,
 			&row.NegativePrototypesJSON,
 		); err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+		return nil
+	}, `
+SELECT state_key, positive_vector, COALESCE(embedding_dim,0),
+       positive_samples, negative_samples,
+       COALESCE(negative_prototypes_json,'')
+FROM taste_states WHERE profile_id = ? ORDER BY state_key`, s.ProfileID)
 }
 
 type TasteCentroidRow struct {
@@ -203,25 +184,17 @@ INSERT INTO taste_centroids(
 }
 
 func (s *Store) LoadTasteCentroids(algorithmVersion string) ([]TasteCentroidRow, error) {
-	rows, err := s.DB.Query(`
-SELECT idx, vector, embedding_dim, mass, COALESCE(label,''), sample_count, algorithm_version
-FROM taste_centroids WHERE profile_id = ? AND algorithm_version = ? ORDER BY idx`, s.ProfileID, algorithmVersion)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TasteCentroidRow
-	for rows.Next() {
-		var row TasteCentroidRow
+	return QueryAll(s.DB, func(rows *sql.Rows, row *TasteCentroidRow) error {
 		if err := rows.Scan(
 			&row.Index, &row.Vector, &row.EmbeddingDim, &row.Mass,
 			&row.Label, &row.SampleCount, &row.AlgorithmVersion,
 		); err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+		return nil
+	}, `
+SELECT idx, vector, embedding_dim, mass, COALESCE(label,''), sample_count, algorithm_version
+FROM taste_centroids WHERE profile_id = ? AND algorithm_version = ? ORDER BY idx`, s.ProfileID, algorithmVersion)
 }
 
 type TasteSampleRow struct {
@@ -237,7 +210,18 @@ func (s *Store) PositiveTasteSamples(limit int) ([]TasteSampleRow, error) {
 	if limit < 1 {
 		limit = 400
 	}
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, row *TasteSampleRow) error {
+		var at string
+		if err := rows.Scan(&row.TrackID, &at, &row.Weight); err != nil {
+			return err
+		}
+		if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
+			row.At = t
+		} else if t, err := time.Parse(time.RFC3339, at); err == nil {
+			row.At = t
+		}
+		return nil
+	}, `
 SELECT i.track_id,
        COALESCE(i.closed_at, i.played_at, i.queued_at),
        CASE WHEN EXISTS(
@@ -257,32 +241,15 @@ WHERE i.profile_id = ? AND i.legacy=0
   )
 ORDER BY COALESCE(i.closed_at, i.played_at, i.queued_at) DESC
 LIMIT ?`, s.ProfileID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TasteSampleRow
-	for rows.Next() {
-		var row TasteSampleRow
-		var at string
-		if err := rows.Scan(&row.TrackID, &at, &row.Weight); err != nil {
-			return nil, err
-		}
-		if t, err := time.Parse(time.RFC3339Nano, at); err == nil {
-			row.At = t
-		} else if t, err := time.Parse(time.RFC3339, at); err == nil {
-			row.At = t
-		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) TopClusters(limit int) ([]ClusterCount, error) {
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, c *ClusterCount) error {
+		return rows.Scan(&c.ClusterID, &c.Count)
+	}, `
 SELECT COALESCE(f.cluster_id, -1), COUNT(*) AS c
 FROM listening_history h
 JOIN features f ON f.track_id = h.track_id
@@ -292,17 +259,4 @@ WHERE h.profile_id = ? AND h.action IN ('like','finish','track_end')
 GROUP BY 1
 ORDER BY c DESC
 LIMIT ?`, s.ProfileID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ClusterCount
-	for rows.Next() {
-		var c ClusterCount
-		if err := rows.Scan(&c.ClusterID, &c.Count); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	return out, rows.Err()
 }

@@ -158,3 +158,25 @@ func (tx *Tx) Get(ctx context.Context, dest any, query string, args ...any) erro
 func (tx *Tx) Prepare(query string) (*sql.Stmt, error) {
 	return tx.x.Prepare(tx.x.Rebind(query))
 }
+
+type querier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}
+
+// QueryAll runs query and scans every row into a T with scan.
+func QueryAll[T any](q querier, scan func(rows *sql.Rows, v *T) error, query string, args ...any) ([]T, error) {
+	rows, err := q.Query(query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []T
+	for rows.Next() {
+		var v T
+		if err := scan(rows, &v); err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}

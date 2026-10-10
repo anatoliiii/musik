@@ -149,18 +149,7 @@ func (s *Store) CountPlaySessions() (int, error) {
 }
 
 func (s *Store) OldestPlaySessionIDs(limit int) ([]string, error) {
-	rows, err := s.DB.Query(`SELECT id FROM play_sessions WHERE profile_id = ? ORDER BY updated_at ASC LIMIT ?`, s.ProfileID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return QueryAll(s.DB, func(rows *sql.Rows, id *string) error {
+		return rows.Scan(id)
+	}, `SELECT id FROM play_sessions WHERE profile_id = ? ORDER BY updated_at ASC LIMIT ?`, s.ProfileID, limit)
 }

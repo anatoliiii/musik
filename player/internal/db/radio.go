@@ -34,17 +34,10 @@ FROM radio_shares WHERE profile_id = ?`
 		q += ` AND revoked_at IS NULL`
 	}
 	q += ` ORDER BY created_at DESC`
-	rows, err := s.DB.Query(q, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RadioShare
-	for rows.Next() {
-		var sh RadioShare
+	return QueryAll(s.DB, func(rows *sql.Rows, sh *RadioShare) error {
 		var revoked, last sql.NullString
 		if err := rows.Scan(&sh.Token, &sh.Name, &sh.CreatedAt, &revoked, &last, &sh.ListenCount); err != nil {
-			return nil, err
+			return err
 		}
 		if revoked.Valid {
 			sh.RevokedAt = &revoked.String
@@ -53,9 +46,8 @@ FROM radio_shares WHERE profile_id = ?`
 			sh.LastListenAt = &last.String
 		}
 		sh.Active = !revoked.Valid
-		out = append(out, sh)
-	}
-	return out, rows.Err()
+		return nil
+	}, q, s.ProfileID)
 }
 
 func (s *Store) GetActiveRadioShare(token string) (RadioShare, bool, error) {

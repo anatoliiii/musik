@@ -30,25 +30,13 @@ func (s *Store) LatestRecommendationPolicies(limit int) ([]RecommendationPolicyR
 	if limit < 1 {
 		limit = 5
 	}
-	rows, err := s.DB.Query(`
-SELECT request_id, reason, policy_version, COALESCE(model_version,''),
-       candidate_count, latency_ms, created_at, COALESCE(policy_json,'')
-FROM recommendation_requests
-WHERE profile_id = ?
-ORDER BY created_at DESC LIMIT ?`, s.ProfileID, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []RecommendationPolicyRow
-	for rows.Next() {
-		var row RecommendationPolicyRow
+	return QueryAll(s.DB, func(rows *sql.Rows, row *RecommendationPolicyRow) error {
 		var raw string
 		if err := rows.Scan(
 			&row.RequestID, &row.Reason, &row.PolicyVersion, &row.ModelVersion,
 			&row.CandidateCount, &row.LatencyMS, &row.CreatedAt, &raw,
 		); err != nil {
-			return nil, err
+			return err
 		}
 		if raw != "" {
 			var policy map[string]any
@@ -56,9 +44,13 @@ ORDER BY created_at DESC LIMIT ?`, s.ProfileID, limit)
 				row.Policy = policy
 			}
 		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+		return nil
+	}, `
+SELECT request_id, reason, policy_version, COALESCE(model_version,''),
+       candidate_count, latency_ms, created_at, COALESCE(policy_json,'')
+FROM recommendation_requests
+WHERE profile_id = ?
+ORDER BY created_at DESC LIMIT ?`, s.ProfileID, limit)
 }
 
 func (s *Store) ListTrainingRuns(limit int) ([]TrainingRunRow, error) {

@@ -44,27 +44,13 @@ WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
 // LoadCatalogRows reads the profile-independent fields of every ready track,
 // without embeddings; LoadEmbeddings fetches the vectors that changed.
 func (s *Store) LoadCatalogRows() ([]TrackRow, error) {
-	rows, err := s.DB.Query(`
-SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.artist_segments,''),
-       ` + albumArtistSQL + ` AS album_artist, COALESCE(t.album,''),
-       COALESCE(t.duration,0), COALESCE(t.file_md5,''), COALESCE(t.created_at,''),
-       COALESCE(t.artwork_path,''), COALESCE(f.cluster_id, -1),
-       COALESCE(f.embedding_dim,0), COALESCE(f.computed_at,''),
-       COALESCE(t.year, 0), f.bpm, COALESCE(f.lufs, t.lufs), COALESCE(f.key_name,'')` + readyTrackWhere + `
-ORDER BY t.id`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []TrackRow
-	for rows.Next() {
-		var tr TrackRow
+	return QueryAll(s.DB, func(rows *sql.Rows, tr *TrackRow) error {
 		var bpm, lufs sql.NullFloat64
 		var segments string
 		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.AlbumArtist, &tr.Album,
 			&tr.Duration, &tr.FileMD5, &tr.CreatedAt, &tr.ArtworkPath, &tr.ClusterID,
 			&tr.Dim, &tr.EmbeddingStamp, &tr.Year, &bpm, &lufs, &tr.KeyName); err != nil {
-			return nil, err
+			return err
 		}
 		tr.ArtistSegments = parseSegments(segments)
 		if bpm.Valid {
@@ -73,9 +59,15 @@ ORDER BY t.id`)
 		if lufs.Valid {
 			tr.LUFS, tr.HasLUFS = lufs.Float64, true
 		}
-		out = append(out, tr)
-	}
-	return out, rows.Err()
+		return nil
+	}, `
+SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.artist_segments,''),
+       `+albumArtistSQL+` AS album_artist, COALESCE(t.album,''),
+       COALESCE(t.duration,0), COALESCE(t.file_md5,''), COALESCE(t.created_at,''),
+       COALESCE(t.artwork_path,''), COALESCE(f.cluster_id, -1),
+       COALESCE(f.embedding_dim,0), COALESCE(f.computed_at,''),
+       COALESCE(t.year, 0), f.bpm, COALESCE(f.lufs, t.lufs), COALESCE(f.key_name,'')`+readyTrackWhere+`
+ORDER BY t.id`)
 }
 
 // LoadEmbeddings returns the stored embeddings of ids, read in batches.
@@ -194,23 +186,15 @@ ORDER BY t.id`
 		q += ` LIMIT ?`
 		args = append(args, limit)
 	}
-	rows, err := s.DB.Query(q, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []CatalogTrack
-	for rows.Next() {
-		var tr CatalogTrack
+	return QueryAll(s.DB, func(rows *sql.Rows, tr *CatalogTrack) error {
 		var segments string
 		if err := rows.Scan(&tr.ID, &tr.Path, &tr.Title, &tr.Artist, &segments, &tr.AlbumArtist, &tr.Album,
 			&tr.Duration, &tr.Artwork, &tr.Cluster, &tr.Status); err != nil {
-			return nil, err
+			return err
 		}
 		tr.Artists = parseSegments(segments)
-		out = append(out, tr)
-	}
-	return out, rows.Err()
+		return nil
+	}, q, args...)
 }
 
 func (s *Store) TrackPath(id int64) (string, error) {

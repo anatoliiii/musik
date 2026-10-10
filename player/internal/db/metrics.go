@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"fmt"
 	"math"
 	"time"
@@ -170,26 +171,18 @@ ORDER BY slice_key`, expression)
 	// Stored instants are UTC ISO-8601 text; a whole-second cutoff without a
 	// zone suffix orders correctly against both "Z" and "+00:00" forms.
 	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02T15:04:05")
-	rows, err := s.DB.Query(query, s.ProfileID, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []MetricSlice
-	for rows.Next() {
-		var slice MetricSlice
+	return QueryAll(s.DB, func(rows *sql.Rows, slice *MetricSlice) error {
 		slice.Dimension = dimension
 		if err := rows.Scan(
 			&slice.Value, &slice.Impressions, &slice.Played, &slice.Finished,
 			&slice.Partial, &slice.EarlySkips, &slice.Superseded,
 			&slice.Abandoned, &slice.Likes, &slice.UniqueArtists,
 		); err != nil {
-			return nil, err
+			return err
 		}
 		slice.finish()
-		out = append(out, slice)
-	}
-	return out, rows.Err()
+		return nil
+	}, query, s.ProfileID, cutoff)
 }
 
 func (m *MetricSlice) finish() {

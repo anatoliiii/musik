@@ -47,19 +47,10 @@ ON CONFLICT(profile_id,owner_scope) DO UPDATE SET
 }
 
 func (s *Store) LoadExploreArms() ([]ExploreArmRow, error) {
-	rows, err := s.DB.Query(`
-SELECT arm_key, arm_kind, alpha, beta, successes, failures, COALESCE(last_decay_at, '')
-FROM explore_arms WHERE profile_id = ?`, s.ProfileID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ExploreArmRow
-	for rows.Next() {
-		var row ExploreArmRow
+	return QueryAll(s.DB, func(rows *sql.Rows, row *ExploreArmRow) error {
 		var decay string
 		if err := rows.Scan(&row.ArmKey, &row.ArmKind, &row.Alpha, &row.Beta, &row.Successes, &row.Failures, &decay); err != nil {
-			return nil, err
+			return err
 		}
 		if decay != "" {
 			if ts, err := time.Parse(time.RFC3339Nano, decay); err == nil {
@@ -68,9 +59,10 @@ FROM explore_arms WHERE profile_id = ?`, s.ProfileID)
 				row.LastDecayAt = ts
 			}
 		}
-		out = append(out, row)
-	}
-	return out, rows.Err()
+		return nil
+	}, `
+SELECT arm_key, arm_kind, alpha, beta, successes, failures, COALESCE(last_decay_at, '')
+FROM explore_arms WHERE profile_id = ?`, s.ProfileID)
 }
 
 func (s *Store) UpdateExploreArm(key, kind string, success bool) error {

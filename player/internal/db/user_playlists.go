@@ -225,7 +225,16 @@ FROM playlists WHERE profile_id = ?`
 }
 
 func (s *Store) ListPlaylistItems(playlistID int64) ([]UserPlaylistItem, error) {
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, item *UserPlaylistItem) error {
+		if err := rows.Scan(&item.ItemID, &item.Position, &item.TrackID,
+			&item.Artist, &item.Title, &item.Album, &item.Duration,
+			&item.Source, &item.Note, &item.Explanation, &item.AddedAt,
+			&item.UnresolvedArtist, &item.UnresolvedTitle, &item.UnresolvedPath); err != nil {
+			return err
+		}
+		item.Unresolved = item.TrackID == 0
+		return nil
+	}, `
 SELECT COALESCE(pt.item_id,''), pt.position, COALESCE(pt.track_id,0),
        COALESCE(t.artist, pt.unresolved_artist, ''),
        COALESCE(t.title, pt.unresolved_title, ''),
@@ -237,23 +246,6 @@ FROM playlist_tracks pt
 LEFT JOIN tracks t ON t.id = pt.track_id
 WHERE pt.profile_id = ? AND pt.playlist_id = ?
 ORDER BY pt.position`, s.ProfileID, playlistID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []UserPlaylistItem
-	for rows.Next() {
-		var item UserPlaylistItem
-		if err := rows.Scan(&item.ItemID, &item.Position, &item.TrackID,
-			&item.Artist, &item.Title, &item.Album, &item.Duration,
-			&item.Source, &item.Note, &item.Explanation, &item.AddedAt,
-			&item.UnresolvedArtist, &item.UnresolvedTitle, &item.UnresolvedPath); err != nil {
-			return nil, err
-		}
-		item.Unresolved = item.TrackID == 0
-		out = append(out, item)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) AddPlaylistItem(playlistID int64, item UserPlaylistItem) (UserPlaylistItem, error) {

@@ -14,22 +14,11 @@ type ArtistPhoto struct {
 }
 
 func (s *Store) ListArtistPhotos() ([]ArtistPhoto, error) {
-	rows, err := s.DB.Query(`
+	return QueryAll(s.DB, func(rows *sql.Rows, p *ArtistPhoto) error {
+		return rows.Scan(&p.ID, &p.NameKey, &p.Path)
+	}, `
 SELECT id, name_key, path FROM artist_photos
 WHERE status = 'found' AND COALESCE(path, '') != ''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []ArtistPhoto
-	for rows.Next() {
-		var p ArtistPhoto
-		if err := rows.Scan(&p.ID, &p.NameKey, &p.Path); err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
 }
 
 func (s *Store) ArtistPhotoPath(id int64) (string, bool, error) {
