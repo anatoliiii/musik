@@ -2875,9 +2875,6 @@ function tasteStatus(value) {
   }[value] || { title: "Твой вкус", chip: "—", lead: "" };
 }
 
-function maturityLabel(value) {
-  return tasteStatus(value).title;
-}
 
 function renderMonitor(p, week, rec) {
   const outcomes = rec.outcomes || week || {};
