@@ -201,6 +201,7 @@ func (s *Server) requestServer(r *http.Request) (*Server, error) {
 	cfg.RankerPath = filepath.Join(filepath.Dir(cfg.RankerPath), "profiles", profileID, "ranker.json")
 	runtime := newServer(cfg, s.Store.ForProfile(profileID), index.New(cfg), taste.New(), s.Static, s.backgroundIO)
 	runtime.App.ProfileRuntime = true
+	runtime.App.Catalog = s.App.Catalog
 	if err := runtime.Reload(); err != nil {
 		return nil, err
 	}

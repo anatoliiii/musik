@@ -3,7 +3,6 @@ package index
 import (
 	"container/heap"
 	"encoding/binary"
-	"fmt"
 	"math"
 	"runtime"
 	"sort"
@@ -47,7 +46,9 @@ type Meta struct {
 }
 
 type Index struct {
-	mu     sync.RWMutex
+	mu sync.RWMutex
+	// IDs, Meta and Matrix belong to the shared catalog and are read-only.
+	// Meta carries catalog fields only; MetaAt adds this profile's counters.
 	IDs    []int64
 	Meta   []Meta
 	Matrix []float32 // row-major N*D
@@ -63,6 +64,8 @@ type Index struct {
 	artists      []GroupCentroid
 	albums       []GroupCentroid
 	cfg          config.Config
+	catalog      *Catalog
+	stats        []Stats // this profile's counters, by row
 }
 
 type ScoredRow struct {
@@ -99,130 +102,62 @@ func SongKey(artist, title string) string {
 	return a + "|" + t
 }
 
+// Load builds a private catalog from rows that carry embeddings and the
+// counters of one profile. Servers share a catalog through Attach instead.
 func (idx *Index) Load(rows []db.TrackRow) error {
-	if len(rows) == 0 {
-		idx.mu.Lock()
-		idx.IDs, idx.Meta, idx.Matrix = nil, nil, nil
-		idx.N, idx.D = 0, 0
-		idx.idRow = map[int64]int{}
-		idx.md5ToIDs = map[string][]int64{}
-		idx.songKeyToIDs = map[string][]int64{}
-		idx.artistRows = map[string][]int{}
-		idx.albumRows = map[string][]int{}
-		idx.artistAlbums = map[string][]int{}
-		idx.artists, idx.albums = nil, nil
-		idx.mu.Unlock()
-		return nil
+	cat, err := BuildCatalog(rows)
+	if err != nil {
+		return err
 	}
-	dim := rows[0].Dim
-	if dim <= 0 {
-		dim = len(rows[0].Embedding) / 4
-	}
-	n := len(rows)
-	mat := make([]float32, n*dim)
-	ids := make([]int64, n)
-	meta := make([]Meta, n)
-	idRow := make(map[int64]int, n)
-	md5ToIDs := make(map[string][]int64)
-	songKeyToIDs := make(map[string][]int64)
-	artistRows := make(map[string][]int)
-	albumRows := make(map[string][]int)
-	artistAlbums := make(map[string][]int)
-	artistNames := make(map[string]string)
-	albumNames := make(map[string][2]string)
-
-	for i, r := range rows {
-		d := r.Dim
-		if d <= 0 {
-			d = len(r.Embedding) / 4
-		}
-		if d != dim {
-			return fmt.Errorf("inconsistent embedding dim: %d vs %d", d, dim)
-		}
-		vec := BytesToFloat32(r.Embedding)
-		if len(vec) < dim {
-			return fmt.Errorf("short embedding track %d", r.ID)
-		}
-		Normalize(vec[:dim])
-		copy(mat[i*dim:(i+1)*dim], vec[:dim])
-		ids[i] = r.ID
-		created, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
-		if created.IsZero() {
-			created, _ = time.Parse(time.RFC3339, r.CreatedAt)
-		}
-		lastPlayed, _ := time.Parse(time.RFC3339Nano, r.LastPlayedAt)
-		if lastPlayed.IsZero() {
-			lastPlayed, _ = time.Parse(time.RFC3339, r.LastPlayedAt)
-		}
-		meta[i] = Meta{
-			ID: r.ID, Path: r.Path, Title: r.Title, Artist: r.Artist,
-			Artists: r.ArtistSegments, AlbumArtist: r.AlbumArtist, Album: r.Album,
-			Duration: r.Duration, FileMD5: r.FileMD5, CreatedAt: created,
-			ArtworkPath: r.ArtworkPath, ClusterID: r.ClusterID,
+	stats := make(map[int64]db.TrackStats, len(rows))
+	for _, r := range rows {
+		stats[r.ID] = db.TrackStats{
 			Shown: r.Shown, SkipEarly: r.SkipEarly, Completed: r.Completed,
-			Year: r.Year, BPM: r.BPM, LUFS: r.LUFS, HasBPM: r.HasBPM, HasLUFS: r.HasLUFS,
-			KeyName: r.KeyName, Plays: r.Plays, Finishes: r.Finishes, EarlySkips: r.EarlySkips,
-			LastPlayedAt: lastPlayed,
-		}
-		idRow[r.ID] = i
-		if r.FileMD5 != "" {
-			md5ToIDs[r.FileMD5] = append(md5ToIDs[r.FileMD5], r.ID)
-		}
-		if key := SongKey(r.Artist, r.Title); key != "" {
-			songKeyToIDs[key] = append(songKeyToIDs[key], r.ID)
-		}
-		albumKey := normName(r.Album)
-		// A credited album (a compilation) is one album of its album artist;
-		// otherwise every credited track artist owns the album.
-		if owner := strings.TrimSpace(r.AlbumArtist); owner != "" && albumKey != "" {
-			aKey := normName(owner) + "\x00" + albumKey
-			artistAlbums[aKey] = append(artistAlbums[aKey], i)
-			if _, ok := albumNames[aKey]; !ok {
-				albumNames[aKey] = [2]string{owner, strings.TrimSpace(r.Album)}
-			}
-		}
-		for _, name := range trackArtistNames(r.Artist, r.ArtistSegments) {
-			key := normName(name)
-			if key == "" {
-				continue
-			}
-			artistRows[key] = append(artistRows[key], i)
-			if _, ok := artistNames[key]; !ok {
-				artistNames[key] = name
-			}
-			if albumKey != "" && strings.TrimSpace(r.AlbumArtist) == "" {
-				aKey := key + "\x00" + albumKey
-				artistAlbums[aKey] = append(artistAlbums[aKey], i)
-				if _, ok := albumNames[aKey]; !ok {
-					albumNames[aKey] = [2]string{name, strings.TrimSpace(r.Album)}
-				}
-			}
-		}
-		if albumKey != "" {
-			albumRows[albumKey] = append(albumRows[albumKey], i)
+			Plays: r.Plays, Finishes: r.Finishes, EarlySkips: r.EarlySkips,
+			LastPlayedAt: r.LastPlayedAt,
 		}
 	}
-	artists := buildGroupCentroids(mat, dim, artistRows, func(key string) (string, string) {
-		return artistNames[key], ""
-	})
-	albums := buildGroupCentroids(mat, dim, artistAlbums, func(key string) (string, string) {
-		names := albumNames[key]
-		return names[0], names[1]
-	})
-
-	idx.mu.Lock()
-	idx.IDs, idx.Meta, idx.Matrix = ids, meta, mat
-	idx.N, idx.D = n, dim
-	idx.idRow = idRow
-	idx.md5ToIDs = md5ToIDs
-	idx.songKeyToIDs = songKeyToIDs
-	idx.artistRows = artistRows
-	idx.albumRows = albumRows
-	idx.artistAlbums = artistAlbums
-	idx.artists = artists
-	idx.albums = albums
-	idx.mu.Unlock()
+	idx.Attach(cat, stats)
 	return nil
+}
+
+// Attach points the index at a shared catalog and sets this profile's
+// counters. Only the counters are allocated per profile.
+func (idx *Index) Attach(cat *Catalog, stats map[int64]db.TrackStats) {
+	perRow := make([]Stats, cat.n)
+	for id, st := range stats {
+		if row, ok := cat.idRow[id]; ok {
+			perRow[row] = statsOf(st)
+		}
+	}
+	idx.mu.Lock()
+	idx.catalog = cat
+	idx.IDs, idx.Meta, idx.Matrix = cat.ids, cat.meta, cat.matrix
+	idx.N, idx.D = cat.n, cat.d
+	idx.idRow = cat.idRow
+	idx.md5ToIDs = cat.md5ToIDs
+	idx.songKeyToIDs = cat.songKeyToIDs
+	idx.artistRows = cat.artistRows
+	idx.albumRows = cat.albumRows
+	idx.artistAlbums = cat.artistAlbums
+	idx.artists = cat.artists
+	idx.albums = cat.albums
+	idx.stats = perRow
+	idx.mu.Unlock()
+}
+
+// Catalog is the shared catalog this index reads, nil before the first load.
+func (idx *Index) Catalog() *Catalog {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return idx.catalog
+}
+
+func (idx *Index) statsLocked(row int) Stats {
+	if row < 0 || row >= len(idx.stats) {
+		return Stats{}
+	}
+	return idx.stats[row]
 }
 
 // CloneIDs returns trackID plus all MD5 / artist+title duplicates (deduped).
@@ -588,7 +523,11 @@ func (idx *Index) MetaAt(row int) Meta {
 	if row < 0 || row >= idx.N {
 		return Meta{}
 	}
-	return idx.Meta[row]
+	m := idx.Meta[row]
+	st := idx.statsLocked(row)
+	m.Shown, m.SkipEarly, m.Completed = st.Shown, st.SkipEarly, st.Completed
+	m.Plays, m.Finishes, m.EarlySkips, m.LastPlayedAt = st.Plays, st.Finishes, st.EarlySkips, st.LastPlayedAt
+	return m
 }
 
 func (idx *Index) NewBoost(row int, now time.Time) float32 {
@@ -598,7 +537,8 @@ func (idx *Index) NewBoost(row int, now time.Time) float32 {
 		return 0
 	}
 	m := idx.Meta[row]
-	if m.SkipEarly >= 3 {
+	st := idx.statsLocked(row)
+	if st.SkipEarly >= 3 {
 		return 0
 	}
 	if m.CreatedAt.IsZero() {
@@ -619,31 +559,31 @@ func (idx *Index) NewBoost(row int, now time.Time) float32 {
 	if gamma < 1 {
 		gamma = 5
 	}
-	boost := idx.cfg.NewBoostBeta * math.Exp(-ageDays/tau) * math.Exp(-float64(m.Shown)/gamma)
+	boost := idx.cfg.NewBoostBeta * math.Exp(-ageDays/tau) * math.Exp(-float64(st.Shown)/gamma)
 	return float32(boost)
 }
 
 func (idx *Index) BumpShownLocal(id int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if r, ok := idx.idRow[id]; ok {
-		idx.Meta[r].Shown++
+	if r, ok := idx.idRow[id]; ok && r < len(idx.stats) {
+		idx.stats[r].Shown++
 	}
 }
 
 func (idx *Index) BumpSkipEarlyLocal(id int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if r, ok := idx.idRow[id]; ok {
-		idx.Meta[r].SkipEarly++
+	if r, ok := idx.idRow[id]; ok && r < len(idx.stats) {
+		idx.stats[r].SkipEarly++
 	}
 }
 
 func (idx *Index) BumpCompletedLocal(id int64) {
 	idx.mu.Lock()
 	defer idx.mu.Unlock()
-	if r, ok := idx.idRow[id]; ok {
-		idx.Meta[r].Completed++
+	if r, ok := idx.idRow[id]; ok && r < len(idx.stats) {
+		idx.stats[r].Completed++
 	}
 }
 

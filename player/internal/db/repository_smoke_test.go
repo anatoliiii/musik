@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -208,4 +209,54 @@ func TestRepositorySmoke(t *testing.T) {
 			t.Fatalf("done=%+v", done)
 		}
 	})
+}
+
+func TestCatalogRowsEmbeddingsAndProfileStats(t *testing.T) {
+	store, _, _ := openTestTarget(t)
+	ctx := context.Background()
+	insertTracks(t, store, 3)
+	for id := 1; id <= 3; id++ {
+		status := "ready"
+		if id == 3 {
+			status = "pending"
+		}
+		if _, err := store.DB.Exec(`INSERT INTO features(track_id, embedding, embedding_dim, status, computed_at) VALUES (?, ?, 1, ?, ?)`,
+			id, []byte{0, 0, 128, 63}, status, fmt.Sprintf("2026-01-0%dT00:00:00Z", id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := store.LoadCatalogRows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].ID != 1 || rows[1].EmbeddingStamp != "2026-01-02T00:00:00Z" || rows[0].Embedding != nil {
+		t.Fatalf("catalog rows=%+v", rows)
+	}
+	blobs, err := store.LoadEmbeddings([]int64{2, 3})
+	if err != nil || len(blobs) != 2 || len(blobs[2]) != 4 {
+		t.Fatalf("embeddings=%v err=%v", blobs, err)
+	}
+
+	_, other, err := store.CreateUserWithDefaultProfile(ctx, "Other listener")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := "2026-02-01T00:00:00Z"
+	if _, err := store.DB.Exec(`INSERT INTO rec_stats(profile_id, track_id, shown, skipped_early, completed, updated_at) VALUES (?, 1, 4, 1, 2, ?)`, store.ProfileID, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DB.Exec(`INSERT INTO track_stats(profile_id, track_id, plays, finishes, early_skips, last_played_at, updated_at) VALUES (?, 1, 5, 3, 1, ?, ?), (?, 2, 9, 0, 0, ?, ?)`,
+		store.ProfileID, now, now, other.ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := store.LoadTrackStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stats[1]; got.Shown != 4 || got.SkipEarly != 1 || got.Completed != 2 || got.Plays != 5 || got.Finishes != 3 || got.LastPlayedAt != now {
+		t.Fatalf("stats[1]=%+v", got)
+	}
+	if _, leaked := stats[2]; leaked {
+		t.Fatal("another profile's stats were loaded")
+	}
 }

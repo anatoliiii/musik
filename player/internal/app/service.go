@@ -30,8 +30,10 @@ type Service struct {
 	Taste *taste.Profile
 	Play  *playback.Engine
 	HTTP  *http.Client
-	// ProfileRuntime marks a per-profile copy of the catalog index. Shared
-	// catalog derivatives are written once by the installation runtime.
+	// Catalog is the process-wide catalog every runtime's index attaches to.
+	Catalog *index.CatalogSource
+	// ProfileRuntime marks a per-profile runtime. It attaches to the catalog
+	// the installation runtime refreshed and writes no shared derivatives.
 	ProfileRuntime bool
 }
 
@@ -39,17 +41,23 @@ func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile
 	if client == nil {
 		client = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Service{Cfg: cfg, Store: store, Idx: idx, Taste: tp, Play: play, HTTP: client}
+	return &Service{Cfg: cfg, Store: store, Idx: idx, Taste: tp, Play: play, HTTP: client, Catalog: index.NewCatalogSource(store)}
 }
 
 func (s *Service) Reload() error {
-	rows, err := s.Store.LoadReadyTracks()
+	refresh := s.Catalog.Refresh
+	if s.ProfileRuntime {
+		refresh = s.Catalog.Current
+	}
+	cat, err := refresh()
 	if err != nil {
 		return err
 	}
-	if err := s.Idx.Load(rows); err != nil {
+	stats, err := s.Store.LoadTrackStats()
+	if err != nil {
 		return err
 	}
+	s.Idx.Attach(cat, stats)
 	pos, neg, _ := s.Store.ListenSignalCounts()
 	if blob, err := s.Store.LatestProfile("global"); err == nil && len(blob) > 0 {
 		v := index.BytesToFloat32(blob)

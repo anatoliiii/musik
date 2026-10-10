@@ -45,6 +45,9 @@ type TrackRow struct {
 	ClusterID      int
 	Embedding      []byte
 	Dim            int
+	// EmbeddingStamp is features.computed_at: it changes whenever the
+	// embedding is rewritten, so a reload can keep unchanged vectors.
+	EmbeddingStamp string
 	Shown          int
 	SkipEarly      int
 	Completed      int
