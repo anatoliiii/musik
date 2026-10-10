@@ -39,11 +39,6 @@ func TestRepositorySmoke(t *testing.T) {
 		}
 		must(store.UpsertPlaySession(PlaySessionRow{ID: "smoke-session", Mode: "radio", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano)}))
 		must(store.SetSessionContexts("smoke-session", []string{created.ID}))
-		active, err := store.ActiveSessionContexts("smoke-session")
-		must(err)
-		if len(active) != 1 || active[0] != created.ID {
-			t.Fatalf("active=%v", active)
-		}
 	})
 
 	t.Run("sessions", func(t *testing.T) {
@@ -59,17 +54,6 @@ func TestRepositorySmoke(t *testing.T) {
 		}
 	})
 
-	t.Run("entity vectors", func(t *testing.T) {
-		must(store.ReplaceEntityVectors("", []EntityVector{{Type: "artist", Key: "a", Embedding: []byte{0, 0, 128, 63}, Dim: 1, TrackCount: 2}}))
-		rows, err := store.LoadEntityVectors("")
-		must(err)
-		one, err := store.EntityVector("artist", "a", "")
-		must(err)
-		if len(rows) != 1 || one == nil || one.TrackCount != 2 {
-			t.Fatalf("rows=%v one=%+v", rows, one)
-		}
-	})
-
 	t.Run("impressions", func(t *testing.T) {
 		requestID := NewID()
 		pending, abandoned := NewID(), NewID()
@@ -78,27 +62,11 @@ func TestRepositorySmoke(t *testing.T) {
 				{ImpressionID: pending, SessionID: "s-imp", TrackID: 1, Source: "exploit"},
 				{ImpressionID: abandoned, SessionID: "s-imp", TrackID: 2, Source: "exploit"},
 			}, nil))
-		must(store.ClosePendingImpressions("s-imp", "superseded", []string{pending}))
 		must(store.AbandonSessionImpressions("s-imp"))
 		var outcomes []string
 		must(store.DB.Select(ctx, &outcomes, `SELECT outcome FROM recommendation_impressions WHERE profile_id = ? AND session_id = 's-imp' ORDER BY track_id`, store.ProfileID))
-		if len(outcomes) != 2 || outcomes[0] != "superseded" || outcomes[1] != "abandoned" {
+		if len(outcomes) != 2 || outcomes[0] != "abandoned" || outcomes[1] != "abandoned" {
 			t.Fatalf("outcomes=%v", outcomes)
-		}
-	})
-
-	t.Run("transition rebuild", func(t *testing.T) {
-		for i, trackID := range []int64{1, 2} {
-			_, err := store.ApplyLifecycleEvent(LifecycleEvent{EventID: NewID(), Type: "track_end", TrackID: trackID,
-				SessionID: "s-tr", Outcome: "finished", Reason: map[bool]string{true: "completed"}[i == 0]})
-			must(err)
-		}
-		n, err := store.RebuildTransitionStats()
-		must(err)
-		weights, err := store.LoadTransitionStatsFrom(1)
-		must(err)
-		if n != 1 || weights[2] <= 0 {
-			t.Fatalf("rebuilt=%d weights=%v", n, weights)
 		}
 	})
 
@@ -154,18 +122,12 @@ func TestRepositorySmoke(t *testing.T) {
 		must(err)
 		must(store.TagTrack(tag.ID, 1))
 		must(store.TagTrack(tag.ID, 1))
-		ids, err := store.TrackIDsForTagNames([]string{" chill "})
-		must(err)
 		tags, err := store.ListCustomTags()
 		must(err)
-		if len(ids) != 1 || len(tags) != 1 || tags[0].TrackCount != 1 {
-			t.Fatalf("ids=%v tags=%+v", ids, tags)
+		if len(tags) != 1 || tags[0].TrackCount != 1 {
+			t.Fatalf("tags=%+v", tags)
 		}
 		must(store.UntagTrack(tag.ID, 1))
-		must(store.ArchiveCustomTag(tag.ID))
-		favorite := true
-		must(store.SetTrackPreference(2, "like", &favorite))
-		must(store.SetTrackPreference(2, "neutral", nil))
 		must(store.FavAlbumAdd("Artist", "Album"))
 		must(store.FavAlbumRemove("Artist", "Album"))
 		if store.FavAlbumHas("Artist", "Album") {
@@ -182,11 +144,6 @@ func TestRepositorySmoke(t *testing.T) {
 			{UnresolvedArtist: "ARTIST", UnresolvedTitle: "title"},
 			{UnresolvedPath: "/elsewhere/T-3.FLAC"},
 		}))
-		resolved, err := store.ResolvePlaylistEntries()
-		must(err)
-		if resolved != 2 {
-			t.Fatalf("resolved=%d, want artist/title and file-name matches", resolved)
-		}
 		if id, ok, err := store.MatchTrack("", "", "/x/t_%.flac"); err != nil || ok {
 			t.Fatalf("LIKE wildcards must match literally: id=%d ok=%v err=%v", id, ok, err)
 		}

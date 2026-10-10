@@ -146,13 +146,6 @@ func (idx *Index) Attach(cat *Catalog, stats map[int64]db.TrackStats) {
 	idx.mu.Unlock()
 }
 
-// Catalog is the shared catalog this index reads, nil before the first load.
-func (idx *Index) Catalog() *Catalog {
-	idx.mu.RLock()
-	defer idx.mu.RUnlock()
-	return idx.catalog
-}
-
 func (idx *Index) statsLocked(row int) Stats {
 	if row < 0 || row >= len(idx.stats) {
 		return Stats{}
@@ -618,21 +611,6 @@ func Normalize(v []float32) {
 	for i := range v {
 		v[i] *= inv
 	}
-}
-
-func Quantile(vals []float32, q float64) float32 {
-	if len(vals) == 0 {
-		return 0
-	}
-	cp := append([]float32(nil), vals...)
-	sort.Slice(cp, func(i, j int) bool { return cp[i] < cp[j] })
-	pos := q * float64(len(cp)-1)
-	i := int(pos)
-	if i >= len(cp)-1 {
-		return cp[len(cp)-1]
-	}
-	frac := float32(pos - float64(i))
-	return cp[i]*(1-frac) + cp[i+1]*frac
 }
 
 // AlbumOwner is who the track's album is listed under: the album-level

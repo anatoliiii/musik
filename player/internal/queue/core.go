@@ -11,24 +11,24 @@ import (
 
 // CoreOpts is the single candidate → feature → score → select path.
 type CoreOpts struct {
-	CurrentID    int64
-	Taste        []float32
-	Session      []float32
-	Daypart      []float32
-	Centroids    [][]float32
-	Contexts     []taste.ContextBlend
-	Exclude      map[int64]bool
-	Rules        *rules.Evaluator
-	Transitions  map[int64]float64
-	Profile      TransitionProfile
-	Size         int
-	Now          time.Time
-	Model        *Model
-	Negative     func([]float32) float64
-	DaypartName  string
-	ContextIDs   []string
-	Discover   bool
-	Allocation *ExploreDecision
+	CurrentID   int64
+	Taste       []float32
+	Session     []float32
+	Daypart     []float32
+	Centroids   [][]float32
+	Contexts    []taste.ContextBlend
+	Exclude     map[int64]bool
+	Rules       *rules.Evaluator
+	Transitions map[int64]float64
+	Profile     TransitionProfile
+	Size        int
+	Now         time.Time
+	Model       *Model
+	Negative    func([]float32) float64
+	DaypartName string
+	ContextIDs  []string
+	Discover    bool
+	Allocation  *ExploreDecision
 }
 
 func (b *Builder) BuildCore(opts CoreOpts) []Item {
@@ -93,8 +93,8 @@ func (b *Builder) BuildCore(opts CoreOpts) []Item {
 			SimSession: float64(cand.Sims.Session), SimDaypart: float64(cand.Sims.Daypart),
 			SimMood: ctxSims["mood"], SimPlace: ctxSims["place"], SimActivity: ctxSims["activity"],
 			SimCentroidMax: float64(cand.Sims.CentroidMax),
-			TransitionW: normTransition(opts.Transitions[meta.ID], opts.Transitions),
-			Current: currentMeta, Sources: cand.Sources,
+			TransitionW:    normTransition(opts.Transitions[meta.ID], opts.Transitions),
+			Current:        currentMeta, Sources: cand.Sources,
 			NewBoost:        float64(b.Idx.NewBoost(cand.Row, opts.Now)),
 			NegativePenalty: neg,
 		})

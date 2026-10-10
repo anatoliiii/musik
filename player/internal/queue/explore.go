@@ -136,17 +136,6 @@ func DecayArm(arm Arm, now time.Time) Arm {
 	return arm
 }
 
-func UpdateArm(arm Arm, success bool) Arm {
-	if success {
-		arm.Alpha++
-		arm.Successes++
-	} else {
-		arm.Beta++
-		arm.Failures++
-	}
-	return arm
-}
-
 func ExploreReady(counts map[string]int) bool {
 	for _, src := range ExploreSources() {
 		if counts[src] < MinSourceOutcomes {

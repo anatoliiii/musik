@@ -305,26 +305,6 @@ UPDATE play_sessions SET active_contexts_json = ? WHERE profile_id = ? AND id = 
 	return tx.Commit()
 }
 
-func (s *Store) ActiveSessionContexts(sessionID string) ([]string, error) {
-	rows, err := s.DB.Query(`
-SELECT context_id FROM session_contexts
-WHERE profile_id = ? AND session_id = ? AND deactivated_at IS NULL
-ORDER BY activated_at`, s.ProfileID, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		out = append(out, id)
-	}
-	return out, rows.Err()
-}
-
 func (s *Store) AttachRequestContexts(requestID string, contextIDs []string) error {
 	for _, id := range contextIDs {
 		if strings.TrimSpace(id) == "" {

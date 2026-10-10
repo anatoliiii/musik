@@ -45,15 +45,3 @@ func TestDecideExploreRespectsBoundsWhenReady(t *testing.T) {
 		t.Fatal("missing quotas")
 	}
 }
-
-func TestBanditAcceptanceRaisesExploreShare(t *testing.T) {
-	accept := Arm{Key: ArmAggregate, Kind: "aggregate", Alpha: ExplorePriorAlpha, Beta: ExplorePriorBeta}
-	reject := accept
-	for i := 0; i < 40; i++ {
-		accept = UpdateArm(accept, true)
-		reject = UpdateArm(reject, false)
-	}
-	if accept.Alpha/(accept.Alpha+accept.Beta) <= reject.Alpha/(reject.Alpha+reject.Beta) {
-		t.Fatalf("acceptance should raise explore mean: accept=%v reject=%v", accept, reject)
-	}
-}

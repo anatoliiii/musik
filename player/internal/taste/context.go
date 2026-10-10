@@ -102,12 +102,3 @@ func SeedVector(idx *index.Index, tracks []int64, artists []string, albums [][2]
 	}
 	return meanDirection(vectors, idx.Dim())
 }
-
-func (s *State) EffectiveWithContexts(
-	daypart string,
-	session *SessionState,
-	contexts []ContextBlend,
-	daypartMinimum int,
-) []float32 {
-	return BlendContexts(s.Effective(daypart, session, daypartMinimum), contexts)
-}

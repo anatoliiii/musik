@@ -108,7 +108,6 @@ func (d *DB) InTx(ctx context.Context, fn func(*Tx) error) error {
 	return tx.Commit()
 }
 
-func (d *DB) Ping() error  { return d.x.Ping() }
 func (d *DB) Close() error { return d.x.Close() }
 
 // Tx mirrors DB inside one transaction.
@@ -153,10 +152,6 @@ func (tx *Tx) QueryRowContext(ctx context.Context, query string, args ...any) *s
 
 func (tx *Tx) Get(ctx context.Context, dest any, query string, args ...any) error {
 	return tx.x.GetContext(ctx, dest, tx.x.Rebind(query), args...)
-}
-
-func (tx *Tx) Select(ctx context.Context, dest any, query string, args ...any) error {
-	return tx.x.SelectContext(ctx, dest, tx.x.Rebind(query), args...)
 }
 
 // Prepare returns a statement bound for this transaction.

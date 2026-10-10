@@ -46,11 +46,11 @@ WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
 func (s *Store) LoadCatalogRows() ([]TrackRow, error) {
 	rows, err := s.DB.Query(`
 SELECT t.id, t.path, COALESCE(t.title,''), COALESCE(t.artist,''), COALESCE(t.artist_segments,''),
-       `+albumArtistSQL+` AS album_artist, COALESCE(t.album,''),
+       ` + albumArtistSQL + ` AS album_artist, COALESCE(t.album,''),
        COALESCE(t.duration,0), COALESCE(t.file_md5,''), COALESCE(t.created_at,''),
        COALESCE(t.artwork_path,''), COALESCE(f.cluster_id, -1),
        COALESCE(f.embedding_dim,0), COALESCE(f.computed_at,''),
-       COALESCE(t.year, 0), f.bpm, COALESCE(f.lufs, t.lufs), COALESCE(f.key_name,'')`+readyTrackWhere+`
+       COALESCE(t.year, 0), f.bpm, COALESCE(f.lufs, t.lufs), COALESCE(f.key_name,'')` + readyTrackWhere + `
 ORDER BY t.id`)
 	if err != nil {
 		return nil, err

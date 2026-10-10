@@ -146,7 +146,7 @@ func SaveArchive(root, name string, src io.Reader) ([]Saved, []Skipped, error) {
 			if entry.Typeflag == tar.TypeDir {
 				continue
 			}
-			if entry.Typeflag != tar.TypeReg && entry.Typeflag != tar.TypeRegA {
+			if entry.Typeflag != tar.TypeReg {
 				return nil, nil, errors.New("ссылки и специальные файлы в архиве запрещены")
 			}
 			if err := save(entry.Name, entry.Size, archive); err != nil {

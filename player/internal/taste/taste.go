@@ -23,13 +23,6 @@ type Profile struct {
 
 func New() *Profile { return &Profile{Source: "empty"} }
 
-func (p *Profile) Set(v []float32) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.Vec = append([]float32(nil), v...)
-	index.Normalize(p.Vec)
-}
-
 func (p *Profile) SetWithMeta(v []float32, nPos, nNeg int, source string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -76,12 +69,6 @@ func (p *Profile) SourceName() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.Source
-}
-
-func (p *Profile) SetSource(s string) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.Source = s
 }
 
 // Maturity returns discovering|forming|ready from positive signal count.

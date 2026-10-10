@@ -134,23 +134,6 @@ func Snapshot(modelVersion string, values []float64, ctx FeatureContext) (Featur
 	return snap, string(raw)
 }
 
-func ParseSnapshot(raw string) (FeatureSnapshot, error) {
-	var snap FeatureSnapshot
-	if err := json.Unmarshal([]byte(raw), &snap); err != nil {
-		return snap, err
-	}
-	if snap.SchemaVersion != FeatureSchemaVersion {
-		return snap, errFeatureSchema
-	}
-	return snap, nil
-}
-
-var errFeatureSchema = jsonError("unsupported feature schema_version")
-
-type jsonError string
-
-func (e jsonError) Error() string { return string(e) }
-
 func sourceFlags(sources []string) map[string]float64 {
 	out := map[string]float64{
 		"exploit": 0, "transition": 0, "explore_adjacent": 0,

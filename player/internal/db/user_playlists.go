@@ -437,43 +437,6 @@ func (s *Store) DuplicateUserPlaylist(id int64) (*UserPlaylist, error) {
 	return s.GetUserPlaylist(created.ID)
 }
 
-func (s *Store) ResolvePlaylistEntries() (int, error) {
-	rows, err := s.DB.Query(`
-SELECT item_id, playlist_id, COALESCE(unresolved_artist,''), COALESCE(unresolved_title,''), COALESCE(unresolved_path,'')
-FROM playlist_tracks WHERE profile_id = ? AND track_id IS NULL`, s.ProfileID)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	type unresolved struct {
-		itemID, artist, title, path string
-	}
-	var pending []unresolved
-	for rows.Next() {
-		var u unresolved
-		var playlistID int64
-		if err := rows.Scan(&u.itemID, &playlistID, &u.artist, &u.title, &u.path); err != nil {
-			return 0, err
-		}
-		pending = append(pending, u)
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	matched := 0
-	for _, u := range pending {
-		id, ok, err := s.MatchTrack(u.artist, u.title, u.path)
-		if err != nil || !ok {
-			continue
-		}
-		if _, err := s.DB.Exec(`UPDATE playlist_tracks SET track_id = ? WHERE profile_id = ? AND item_id = ?`, id, s.ProfileID, u.itemID); err != nil {
-			return matched, err
-		}
-		matched++
-	}
-	return matched, nil
-}
-
 // MatchTrack finds an active catalog track for an imported or unresolved
 // entry: by artist and title, then by exact path or file name. Comparisons are
 // case-insensitive on both backends.

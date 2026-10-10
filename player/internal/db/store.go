@@ -37,14 +37,14 @@ type TrackRow struct {
 	// AlbumArtist is the album-level credit ("Various Artists" for a flagged
 	// compilation); empty when the tags carry neither.
 	AlbumArtist string
-	Album          string
-	Duration       float64
-	FileMD5        string
-	CreatedAt      string
-	ArtworkPath    string
-	ClusterID      int
-	Embedding      []byte
-	Dim            int
+	Album       string
+	Duration    float64
+	FileMD5     string
+	CreatedAt   string
+	ArtworkPath string
+	ClusterID   int
+	Embedding   []byte
+	Dim         int
 	// EmbeddingStamp is features.computed_at: it changes whenever the
 	// embedding is rewritten, so a reload can keep unchanged vectors.
 	EmbeddingStamp string
@@ -62,8 +62,6 @@ type TrackRow struct {
 	EarlySkips     int
 	LastPlayedAt   string
 }
-
-func Open(path string) (*Store, error) { return OpenDatabase("", path) }
 
 // OpenDatabase opens the configured backend and validates that `musik db
 // migrate` has brought it to the supported schema; the player never migrates.

@@ -200,7 +200,7 @@ func TestOpenRequiresExactMigratedSchemaVersion(t *testing.T) {
 		if err := conn.Close(); err != nil {
 			t.Fatal(err)
 		}
-		_, err = Open(path)
+		_, err = OpenDatabase("", path)
 		if err == nil {
 			t.Fatalf("Open accepted schema version %d", version)
 		}

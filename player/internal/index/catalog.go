@@ -31,14 +31,6 @@ type Catalog struct {
 	stamps []string
 }
 
-// Size is the number of tracks in the catalog.
-func (c *Catalog) Size() int {
-	if c == nil {
-		return 0
-	}
-	return c.n
-}
-
 func embeddingStamp(r db.TrackRow) string {
 	if r.EmbeddingStamp == "" {
 		return ""

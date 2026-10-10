@@ -9,10 +9,10 @@ import (
 
 // LoginLimiter caps password attempts per client IP.
 type LoginLimiter struct {
-	mu      sync.Mutex
-	hits    map[string][]time.Time
-	limit   int
-	window  time.Duration
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+	limit  int
+	window time.Duration
 }
 
 func NewLoginLimiter(limit int, window time.Duration) *LoginLimiter {

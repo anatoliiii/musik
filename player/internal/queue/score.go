@@ -1,12 +1,10 @@
 package queue
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
-	_ "embed"
 )
 
 //go:embed model_default.json
@@ -64,32 +62,6 @@ func LoadModelFile(path string) (Model, error) {
 	return ParseModel(raw)
 }
 
-func WriteModelAtomic(path string, model Model) error {
-	if err := model.Validate(); err != nil {
-		return err
-	}
-	raw, err := json.MarshalIndent(model, "", "  ")
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(path)
-	tmp, err := os.CreateTemp(dir, "model-*.json")
-	if err != nil {
-		return err
-	}
-	tmpName := tmp.Name()
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return err
-	}
-	return os.Rename(tmpName, path)
-}
-
 func (m Model) Validate() error {
 	if m.SchemaVersion != FeatureSchemaVersion {
 		return fmt.Errorf("model schema_version %d does not match feature schema %d", m.SchemaVersion, FeatureSchemaVersion)
@@ -137,18 +109,6 @@ func (m Model) Score(values []float64) float64 {
 	return sum
 }
 
-func SameFeatureOrder(a, b []string) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
-}
-
 func FeatureIndex(name string) int {
 	for i, n := range FeatureOrder {
 		if n == name {
@@ -156,8 +116,4 @@ func FeatureIndex(name string) int {
 		}
 	}
 	return -1
-}
-
-func NormalizeFeatureName(name string) string {
-	return strings.TrimSpace(name)
 }

@@ -449,30 +449,6 @@ func changed(result sql.Result) (bool, error) {
 	return n > 0, err
 }
 
-func (s *Store) ClosePendingImpressions(sessionID, outcome string, ids []string) error {
-	if outcome != "superseded" && outcome != "abandoned" {
-		return fmt.Errorf("invalid pending outcome %q", outcome)
-	}
-	if len(ids) == 0 {
-		return nil
-	}
-	tx, err := s.DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	for _, id := range ids {
-		if _, err := tx.Exec(`
-UPDATE recommendation_impressions SET outcome=?, closed_at=?
-WHERE profile_id=? AND impression_id=? AND session_id=? AND outcome='pending'
-  AND played_at IS NULL AND closed_at IS NULL`, outcome, now, s.ProfileID, id, sessionID); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
 func (s *Store) AbandonSessionImpressions(sessionID string) error {
 	_, err := s.DB.Exec(`
 UPDATE recommendation_impressions

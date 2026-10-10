@@ -1,7 +1,6 @@
 package rules
 
 import (
-	"strconv"
 	"strings"
 	"time"
 
@@ -180,9 +179,4 @@ func ExpiresAt(preset string, now time.Time) string {
 		return ""
 	}
 	return now.Add(d).Format(time.RFC3339Nano)
-}
-
-func ParseTrackKey(key string) (int64, bool) {
-	id, err := strconv.ParseInt(key, 10, 64)
-	return id, err == nil && id > 0
 }

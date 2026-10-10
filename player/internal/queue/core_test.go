@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/torwin-job/musik/player/internal/config"
@@ -41,7 +43,7 @@ func TestDefaultModelMatchesFeatureOrder(t *testing.T) {
 	if err := model.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if !SameFeatureOrder(model.FeatureOrder, FeatureOrder) {
+	if !slices.Equal(model.FeatureOrder, FeatureOrder) {
 		t.Fatal("embedded model feature_order drifted")
 	}
 }
@@ -168,8 +170,8 @@ func TestBuildCoreAssignsSourcesAndFeatures(t *testing.T) {
 		if item.Source == "" || item.FeaturesJSON == "" {
 			t.Fatalf("missing source/features: %+v", item)
 		}
-		snap, err := ParseSnapshot(item.FeaturesJSON)
-		if err != nil {
+		var snap FeatureSnapshot
+		if err := json.Unmarshal([]byte(item.FeaturesJSON), &snap); err != nil {
 			t.Fatal(err)
 		}
 		if snap.SchemaVersion != FeatureSchemaVersion || len(snap.Values) != len(FeatureOrder) {

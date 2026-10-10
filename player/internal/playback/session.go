@@ -31,9 +31,9 @@ type Session struct {
 	LastQueueAt       time.Time
 	LastProgressWrite time.Time
 	UpdatedAt         time.Time
-	TasteState         taste.SessionState
-	ActiveContextIDs   []string
-	TransitionProfile  string
+	TasteState        taste.SessionState
+	ActiveContextIDs  []string
+	TransitionProfile string
 }
 
 func (s *Session) Lock()   { s.mu.Lock() }

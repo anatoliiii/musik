@@ -9,12 +9,12 @@ import (
 )
 
 const (
-	SourceExploit          = "exploit"
-	SourceTransition       = "transition"
-	SourceExploreAdjacent  = "explore_adjacent"
-	SourceResurface        = "resurface"
-	SourceNewInLibrary     = "new_in_library"
-	SourceWildcard         = "wildcard"
+	SourceExploit         = "exploit"
+	SourceTransition      = "transition"
+	SourceExploreAdjacent = "explore_adjacent"
+	SourceResurface       = "resurface"
+	SourceNewInLibrary    = "new_in_library"
+	SourceWildcard        = "wildcard"
 )
 
 var sourcePriority = []string{
@@ -218,4 +218,3 @@ func maxAt(groups [][]float32, row int) float32 {
 	}
 	return best
 }
-

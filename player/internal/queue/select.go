@@ -38,12 +38,12 @@ type ScoredCandidate struct {
 }
 
 type SelectOpts struct {
-	Size         int
-	Quotas       map[string]Quota
-	MMRLambda    float64
-	ArtistLimit  int
-	Idx          *index.Index
-	CurrentID    int64
+	Size        int
+	Quotas      map[string]Quota
+	MMRLambda   float64
+	ArtistLimit int
+	Idx         *index.Index
+	CurrentID   int64
 }
 
 func ScaleQuotas(size int, base map[string]Quota) map[string]Quota {
