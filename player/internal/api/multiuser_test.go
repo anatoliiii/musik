@@ -150,3 +150,59 @@ func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 	check(call("POST", "/api/auth/logout", "{}", tokenA, csrfA, ""), 200)
 	check(call("GET", "/api/favorites", "", tokenA, "", ""), 401)
 }
+
+func TestLocalAccountsRegisterSignInAndChangePassword(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.db")
+	databaseURL, path := testdb.Target(t, path)
+	store, err := db.OpenDatabase(databaseURL, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Config{DBPath: path, MultiUser: true, PublicBaseURL: "https://musik.test", QueueSize: 6}
+	server := New(cfg, store, index.New(cfg), taste.New(), nil)
+	ctx := context.Background()
+	secret, err := store.BootstrapInvitation(ctx, "", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.EnableMultiUser(ctx); err != nil { // no OIDC issuer: local accounts only
+		t.Fatal(err)
+	}
+	server.loginLimiter = auth.NewLoginLimiter(100, time.Minute)
+	handler := server.Handler()
+	call := func(path, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "https://musik.test"+path, strings.NewReader(body))
+		req.Header.Set("Origin", "https://musik.test")
+		for _, c := range cookies {
+			req.AddCookie(c)
+			if c.Name == "musik_csrf" {
+				req.Header.Set("X-CSRF-Token", c.Value)
+			}
+		}
+		out := httptest.NewRecorder()
+		handler.ServeHTTP(out, req)
+		return out
+	}
+	check := func(out *httptest.ResponseRecorder, want int) []*http.Cookie {
+		t.Helper()
+		if out.Code != want {
+			t.Fatalf("status=%d want=%d body=%s", out.Code, want, out.Body.String())
+		}
+		return out.Result().Cookies()
+	}
+	register := `{"invitation":"` + secret + `","username":" Owner ","password":"first-secret"}`
+	check(call("/api/auth/register", `{"invitation":"wrong","username":"owner","password":"first-secret"}`), 403)
+	check(call("/api/auth/register", `{"invitation":"`+secret+`","username":"owner","password":"short"}`), 400)
+	session := check(call("/api/auth/register", register), 200)
+	check(call("/api/auth/register", register), 403) // invitation consumed
+	if admin, err := store.UserIsAdmin(ctx, func() string { u, _, _ := store.LocalPassword(ctx, "owner", ""); return u }()); err != nil || !admin {
+		t.Fatalf("bootstrap owner is not admin: %v %v", admin, err)
+	}
+	check(call("/api/auth/login", `{"username":"OWNER","password":"wrong-secret"}`), 401)
+	check(call("/api/auth/login", `{"username":"owner","password":"first-secret"}`), 200)
+	check(call("/api/account/password", `{"current":"wrong-secret","new":"second-secret"}`, session...), 403)
+	check(call("/api/account/password", `{"current":"first-secret","new":"second-secret"}`, session...), 200)
+	check(call("/api/auth/login", `{"username":"owner","password":"first-secret"}`), 401)
+	check(call("/api/auth/login", `{"username":"owner","password":"second-secret"}`), 200)
+}

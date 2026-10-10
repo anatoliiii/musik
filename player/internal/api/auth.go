@@ -8,7 +8,7 @@ import (
 
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if s.Cfg.MultiUser {
-		writeErr(w, 403, "oidc_required", "use OIDC sign-in")
+		s.handleLocalLogin(w, r)
 		return
 	}
 	if s.Auth == nil || !s.Auth.Cfg.Enabled() {

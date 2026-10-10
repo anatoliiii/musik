@@ -53,6 +53,8 @@ var apiRoutes = []routeDescriptor{
 	{"GET", "/api/openapi.json", (*Server).handleOpenAPI},
 	{"GET", "/api/auth/me", (*Server).handleAuthMe},
 	{"POST", "/api/auth/login", (*Server).handleAuthLogin},
+	{"POST", "/api/auth/register", (*Server).handleLocalRegister},
+	{"POST", "/api/account/password", (*Server).handlePasswordChange},
 	{"POST", "/api/auth/logout", (*Server).handleAuthLogout},
 	{"GET", "/api/auth/oidc/default/start", (*Server).handleOIDCStart},
 	{"GET", "/api/auth/oidc/default/callback", (*Server).handleOIDCCallback},

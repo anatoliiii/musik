@@ -6,7 +6,7 @@ CREATE TABLE alembic_version (
 	version_num VARCHAR(32) NOT NULL, 
 	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-INSERT INTO "alembic_version" VALUES('musik_10');
+INSERT INTO "alembic_version" VALUES('musik_11');
 CREATE TABLE artist_photos (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
             name_key   TEXT NOT NULL UNIQUE,
@@ -94,7 +94,7 @@ CREATE TABLE external_identities (
     issuer     TEXT NOT NULL,
     subject    TEXT NOT NULL,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at TEXT NOT NULL,
+    created_at TEXT NOT NULL, password_hash TEXT,
     PRIMARY KEY (issuer, subject)
 );
 CREATE TABLE "favorite_albums" (profile_id TEXT NOT NULL DEFAULT '8458c014-517b-401b-93de-54c6ab327596' REFERENCES profiles(id),
@@ -751,4 +751,4 @@ INSERT INTO "sqlite_sequence" VALUES('recommendation_impressions',0);
 INSERT INTO "sqlite_sequence" VALUES('user_profile_snapshots',0);
 COMMIT;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;

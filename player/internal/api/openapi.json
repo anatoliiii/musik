@@ -3,7 +3,7 @@
   "info": {
     "title": "musik API",
     "version": "1.0.0",
-    "description": "Music player API. Legacy single-user password/token auth or invite-gated multi-user OIDC with revocable browser sessions and user-owned device bearer tokens. In multi-user mode device tokens are fixed to one owned profile and cannot manage accounts, tokens or shared-library jobs. Browser state changes require X-CSRF-Token. The Python worker owns Alembic migrations for SQLite or PostgreSQL; the Go player validates the migration head. Radio events remain idempotent and profile-scoped.",
+    "description": "Music player API. Legacy single-user password/token auth or invite-gated multi-user (local accounts, optional OIDC) with revocable browser sessions and user-owned device bearer tokens. In multi-user mode device tokens are fixed to one owned profile and cannot manage accounts, tokens or shared-library jobs. Browser state changes require X-CSRF-Token. The Python worker owns Alembic migrations for SQLite or PostgreSQL; the Go player validates the migration head. Radio events remain idempotent and profile-scoped.",
     "x-musik-schema-version": 8
   },
   "servers": [
@@ -445,7 +445,7 @@
     "/api/auth/login": {
       "post": {
         "security": [],
-        "summary": "Login with password",
+        "summary": "Login: password (single-user) or username and password (multi-user local account)",
         "requestBody": {
           "required": true,
           "content": {
@@ -454,6 +454,9 @@
                 "type": "object",
                 "properties": {
                   "password": {
+                    "type": "string"
+                  },
+                  "username": {
                     "type": "string"
                   }
                 }
@@ -486,8 +489,8 @@
         "security": [],
         "summary": "Auth status",
         "responses": {
-        "200": {
-          "description": "Browser sessions receive account/profile data. Device Bearer clients retain {ok, auth_enabled}; invalid device tokens receive ok=false with HTTP 200."
+          "200": {
+            "description": "Browser sessions receive account/profile data. Device Bearer clients retain {ok, auth_enabled}; invalid device tokens receive ok=false with HTTP 200."
           }
         }
       }
@@ -2494,6 +2497,72 @@
           },
           "404": {
             "description": "Token not found for this user"
+          }
+        }
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "security": [],
+        "summary": "Accept an invitation with a new local account and sign in",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "invitation": {
+                    "type": "string"
+                  },
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Sets musik_session and musik_csrf cookies"
+          },
+          "403": {
+            "description": "Invitation invalid or username taken"
+          }
+        }
+      }
+    },
+    "/api/account/password": {
+      "post": {
+        "summary": "Change the password of the caller's local account",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "current": {
+                    "type": "string"
+                  },
+                  "new": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password changed"
+          },
+          "403": {
+            "description": "Current password is wrong"
           }
         }
       }

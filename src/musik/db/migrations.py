@@ -725,6 +725,12 @@ def _album_artist_and_compilation(conn: sqlite3.Connection) -> None:
     _add_column(conn, "tracks", "is_compilation INTEGER NOT NULL DEFAULT 0")
 
 
+def _local_passwords(conn: sqlite3.Connection) -> None:
+    # A local account is an identity with issuer 'local', the username as
+    # subject and a password hash; OIDC identities leave it NULL.
+    _add_column(conn, "external_identities", "password_hash TEXT")
+
+
 MIGRATIONS = (
     Migration(1, "baseline", _baseline),
     Migration(2, "future_data_foundation", _future_data_foundation),
@@ -736,6 +742,7 @@ MIGRATIONS = (
     Migration(8, "device_tokens_and_admin_guard", _device_tokens),
     Migration(9, "catalog_extras_and_playback_state", _catalog_extras_and_playback_state),
     Migration(10, "album_artist_and_compilation", _album_artist_and_compilation),
+    Migration(11, "local_passwords", _local_passwords),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 

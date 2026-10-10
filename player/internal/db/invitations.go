@@ -20,8 +20,12 @@ var ErrIdentityUnknown = errors.New("identity unknown")
 var ErrIdentityAlreadyLinked = errors.New("identity already linked")
 var ErrSessionInvalid = errors.New("session invalid")
 
+// LocalIssuer marks a local account: the subject is its username.
+const LocalIssuer = "local"
+
 type VerifiedIdentity struct {
 	Issuer        string
+	PasswordHash  string // local accounts only
 	Subject       string
 	DisplayName   string
 	Email         string
@@ -124,8 +128,8 @@ WHERE owner_user_id = ? AND is_default = 1 AND deleted_at IS NULL`, userID); err
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `
-INSERT INTO external_identities(issuer, subject, user_id, created_at) VALUES (?, ?, ?, ?)`,
-			identity.Issuer, identity.Subject, userID, now); err != nil {
+INSERT INTO external_identities(issuer, subject, user_id, created_at, password_hash) VALUES (?, ?, ?, ?, ?)`,
+			identity.Issuer, identity.Subject, userID, now, nullStr(identity.PasswordHash)); err != nil {
 			return ErrInvitationInvalid
 		}
 		result, err := tx.ExecContext(ctx, `
@@ -147,10 +151,11 @@ WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL`, now, userID, invit
 	return userID, profile, nil
 }
 
-// BootstrapInvitation activates the pending installation owner after OIDC
-// verification; its existing profile retains all legacy data.
+// BootstrapInvitation activates the pending installation owner when it signs
+// in (OIDC, or a local account when issuer is empty); its existing profile
+// retains all legacy data.
 func (s *Store) BootstrapInvitation(ctx context.Context, issuer string, ttl time.Duration) (string, error) {
-	if issuer == "" || ttl <= 0 {
+	if ttl <= 0 {
 		return "", ErrInvitationInvalid
 	}
 	secret, err := randomSecret()
@@ -187,7 +192,7 @@ WHERE target_user_id = ? AND consumed_at IS NULL AND revoked_at IS NULL`, create
 		_, err = tx.ExecContext(ctx, `
 INSERT INTO invitations(id, secret_hash, issuer, created_at, expires_at, target_user_id)
 VALUES (?, ?, ?, ?, ?, ?)`,
-			uuid.NewString(), secretHash(secret), issuer, createdAt, now.Add(ttl).Format(time.RFC3339), ownerID)
+			uuid.NewString(), secretHash(secret), nullStr(issuer), createdAt, now.Add(ttl).Format(time.RFC3339), ownerID)
 		return err
 	})
 	if err != nil {
@@ -363,4 +368,34 @@ WHERE shares.token = ? AND shares.revoked_at IS NULL AND profiles.deleted_at IS 
 		return "", ErrProfileNotFound
 	}
 	return profileID, err
+}
+
+// LocalPassword returns the active user and password hash of a local
+// account, found by username or, when username is empty, by userID.
+func (s *Store) LocalPassword(ctx context.Context, username, userID string) (string, string, error) {
+	var row struct {
+		UserID string         `db:"user_id"`
+		Hash   sql.NullString `db:"password_hash"`
+	}
+	err := s.DB.Get(ctx, &row, `
+SELECT external_identities.user_id, external_identities.password_hash FROM external_identities
+JOIN users ON users.id = external_identities.user_id
+WHERE external_identities.issuer = ? AND (external_identities.subject = ? OR (? = '' AND external_identities.user_id = ?))
+  AND users.status = 'active'`, LocalIssuer, username, username, userID)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !row.Hash.Valid) {
+		return "", "", ErrIdentityUnknown
+	}
+	return row.UserID, row.Hash.String, err
+}
+
+// SetLocalPassword replaces the password of the user's local account.
+func (s *Store) SetLocalPassword(ctx context.Context, userID, hash string) error {
+	result, err := s.DB.ExecContext(ctx, `UPDATE external_identities SET password_hash = ? WHERE issuer = ? AND user_id = ?`, hash, LocalIssuer, userID)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil || n != 1 {
+		return ErrIdentityUnknown
+	}
+	return nil
 }

@@ -22,8 +22,8 @@ type Store struct {
 	ReadOnly  bool
 }
 
-const SupportedSchemaVersion = 10
-const SupportedSchemaRevision = "musik_10"
+const SupportedSchemaVersion = 11
+const SupportedSchemaRevision = "musik_11"
 
 func mondayZeroWeekday(day time.Weekday) int { return (int(day) + 6) % 7 }
 

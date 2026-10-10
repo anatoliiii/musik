@@ -43,6 +43,8 @@
     <form id="login-form" class="login-card" autocomplete="current-password">
       <div class="brand">musik</div>
       <p class="tagline" id="login-tagline">Введи пароль, чтобы открыть библиотеку</p>
+      <label class="sr-only" for="login-username">Имя</label>
+      <input id="login-username" type="text" name="username" placeholder="Имя" autocomplete="username" autocapitalize="none" hidden />
       <label class="sr-only" for="login-password">Пароль</label>
       <input id="login-password" type="password" name="password" placeholder="Пароль" required autofocus />
       <button type="submit" class="btn primary" id="login-submit">Войти</button>
@@ -404,6 +406,11 @@
           <h2 id="account-display">Аккаунт</h2>
           <p class="sub">У каждого профиля свои история, любимые треки, плейлисты и настройки радио.</p>
           <button class="btn" type="button" id="oidc-link">Подключить ещё один OIDC-вход</button>
+          <form id="password-form" hidden>
+            <label>Текущий пароль <input id="password-current" type="password" autocomplete="current-password" required /></label>
+            <label>Новый пароль <input id="password-new" type="password" autocomplete="new-password" minlength="8" required /></label>
+            <button class="btn" type="submit">Сменить пароль</button>
+          </form>
           <form id="profile-create-form">
             <label>Новый профиль <input id="profile-new-name" maxlength="128" required /></label>
             <button class="btn" type="submit">Создать профиль</button>
@@ -586,6 +593,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=a7d5ad0edd"></script>
+  <script src="/app.js?v=aedb547e84"></script>
 </body>
 </html>

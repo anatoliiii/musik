@@ -95,16 +95,21 @@ function csrfHeaders() {
 function renderAccount(me) {
   multiUser = !!me.multi_user;
   account = me.authenticated ? me : null;
-  $("login-password").hidden = multiUser;
-  $("login-password").required = !multiUser;
-  $("login-submit").hidden = multiUser;
-  $("oidc-login").hidden = !multiUser;
-  $("login-tagline").textContent = multiUser ? "Войдите через свой аккаунт" : "Введи пароль, чтобы открыть библиотеку";
+  const invitation = new URLSearchParams(location.search).get("invitation");
+  $("login-username").hidden = !multiUser;
+  $("login-username").required = multiUser;
+  $("login-password").autocomplete = invitation ? "new-password" : "current-password";
+  $("login-submit").textContent = multiUser && invitation ? "Создать аккаунт" : "Войти";
+  $("oidc-login").hidden = !multiUser || !me.oidc;
+  $("oidc-login").href = "/api/auth/oidc/default/start" + (invitation ? `?invitation=${encodeURIComponent(invitation)}` : "");
+  $("login-tagline").textContent = !multiUser ? "Введи пароль, чтобы открыть библиотеку"
+    : invitation ? "Придумай имя и пароль (от 8 символов)" : "Войди по имени и паролю";
   $("account-box").hidden = !account;
   $("profile-switch").hidden = !account;
   const admin = !!account?.user?.roles?.includes("admin");
   $("invitation-box").hidden = !admin;
-  $("oidc-link").hidden = !multiUser || !account;
+  $("oidc-link").hidden = !multiUser || !account || !me.oidc;
+  $("password-form").hidden = !account?.local_account;
   document.querySelector('[data-view="upload"]').hidden = multiUser && !admin;
   if (admin) refreshAdminLists().catch((error) => toast(error.message));
   if (!account) return;
@@ -349,10 +354,12 @@ async function ensureAuth() {
 }
 
 async function doLogin(password) {
-  await api("/api/auth/login", {
+  const invitation = multiUser && new URLSearchParams(location.search).get("invitation");
+  await api(invitation ? "/api/auth/register" : "/api/auth/login", {
     method: "POST",
-    body: JSON.stringify({ password }),
+    body: JSON.stringify(multiUser ? { username: $("login-username").value, password, invitation } : { password }),
   });
+  if (multiUser) { location.replace("/"); return; }
   hideLogin();
   authReady = true;
   await bootApp();
@@ -5124,6 +5131,14 @@ $("login-form").onsubmit = (e) => {
 };
 $("btn-logout").onclick = () => doLogout().catch((e) => toast(e.message || String(e)));
 $("btn-logout-profile").onclick = () => doLogout().catch((e) => toast(e.message || String(e)));
+$("password-form").onsubmit = async (event) => {
+  event.preventDefault();
+  try {
+    await api("/api/account/password", { method: "POST", body: JSON.stringify({ current: $("password-current").value, new: $("password-new").value }) });
+    event.target.reset();
+    toast("Пароль изменён");
+  } catch (error) { toast(error.message); }
+};
 $("oidc-link").onclick = async () => {
   try {
     const result = await api("/api/auth/oidc/default/link", { method: "POST", body: "{}" });

@@ -37,13 +37,16 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 | POST | `/api/auth/logout` | сброс cookie |
 | GET | `/api/auth/me` | `{ok, auth_enabled}` |
 
-## Multi-user через OIDC
+## Multi-user
 
-Режим включается через `MUSIK_MULTI_USER=1`, HTTPS `MUSIK_PUBLIC_BASE_URL` и
+Режим включается через `MUSIK_MULTI_USER=1` и HTTPS `MUSIK_PUBLIC_BASE_URL`.
+Пользователи регистрируются по ссылке-приглашению `/?invitation=<secret>` с
+именем и паролем (`POST /api/auth/register`), входят через `POST
+/api/auth/login` `{username, password}` и меняют пароль через `POST
+/api/account/password`. OIDC — необязательный второй способ входа:
 `MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
 `MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
-запрещены как общие настройки. Пользователи входят в браузере по OIDC-
-приглашению; старые личные данные после миграции остаются в профиле первого
+запрещены как общие настройки. Старые личные данные после миграции остаются в профиле первого
 администратора. После входа владелец может выпустить отдельный Bearer-токен для
 каждого устройства. Такой токен фиксированно связан с выбранным профилем,
 действует 180 дней и не получает административных прав. Подробности первого

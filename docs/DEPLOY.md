@@ -33,21 +33,21 @@ PostgreSQL включается через `COMPOSE_PROFILES=postgres`; `migrate
 
 Login: не больше 5 попыток / IP / минуту (`429`).
 
-### Multi-user через OIDC
+### Multi-user
 
-Multi-user режим использует OIDC для браузерного входа и требует HTTPS. Не
+Пользователи входят по имени и паролю; OIDC можно подключить вторым способом
+входа. Режим требует HTTPS. Не
 задавай в нём общие `MUSIK_PASSWORD`, `MUSIK_API_TOKEN` или
-`MUSIK_AUTH_DISABLED`; CORS оставь same-origin. После OIDC-входа пользователь
-создаёт персональный Bearer-токен устройства в разделе «Устройства и токены»
+`MUSIK_AUTH_DISABLED`; CORS оставь same-origin. После входа пользователь
+может сменить пароль и создать персональный Bearer-токен устройства в разделе «Устройства и токены»
 на странице аккаунта. Он фиксированно связан с выбранным профилем, живёт 180
 дней и не наследует административные права.
-
-В OIDC-клиенте зарегистрируй точный callback:
-`https://music.example.com/api/auth/oidc/default/callback`.
 
 ```dotenv
 MUSIK_MULTI_USER=1
 MUSIK_PUBLIC_BASE_URL=https://music.example.com
+# Необязательно, вход через OIDC. Callback в OIDC-клиенте:
+# https://music.example.com/api/auth/oidc/default/callback
 MUSIK_OIDC_ISSUER=https://identity.example.com/realms/music
 MUSIK_OIDC_CLIENT_ID=musik
 MUSIK_OIDC_CLIENT_SECRET=...
@@ -58,14 +58,15 @@ MUSIK_OIDC_CLIENT_SECRET=...
 Альтернатива после миграции — ручной bootstrap с окружением выбранной БД:
 
 ```bash
-musik-player admin bootstrap --issuer "$MUSIK_OIDC_ISSUER" --ttl 1h
+musik-player admin bootstrap --ttl 1h
 ```
 
 Не добавляй `--db`, если задан `MUSIK_DATABASE_URL`. Для отдельного запуска
 SQLite без URL укажи проверенный путь через `--db`.
 
-Команда один раз выведет секрет приглашения. Открой его по адресу
-`https://music.example.com/api/auth/oidc/default/start?invitation=<secret>`.
+Команда один раз выведет секрет приглашения. Открой
+`https://music.example.com/?invitation=<secret>` и придумай имя и пароль (или
+войди через OIDC, если он настроен; `--issuer` ограничит приглашение им).
 После первого входа этот владелец становится администратором и приглашает
 остальных из раздела «Профиль». Секреты приглашений хранятся в базе только в
 виде хеша; сам секрет показывается при создании один раз.

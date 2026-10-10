@@ -28,13 +28,16 @@ def _validate(env):
     if enabled(env, "MUSIK_MULTI_USER"):
         if env.get("MUSIK_PASSWORD") or env.get("MUSIK_API_TOKEN") or enabled(env, "MUSIK_AUTH_DISABLED"):
             raise ValueError("multi-user rejects shared password/token and disabled authentication")
+        # OIDC is optional: without an issuer users sign up with a password.
         for key in ("MUSIK_PUBLIC_BASE_URL", "MUSIK_OIDC_ISSUER"):
+            if key == "MUSIK_OIDC_ISSUER" and not env.get(key):
+                continue
             value = urlsplit(env.get(key, ""))
             if value.scheme != "https" or not value.hostname or value.username or value.query or value.fragment:
                 raise ValueError(f"{key} requires HTTPS")
             if key == "MUSIK_PUBLIC_BASE_URL" and value.path not in {"", "/"}:
                 raise ValueError("public base URL cannot contain a path")
-        if not env.get("MUSIK_OIDC_CLIENT_ID"):
+        if env.get("MUSIK_OIDC_ISSUER") and not env.get("MUSIK_OIDC_CLIENT_ID"):
             raise ValueError("MUSIK_OIDC_CLIENT_ID is required")
         if env.get("MUSIK_CORS_ORIGINS") and env["MUSIK_CORS_ORIGINS"] != env["MUSIK_PUBLIC_BASE_URL"]:
             raise ValueError("multi-user requires same-origin CORS")
@@ -111,12 +114,12 @@ def _bootstrap(engine, env):
         hashed = hashlib.sha256(secret.encode()).hexdigest()
         existing = conn.execute(text("SELECT consumed_at,revoked_at,expires_at,issuer,target_user_id FROM invitations WHERE secret_hash=:hash"), {"hash": hashed}).first()
         if existing:
-            if existing[0] or existing[1] or existing[2] <= timestamp or existing[3] != env["MUSIK_OIDC_ISSUER"] or existing[4] != owner:
+            if existing[0] or existing[1] or existing[2] <= timestamp or existing[3] != (env.get("MUSIK_OIDC_ISSUER") or None) or existing[4] != owner:
                 raise ValueError("set a new bootstrap secret; the previous invitation cannot be revived")
             return
         conn.execute(text("UPDATE invitations SET revoked_at=:now WHERE target_user_id=:id AND consumed_at IS NULL AND revoked_at IS NULL"), {"now": timestamp, "id": owner})
         conn.execute(text("INSERT INTO invitations(id,secret_hash,issuer,created_at,expires_at,target_user_id) VALUES (:id,:hash,:issuer,:created,:expires,:owner)"),
-                     {"id": str(uuid4()), "hash": hashed, "issuer": env["MUSIK_OIDC_ISSUER"], "created": timestamp,
+                     {"id": str(uuid4()), "hash": hashed, "issuer": env.get("MUSIK_OIDC_ISSUER") or None, "created": timestamp,
                       "expires": (now + timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ"), "owner": owner})
 
 

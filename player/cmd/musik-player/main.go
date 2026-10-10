@@ -98,7 +98,7 @@ func main() {
 	srv.WatchJobs()
 
 	if cfg.MultiUser {
-		log.Printf("multi-user OIDC authentication enabled")
+		log.Printf("multi-user authentication enabled (local accounts, OIDC=%v)", cfg.OIDCIssuer != "")
 	} else if cfg.AuthEnabled() {
 		log.Printf("auth enabled (password=%v token=%v)", cfg.Password != "", cfg.APIToken != "")
 	} else {
@@ -116,16 +116,17 @@ func main() {
 
 func runAdmin(args []string) {
 	if len(args) == 0 || args[0] != "bootstrap" {
-		log.Fatal("usage: musik-player admin bootstrap [--db SQLITE_PATH] --issuer HTTPS_URL (or set MUSIK_DATABASE_URL)")
+		log.Fatal("usage: musik-player admin bootstrap [--db SQLITE_PATH] [--issuer HTTPS_URL] (or set MUSIK_DATABASE_URL)")
 	}
 	flags := flag.NewFlagSet("bootstrap", flag.ExitOnError)
 	path := flags.String("db", "", "migrated SQLite database path; defaults to MUSIK_DATABASE_URL or MUSIK_DB_PATH")
-	issuer := flags.String("issuer", os.Getenv("MUSIK_OIDC_ISSUER"), "OIDC issuer")
+	issuer := flags.String("issuer", os.Getenv("MUSIK_OIDC_ISSUER"), "OIDC issuer; empty lets the owner sign up with a password")
 	ttl := flags.Duration("ttl", time.Hour, "invitation lifetime (maximum 24h)")
 	flags.Parse(args[1:])
 	parsedIssuer, issuerErr := url.Parse(*issuer)
-	if issuerErr != nil || parsedIssuer.Scheme != "https" || parsedIssuer.Host == "" || parsedIssuer.User != nil || parsedIssuer.RawQuery != "" || parsedIssuer.Fragment != "" || *ttl <= 0 || *ttl > 24*time.Hour {
-		log.Fatal("bootstrap requires an HTTPS --issuer and a lifetime up to 24h")
+	badIssuer := *issuer != "" && (issuerErr != nil || parsedIssuer.Scheme != "https" || parsedIssuer.Host == "" || parsedIssuer.User != nil || parsedIssuer.RawQuery != "" || parsedIssuer.Fragment != "")
+	if badIssuer || *ttl <= 0 || *ttl > 24*time.Hour {
+		log.Fatal("bootstrap requires an HTTPS --issuer (or none) and a lifetime up to 24h")
 	}
 	cfg := config.Load()
 	databaseURL := cfg.DatabaseURL
@@ -157,4 +158,7 @@ func runAdmin(args []string) {
 		log.Fatalf("bootstrap invitation: %v", err)
 	}
 	fmt.Println(secret)
+	if base := strings.TrimRight(cfg.PublicBaseURL, "/"); base != "" {
+		log.Printf("open %s/?invitation=%s to create the administrator account", base, url.QueryEscape(secret))
+	}
 }
