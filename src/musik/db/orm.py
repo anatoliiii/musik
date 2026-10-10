@@ -145,10 +145,4 @@ class ORMConnection:
     def close(self) -> None:
         self.session.close()
 
-    @property
-    def dialect_name(self) -> str:
-        assert self.session.bind is not None
-        return self.session.bind.dialect.name
-
-
 __all__ = ["MappingRow", "ORMConnection", "engine_for", "session_for"]

@@ -1,6 +1,6 @@
 """Add user-owned device tokens and the administrator invariant lock row."""
 from alembic import op
-from sqlalchemy import Column, ForeignKey, Index, String, inspect, text
+from sqlalchemy import Column, ForeignKey, String, inspect, text
 
 from musik.db.migrations import migrate_connection
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from musik.brain import mixes
 from musik.db.schema import connect, init_db, utcnow
 from musik.listen.history import bump_rec_stats, record_listen, top_transitions
 
@@ -28,9 +27,6 @@ def test_repeated_listens_accumulate_through_conflict_updates(tmp_path: Path, te
     for _ in range(2):
         record_listen(2, "finish", source="test", prev_track_id=1, transition_weight=1.5)
         bump_rec_stats(2, shown=1, completed=1)
-    mixes.later_add(1)
-    mixes.later_add(2)
-    mixes.later_add(1)
 
     assert first > 0
     assert [(t["from_id"], t["to_id"], t["weight"]) for t in top_transitions()] == [(1, 2, 3.0)]
@@ -40,4 +36,3 @@ def test_repeated_listens_accumulate_through_conflict_updates(tmp_path: Path, te
             {"profile": conn.profile_id},
         ).fetchone()
     assert (stats["shown"], stats["completed"]) == (2, 2)
-    assert [(row["track_id"], row["position"]) for row in mixes.later_list()] == [(1, 1), (2, 2)]

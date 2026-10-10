@@ -2,7 +2,6 @@ from musik.db.schema import connect, init_db, utcnow
 from musik.db.store import (
     counts,
     ensure_db,
-    get_embedding,
     get_track_by_path,
     list_active_tracks,
     list_tracks_needing_embedding,
@@ -23,7 +22,6 @@ __all__ = [
     "utcnow",
     "counts",
     "ensure_db",
-    "get_embedding",
     "get_track_by_path",
     "list_active_tracks",
     "list_tracks_needing_embedding",

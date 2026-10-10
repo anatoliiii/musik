@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from musik.config import get_settings
 from musik.db.models import Feature, Genre, Track, TrackGenre
 from musik.db.orm import engine_for
+from musik.db.schema import connect
 from musik.db.store import (
-    get_embedding,
     get_track_by_path,
     list_tracks_needing_embedding,
     mark_duplicates,
@@ -57,7 +57,9 @@ def test_catalog_repository_uses_mapped_orm_on_postgres(
         second = get_track_by_path(paths[1])
         assert first is not None and first["id"] == first_id
         assert second is not None and second["is_duplicate_of"] == first_id
-        np.testing.assert_array_equal(get_embedding(first_id), expected)
+        with connect() as conn:
+            blob = conn.execute("SELECT embedding FROM features WHERE track_id = :id", {"id": first_id}).fetchone()["embedding"]
+        np.testing.assert_array_equal(np.frombuffer(blob, dtype=np.float32), expected)
         pending = list_tracks_needing_embedding()
         assert first_id not in {row["id"] for row in pending}
         assert second_id not in {row["id"] for row in pending}

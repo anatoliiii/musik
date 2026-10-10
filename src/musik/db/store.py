@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 import numpy as np
-from sqlalchemy import delete, func, literal, select
+from sqlalchemy import delete, func, select
 
 from musik.db.models import Feature, Genre, ScanState, Track, TrackGenre
 from musik.db.schema import connect, init_db, utcnow
@@ -380,18 +380,6 @@ def mark_feature_failed(track_id: int, error: str) -> None:
             feature.status = "failed"
             feature.error = error[:2000]
             feature.computed_at = utcnow()
-
-
-def get_embedding(track_id: int) -> np.ndarray | None:
-    with connect() as conn:
-        feature = conn.session.get(Feature, track_id)
-        if feature is None or feature.embedding is None:
-            return None
-        dim = int(feature.embedding_dim or 0)
-        arr = np.frombuffer(feature.embedding, dtype=np.float32)
-        if dim and arr.size != dim:
-            return arr.astype(np.float32)
-        return np.asarray(arr, dtype=np.float32)
 
 
 def list_tracks_needing_artwork(

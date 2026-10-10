@@ -433,6 +433,3 @@ def train_ranker(*, force: bool = False, artifact_path: Path | None = None) -> d
         **metrics,
     }
 
-
-def default_model_path() -> Path:
-    return DEFAULT_MODEL_PATH
