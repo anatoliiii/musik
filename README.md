@@ -85,7 +85,6 @@
 | Документ | Содержание |
 |----------|------------|
 | [docs/API.md](docs/API.md) | HTTP API |
-| [docs/openapi.yaml](docs/openapi.yaml) | OpenAPI (`/api/openapi.json`) |
 | [docs/DEPLOY.md](docs/DEPLOY.md) | Docker / VPS / HTTPS / share |
 | [docs/MOBILE.md](docs/MOBILE.md) | телефон / Flutter |
 | [docs/CAPACITY.md](docs/CAPACITY.md) | ресурсы под ~50k треков |
@@ -200,13 +199,8 @@ musik/
 | `smoke_api.sh` | HTTP smoke с auth (`make smoke`) |
 | `bench_queue.sh` | exact scan / queue и API benchmarks (`make bench`) |
 | `sim_listener.py` | детерминированные listener-сценарии (`make sim`) |
-| `export_paper_cosine.py` | утилита для cosine-таблиц / экспериментов |
-| `musik-env.ps1` | Windows: чтение `.env`, health-проверки player/worker |
-| `setup-windows.ps1` | Windows: установка одной командой (клон, зависимости, `.env`, сборка, запуск, автозапуск) |
 | `setup-linux.sh` | Linux: то же самое + systemd user-сервисы |
 | `musik.sh` | Linux: `start\|stop\|restart\|status\|logs` (через systemd, если сервисы установлены) |
-| `start-musik.ps1` | Windows: запуск worker+player с `.env`, PID/логи, `-Restart`, `-InstallStartup` (автозапуск при входе) |
-| `auto-scan.ps1` | Windows: плановый перескан библиотеки (`-InstallTask`, по умолчанию каждые 60 мин) |
 
 ### `tools/`
 
@@ -223,21 +217,13 @@ musik/
 
 ## Быстрый старт
 
-### Одной командой на своём ПК (Windows / Linux)
+### Одной командой на своём ПК (Linux)
 
 Скрипт сам скачает репозиторий, поставит недостающее (Git, Python 3.11+, Go,
 ffmpeg — с вопросом перед установкой), создаст `.venv`, спросит папку с музыкой,
 доступ с телефона и пароль, соберёт и запустит сервер, предложит автозапуск
 и ежечасный перескан. Повторный запуск обновляет код и перезапускает сервер,
 существующий `.env` не трогает.
-
-Windows (PowerShell):
-
-```powershell
-irm https://raw.githubusercontent.com/torwin-job/musik/main/scripts/setup-windows.ps1 -OutFile $env:TEMP\musik-setup.ps1; powershell -ExecutionPolicy Bypass -File $env:TEMP\musik-setup.ps1
-```
-
-Linux:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/torwin-job/musik/main/scripts/setup-linux.sh | bash
@@ -457,9 +443,6 @@ musik artist-photos      # Deezer API → data/cache/artwork/artists/
 подписчиков. Артист без совпадения запоминается на 30 дней (`artist_photos`,
 миграция 9). Фото показываются на плитках артистов, на главной и в шапке
 страницы артиста (`GET /api/artist-photos`); где фото нет, остаётся обложка.
-
-На Windows ежечасный `auto-scan.ps1` после пересканирования запускает обе
-команды и перезагружает индекс плеера.
 
 ---
 

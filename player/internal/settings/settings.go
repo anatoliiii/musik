@@ -23,7 +23,7 @@ const (
 	KeyLibrary   = "MUSIK_LIBRARY"
 )
 
-// EnvPath is the .env every launcher (start-musik.ps1, musik.sh, systemd
+// EnvPath is the .env every launcher (musik.sh, systemd
 // units, the Python worker) reads.
 func EnvPath(root string) string { return filepath.Join(root, ".env") }
 

@@ -2764,7 +2764,7 @@ function urlAfterRestart(s) {
 async function restartServer() {
   const s = settingsData;
   if (!s.restart_supported) {
-    toast("Перезапусти сервер вручную: scripts/start-musik.ps1 -Restart или scripts/musik.sh restart");
+    toast("Перезапусти сервер вручную: scripts/musik.sh restart");
     return;
   }
   const target = urlAfterRestart(s);

@@ -1,7 +1,7 @@
 # musik API v1
 
 Base URL: `http://127.0.0.1:8787`  
-OpenAPI: [`GET /api/openapi.json`](/api/openapi.json) · source [`openapi.yaml`](openapi.yaml)
+OpenAPI: [`GET /api/openapi.json`](/api/openapi.json)
 
 Документ описывает работающий API v1. Radio current/queue items содержат
 `request_id`, `impression_id` и `source`. Новые клиенты повторяют события с тем

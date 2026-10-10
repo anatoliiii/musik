@@ -6,7 +6,7 @@
 # With the systemd user units from setup-linux.sh installed, the commands go
 # to `systemctl --user`; otherwise the processes run in the background with
 # pid files in data/run/. Both ways read .env from the project root (values
-# already set in the environment win, as in start-musik.ps1).
+# already set in the environment win).
 set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)

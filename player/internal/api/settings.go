@@ -203,7 +203,7 @@ func (s *Server) handleSettingsDirs(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSettingsRestart answers first, then starts the platform launcher
-// (start-musik.ps1 -Restart, musik.sh restart or systemd), which stops this
+// (musik.sh restart or systemd), which stops this
 // process and starts worker and player with the saved .env.
 func (s *Server) handleSettingsRestart(w http.ResponseWriter, r *http.Request) {
 	if !s.settingsAllowed(w, r) {

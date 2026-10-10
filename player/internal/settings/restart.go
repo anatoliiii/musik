@@ -4,7 +4,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 )
 
@@ -22,13 +21,6 @@ func RestartCommand(root string) *exec.Cmd {
 		// stopping this process does not cancel it.
 		cmd = exec.Command("systemctl", "--user", "--no-block", "restart",
 			"musik-worker.service", "musik-player.service")
-	case runtime.GOOS == "windows":
-		script := filepath.Join(root, "scripts", "start-musik.ps1")
-		if _, err := os.Stat(script); err != nil {
-			return nil
-		}
-		cmd = exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass",
-			"-File", script, "-Restart")
 	default:
 		script := filepath.Join(root, "scripts", "musik.sh")
 		if _, err := os.Stat(script); err != nil {
