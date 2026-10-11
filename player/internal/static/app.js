@@ -165,8 +165,11 @@ function deviceDate(value) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
 }
 
-function showDeviceTokenSecret(secret) {
+function showDeviceTokenSecret(secret, qr) {
   $("device-token-secret").value = secret;
+  // The server renders the QR (musik://connect with this token) as SVG.
+  $("device-token-qr").innerHTML = qr || "";
+  $("device-token-qr").hidden = !qr;
   $("device-token-created").hidden = false;
   $("device-token-created").scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
@@ -184,7 +187,7 @@ function deviceTokenRow(token) {
       replace.disabled = true;
       try {
         const result = await api(`/api/account/device-tokens/${encodeURIComponent(token.id)}/replace`, { method: "POST", body: "{}" });
-        showDeviceTokenSecret(result.token);
+        showDeviceTokenSecret(result.token, result.qr);
         await refreshDeviceTokens();
       } catch (error) { toast(error.message); }
       finally { replace.disabled = false; }
@@ -5205,7 +5208,7 @@ $("device-token-form").onsubmit = async (event) => {
       body: JSON.stringify({ name: $("device-token-name").value, profile_id: $("device-token-profile").value }),
     });
     $("device-token-name").value = "";
-    showDeviceTokenSecret(result.token);
+    showDeviceTokenSecret(result.token, result.qr);
     await refreshDeviceTokens();
   } catch (error) { toast(error.message); }
 };
@@ -5220,6 +5223,7 @@ $("device-token-copy").onclick = async () => {
 };
 $("device-token-dismiss").onclick = () => {
   $("device-token-secret").value = "";
+  $("device-token-qr").replaceChildren();
   $("device-token-created").hidden = true;
 };
 $("invitation-form").onsubmit = async (event) => {

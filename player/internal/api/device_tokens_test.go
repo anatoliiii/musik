@@ -135,10 +135,14 @@ func TestMultiUserDeviceTokensPreserveLegacyBearerContractAndScope(t *testing.T)
 	check(created, http.StatusOK)
 	var phone struct {
 		Token  string             `json:"token"`
+		QR     string             `json:"qr"`
 		Device db.DeviceTokenInfo `json:"device"`
 	}
 	if err := json.Unmarshal(created.Body.Bytes(), &phone); err != nil || phone.Token == "" {
 		t.Fatalf("created token response=%s err=%v", created.Body.String(), err)
+	}
+	if !strings.HasPrefix(phone.QR, "<svg") {
+		t.Fatalf("created token has no connect QR: %.80q", phone.QR)
 	}
 	if phone.Device.ProfileID != profileA.ID || phone.Device.ExpiresAt == "" {
 		t.Fatalf("created device metadata=%+v", phone.Device)

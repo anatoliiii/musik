@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/torwin-job/musik/player/internal/db"
+	"github.com/torwin-job/musik/player/internal/settings"
 )
 
 func deviceTokenManager(w http.ResponseWriter, r *http.Request) (*principal, bool) {
@@ -61,7 +62,7 @@ func (s *Server) handleDeviceTokenCreate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
-	writeJSON(w, map[string]any{"device": token, "token": secret})
+	writeJSON(w, map[string]any{"device": token, "token": secret, "qr": s.connectQR(secret)})
 }
 
 func (s *Server) handleDeviceTokenRevoke(w http.ResponseWriter, r *http.Request) {
@@ -95,5 +96,19 @@ func (s *Server) handleDeviceTokenReplace(w http.ResponseWriter, r *http.Request
 		return
 	}
 	w.Header().Set("Cache-Control", "private, no-store")
-	writeJSON(w, map[string]any{"device": token, "token": secret})
+	writeJSON(w, map[string]any{"device": token, "token": secret, "qr": s.connectQR(secret)})
+}
+
+// connectQR is the "add this server" QR for a new device token: the phone app
+// scans musik://connect with the public address and the token, as it does
+// with the single-user API token. Empty when no public address is set.
+func (s *Server) connectQR(secret string) string {
+	if s.Cfg.PublicBaseURL == "" {
+		return ""
+	}
+	svg, err := settings.QRSVG(settings.ConnectPayload(s.Cfg.PublicBaseURL, secret))
+	if err != nil {
+		return ""
+	}
+	return svg
 }

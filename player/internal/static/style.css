@@ -2370,3 +2370,4 @@ html.theme-light .lib-tools select {
   background: #fff;
   border-radius: var(--radius-sm);
 }
+.device-token-qr svg { display: block; width: 220px; max-width: 100%; height: auto; margin: .6rem 0; border-radius: 8px; }
