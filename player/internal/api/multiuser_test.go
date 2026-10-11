@@ -205,4 +205,45 @@ func TestLocalAccountsRegisterSignInAndChangePassword(t *testing.T) {
 	check(call("/api/account/password", `{"current":"first-secret","new":"second-secret"}`, session...), 200)
 	check(call("/api/auth/login", `{"username":"owner","password":"first-secret"}`), 401)
 	check(call("/api/auth/login", `{"username":"owner","password":"second-secret"}`), 200)
+
+	// A phone app signs in without cookies and uses the device token as Bearer.
+	check(call("/api/auth/token", `{"username":"owner","password":"first-secret","device_name":"Phone"}`), 401)
+	check(call("/api/auth/token", `{"username":"owner","password":"second-secret","profile_id":"foreign"}`), 404)
+	out := call("/api/auth/token", `{"username":"Owner","password":"second-secret","device_name":"Phone"}`)
+	check(out, 200)
+	var phone struct {
+		Token    string       `json:"token"`
+		Profiles []db.Profile `json:"profiles"`
+	}
+	if err := json.Unmarshal(out.Body.Bytes(), &phone); err != nil || phone.Token == "" || len(phone.Profiles) != 1 {
+		t.Fatalf("token response=%s err=%v", out.Body.String(), err)
+	}
+	req := httptest.NewRequest("GET", "https://musik.test/api/favorites", nil)
+	req.Header.Set("Authorization", "Bearer "+phone.Token)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	check(rec, 200)
+}
+
+func TestSingleUserPasswordReturnsAPITokenToPhones(t *testing.T) {
+	databaseURL, path := testdb.Target(t, filepath.Join(t.TempDir(), "test.db"))
+	store, err := db.OpenDatabase(databaseURL, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	cfg := config.Config{DBPath: path, Password: "owner-secret", APIToken: "api-token-value", SessionSecret: "s", QueueSize: 6}
+	server := New(cfg, store, index.New(cfg), taste.New(), nil)
+	handler := server.Handler()
+	call := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, httptest.NewRequest("POST", "/api/auth/token", strings.NewReader(body)))
+		return rec
+	}
+	if rec := call(`{"password":"wrong"}`); rec.Code != 401 {
+		t.Fatalf("wrong password status=%d", rec.Code)
+	}
+	if rec := call(`{"password":"owner-secret"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"api-token-value"`) {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
 }

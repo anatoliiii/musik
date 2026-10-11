@@ -54,6 +54,7 @@ var apiRoutes = []routeDescriptor{
 	{"GET", "/api/auth/me", (*Server).handleAuthMe},
 	{"POST", "/api/auth/login", (*Server).handleAuthLogin},
 	{"POST", "/api/auth/register", (*Server).handleLocalRegister},
+	{"POST", "/api/auth/token", (*Server).handleAuthToken},
 	{"POST", "/api/account/password", (*Server).handlePasswordChange},
 	{"POST", "/api/auth/logout", (*Server).handleAuthLogout},
 	{"GET", "/api/auth/oidc/default/start", (*Server).handleOIDCStart},

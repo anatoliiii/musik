@@ -188,7 +188,7 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 
 func publicPath(r *http.Request) bool {
 	p := r.URL.Path
-	if r.Method == http.MethodPost && p == "/api/auth/login" {
+	if r.Method == http.MethodPost && (p == "/api/auth/login" || p == "/api/auth/token") {
 		return true
 	}
 	// Worker reload callback: handler still enforces loopback or Bearer.

@@ -43,7 +43,11 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 Пользователи регистрируются по ссылке-приглашению `/?invitation=<secret>` с
 именем и паролем (`POST /api/auth/register`), входят через `POST
 /api/auth/login` `{username, password}` и меняют пароль через `POST
-/api/account/password`. OIDC — необязательный второй способ входа:
+/api/account/password`. Мобильное приложение входит без браузера: `POST
+/api/auth/token` `{username, password, device_name, profile_id?}` выдаёт токен
+устройства для профиля (по умолчанию основного) и список профилей; дальше
+приложение шлёт `Authorization: Bearer <token>`. В однопользовательском режиме
+тот же запрос с `{password}` возвращает `MUSIK_API_TOKEN`. OIDC — необязательный второй способ входа:
 `MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
 `MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
 запрещены как общие настройки. Старые личные данные после миграции остаются в профиле первого

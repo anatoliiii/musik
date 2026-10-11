@@ -2566,6 +2566,53 @@
           }
         }
       }
+    },
+    "/api/auth/token": {
+      "post": {
+        "security": [],
+        "summary": "Sign a phone app in: trade credentials for a bearer token. Multi-user: username, password, device_name and optional profile_id issue a device token for that profile (default profile when omitted); single-user: password returns the API token",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "username": {
+                    "type": "string"
+                  },
+                  "password": {
+                    "type": "string"
+                  },
+                  "device_name": {
+                    "type": "string"
+                  },
+                  "profile_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{token, device, profiles}; send the token as Authorization: Bearer"
+          },
+          "401": {
+            "description": "Bad credentials"
+          },
+          "404": {
+            "description": "Profile not found"
+          },
+          "409": {
+            "description": "Single-user server without MUSIK_API_TOKEN"
+          },
+          "429": {
+            "description": "Too many attempts"
+          }
+        }
+      }
     }
   }
 }

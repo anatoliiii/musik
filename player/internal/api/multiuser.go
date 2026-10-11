@@ -105,7 +105,7 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if r.Method == http.MethodPost && (path == "/api/auth/login" || path == "/api/auth/register") {
+		if r.Method == http.MethodPost && (path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/token") {
 			if origin := r.Header.Get("Origin"); origin != "" && origin != strings.TrimRight(s.Cfg.PublicBaseURL, "/") {
 				writeErr(w, 403, "csrf", "invalid origin")
 				return
