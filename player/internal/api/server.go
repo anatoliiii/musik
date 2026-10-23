@@ -309,7 +309,10 @@ func (s *Server) Handler() http.Handler {
 		mux.HandleFunc(route.method+" "+route.path, func(w http.ResponseWriter, r *http.Request) {
 			// A hot standby rejects every write; fail clearly instead of
 			// surfacing PostgreSQL's read-only transaction error as a 500.
-			if s.Store.ReadOnly && route.method != http.MethodGet {
+			// Cache maintenance may refresh in-memory indexes from loopback;
+			// Reload skips database writes when Store.ReadOnly is set.
+			localReload := route.path == "/api/reload" && isLoopback(r)
+			if s.Store.ReadOnly && route.method != http.MethodGet && !localReload {
 				w.Header().Set("Retry-After", "30")
 				writeErr(w, 503, "read_only_replica", "this server is a read-only replica")
 				return
