@@ -4,6 +4,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/torwin-job/musik/player/internal/library"
 	"github.com/torwin-job/musik/player/internal/queue"
 )
 
@@ -49,10 +50,7 @@ func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err er
 		n := e.Idx.Size()
 		for i := 0; i < n; i++ {
 			m := e.Idx.MetaAt(i)
-			if artist != "" && !strings.EqualFold(strings.TrimSpace(m.Artist), artist) {
-				continue
-			}
-			if album != "" && !strings.EqualFold(strings.TrimSpace(m.Album), album) {
+			if !library.MatchArtistAlbum(m.Artist, m.Artists, m.AlbumArtist, m.Album, artist, album) {
 				continue
 			}
 			ids = append(ids, m.ID)

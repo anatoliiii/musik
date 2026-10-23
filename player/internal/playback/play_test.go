@@ -643,3 +643,44 @@ func TestNewSessionIDUniqueWithinOneClockTick(t *testing.T) {
 		seen[id] = true
 	}
 }
+
+func TestResolvePlayIDsCompilation(t *testing.T) {
+	engine := testEngine(t)
+	const album = "Силовая тренировка & Бег: Лучшие песни для спорта"
+	rows := []db.TrackRow{
+		{ID: 647, Artist: "Pikalov", AlbumArtist: "Разные артисты", Album: album},
+		{ID: 649, Artist: "Foxmelody", AlbumArtist: "Разные артисты", Album: album},
+		{ID: 669, Artist: "DJ Alex Good & DJ Mihail Fisher", ArtistSegments: []string{"DJ Alex Good", "DJ Mihail Fisher"}, AlbumArtist: "Разные артисты", Album: album},
+		{ID: 800, Artist: "Foxmelody", AlbumArtist: "Разные артисты", Album: "Другой сборник"},
+	}
+	for i := range rows {
+		rows[i].Embedding = index.Float32Bytes([]float32{1, 2})
+		rows[i].Dim = 2
+	}
+	if err := engine.Idx.Load(rows); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, artist string
+		want         []int64
+	}{
+		{"album artist", "  разные АРТИСТЫ  ", []int64{647, 649, 669}},
+		{"track artist", "Foxmelody", []int64{649}},
+		{"collaborator", "DJ Mihail Fisher", []int64{669}},
+		{"album without artist", "", []int64{647, 649, 669}},
+		{"unknown artist", "Missing artist", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ids, _, err := engine.ResolvePlayIDs(PlaySpec{Artist: tc.artist, Album: album})
+			if tc.want == nil {
+				if err == nil || len(ids) != 0 {
+					t.Fatalf("unknown artist: ids=%v error=%v", ids, err)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(ids, tc.want) {
+				t.Fatalf("ids=%v error=%v, want %v", ids, err, tc.want)
+			}
+		})
+	}
+}
