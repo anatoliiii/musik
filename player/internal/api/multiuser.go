@@ -5,18 +5,24 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/torwin-job/musik/player/internal/app"
 	"github.com/torwin-job/musik/player/internal/auth"
 	"github.com/torwin-job/musik/player/internal/db"
 	"github.com/torwin-job/musik/player/internal/index"
+	"github.com/torwin-job/musik/player/internal/playback"
+	"github.com/torwin-job/musik/player/internal/queue"
 	"github.com/torwin-job/musik/player/internal/taste"
 )
 
@@ -29,11 +35,32 @@ type principal struct {
 	DeviceToken bool
 	DeviceID    string
 }
+
+// A profile is listening state: its store, taste index, and engine.
+// Routes, auth, and media stay on the one Server.
+type profileState struct {
+	store *db.Store
+	idx   *index.Index
+	taste *taste.Profile
+	play  *playback.Engine
+	used  atomic.Int64
+	refs  atomic.Int32
+}
+
 type multiUserState struct {
 	oidc     *auth.OIDCClient
 	mu       sync.Mutex
-	profiles map[string]*Server
+	profiles map[string]*profileState
+	sweep    sync.Once
 }
+
+// Idle profiles are dropped so a long-running process does not keep an
+// engine for every account that ever pressed play. A profile with a request
+// in flight (refs > 0) stays.
+var (
+	profileIdleAfter = 30 * time.Minute
+	profileCacheMax  = 32
+)
 
 func (s *Server) EnableMultiUser(ctx context.Context) error {
 	if !s.Cfg.MultiUser {
@@ -58,7 +85,8 @@ func (s *Server) EnableMultiUser(ctx context.Context) error {
 	if !ready {
 		return errors.New("create the first administrator invitation with musik-player admin bootstrap before multi-user startup")
 	}
-	s.multi = &multiUserState{profiles: make(map[string]*Server)}
+	s.multi = &multiUserState{profiles: make(map[string]*profileState)}
+	s.multi.sweep.Do(func() { go s.profileJanitor() })
 	if s.Cfg.OIDCIssuer == "" {
 		return nil // local accounts only
 	}
@@ -100,24 +128,19 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 			}
 		}
 		path := r.URL.Path
-		public := r.Method == "GET" && (path == "/api/auth/me" || path == "/api/health" || path == "/api/themes" || path == "/api/openapi.json" || path == "/manifest.webmanifest" || strings.HasPrefix(path, "/api/auth/oidc/default/") || strings.HasPrefix(path, "/listen/"))
-		if public || !strings.HasPrefix(path, "/api/") {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if r.Method == http.MethodPost && (path == "/api/auth/login" || path == "/api/auth/register" || path == "/api/auth/token") {
-			if origin := r.Header.Get("Origin"); origin != "" && origin != strings.TrimRight(s.Cfg.PublicBaseURL, "/") {
-				writeErr(w, 403, "csrf", "invalid origin")
-				return
+		route, routed := matchRoute(r)
+		if openWithoutSession(route, routed, path, p != nil) {
+			if routed && credentialPost(route) {
+				if origin := r.Header.Get("Origin"); origin != "" && !s.allowedBrowserOrigin(origin) {
+					writeErr(w, 403, "csrf", "invalid origin")
+					return
+				}
 			}
 			next.ServeHTTP(w, r)
 			return
 		}
-		if path == "/api/auth/logout" && r.Method == http.MethodPost && p == nil {
-			next.ServeHTTP(w, r)
-			return
-		}
-		if path == "/api/reload" && isLoopback(r) {
+		// The worker calls reload on loopback; the handler still checks the peer.
+		if routed && route.path == "/api/reload" && isLoopback(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -126,21 +149,17 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Cache-Control", "private, no-store")
-		if p.DeviceToken && !deviceRouteAllowed(r.Method, path) {
+		if p.DeviceToken && routed && !deviceMayCall(route, r) {
 			writeErr(w, 403, "device_token_scope", "operation is not available to device tokens")
 			return
 		}
-		adminOnly := strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/jobs") || strings.HasPrefix(path, "/api/settings") || path == "/api/library/upload" || path == "/api/library/rescan" || path == "/api/reload"
-		if p.DeviceToken && strings.HasPrefix(path, "/api/jobs/") && (path == "/api/jobs/mix_pack" || deviceJobIDPath(r.Method, path)) {
-			adminOnly = false
-		}
-		if adminOnly && !p.Admin {
+		if routed && route.scope == scopeAdmin && !p.Admin && !(p.DeviceToken && jobDeviceException(route, r)) {
 			writeErr(w, 403, "admin_required", "administrator required")
 			return
 		}
 		if !p.DeviceToken && r.Method != "GET" && r.Method != "HEAD" && r.Method != "OPTIONS" {
 			origin := r.Header.Get("Origin")
-			if origin != "" && origin != strings.TrimRight(s.Cfg.PublicBaseURL, "/") {
+			if origin != "" && !s.allowedBrowserOrigin(origin) {
 				writeErr(w, 403, "csrf", "invalid origin")
 				return
 			}
@@ -153,15 +172,40 @@ func (s *Server) multiUserMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func deviceRouteAllowed(method, path string) bool {
-	if strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/profiles") || strings.HasPrefix(path, "/api/settings") ||
-		strings.HasPrefix(path, "/api/account/device-tokens") || strings.HasPrefix(path, "/api/auth/oidc/") {
+// openWithoutSession is true for static files and for public routes.
+// A signed-in logout still falls through so the CSRF check applies.
+func openWithoutSession(route routeDescriptor, routed bool, path string, signedIn bool) bool {
+	if !routed {
+		return !strings.HasPrefix(path, "/api/")
+	}
+	if route.scope != scopePublic {
 		return false
 	}
-	if strings.HasPrefix(path, "/api/jobs") {
-		return (method == http.MethodPost && path == "/api/jobs/mix_pack") || deviceJobIDPath(method, path)
+	return !(route.path == "/api/auth/logout" && signedIn)
+}
+
+func credentialPost(route routeDescriptor) bool {
+	return route.scope == scopePublic && route.method == http.MethodPost && route.path != "/api/auth/logout"
+}
+
+// deviceMayCall blocks admin routes and account management. A phone can
+// still enqueue its own mix_pack and read that job; profile routes stay open.
+func deviceMayCall(route routeDescriptor, r *http.Request) bool {
+	if jobDeviceException(route, r) {
+		return true
 	}
-	return true
+	return route.scope != scopeAdmin && route.scope != scopeUser
+}
+
+func jobDeviceException(route routeDescriptor, r *http.Request) bool {
+	switch route.path {
+	case "/api/jobs/{kind}":
+		return r.URL.Path == "/api/jobs/mix_pack"
+	case "/api/jobs/{id}":
+		return deviceJobIDPath(r.Method, r.URL.Path)
+	default:
+		return false
+	}
 }
 
 func deviceJobIDPath(method, path string) bool {
@@ -180,45 +224,181 @@ func deviceJobIDPath(method, path string) bool {
 	return true
 }
 
-func (s *Server) requestServer(r *http.Request) (*Server, error) {
-	if !s.Cfg.MultiUser {
-		return s, nil
+// serveTarget returns the server that runs this request. Profile routes get a
+// view of the same server whose store, taste index, and engine are that
+// profile's. The view is not cached and does not own routes, auth, or media.
+func (s *Server) serveTarget(r *http.Request, route routeDescriptor) (*Server, func(), error) {
+	if !s.Cfg.MultiUser || !route.profileRuntime() {
+		return s, nil, nil
 	}
-	path := r.URL.Path
-	if strings.HasPrefix(path, "/api/auth/") || strings.HasPrefix(path, "/api/profiles") || strings.HasPrefix(path, "/api/admin/") || strings.HasPrefix(path, "/api/settings") || path == "/api/health" || path == "/api/themes" || path == "/api/openapi.json" || path == "/api/reload" || path == "/manifest.webmanifest" {
-		return s, nil
+	profileID, err := s.requestProfileID(r, route)
+	if err != nil {
+		return nil, nil, err
 	}
-	p, _ := r.Context().Value(principalKey{}).(*principal)
-	profileID := ""
-	if strings.HasPrefix(path, "/listen/") {
-		var err error
-		profileID, err = s.Store.RadioShareProfile(r.Context(), r.PathValue("token"))
-		if err != nil {
-			return nil, err
-		}
-	} else if p != nil {
-		profileID = p.Profile.ID
+	p, err := s.acquireProfile(profileID)
+	if err != nil {
+		return nil, nil, err
 	}
+	return s.bind(p), func() { s.releaseProfile(p) }, nil
+}
+
+func (s *Server) requestProfileID(r *http.Request, route routeDescriptor) (string, error) {
+	if route.path == "/listen/{token}" {
+		return s.Store.RadioShareProfile(r.Context(), r.PathValue("token"))
+	}
+	if p := caller(r); p != nil {
+		return p.Profile.ID, nil
+	}
+	return "", db.ErrProfileNotFound
+}
+
+// bind points a request at one profile. Copying the server shares the
+// pointer fields (auth, media, catalog, listener counter); only the
+// profile's store, index, taste, and engine change.
+func (s *Server) bind(p *profileState) *Server {
+	view := *s
+	view.Store = p.store
+	view.Idx = p.idx
+	view.Taste = p.taste
+	view.Play = p.play
+	return &view
+}
+
+func (s *Server) acquireProfile(profileID string) (*profileState, error) {
 	if profileID == "" || s.multi == nil {
 		return nil, db.ErrProfileNotFound
 	}
 	s.multi.mu.Lock()
-	defer s.multi.mu.Unlock()
-	if runtime := s.multi.profiles[profileID]; runtime != nil {
-		return runtime, nil
+	if p := s.multi.profiles[profileID]; p != nil {
+		p.refs.Add(1)
+		p.used.Store(time.Now().UnixNano())
+		s.evictLocked(time.Now())
+		s.multi.mu.Unlock()
+		return p, nil
 	}
-	cfg := s.Cfg
-	cfg.MultiUser = false
-	cfg.WorkerAutostart = false
-	cfg.RankerPath = filepath.Join(filepath.Dir(cfg.RankerPath), "profiles", profileID, "ranker.json")
-	runtime := newServer(cfg, s.Store.ForProfile(profileID), index.New(cfg), taste.New(), s.Static, s.backgroundIO)
-	runtime.App.ProfileRuntime = true
-	runtime.App.Catalog = s.App.Catalog
-	if err := runtime.Reload(); err != nil {
+	s.multi.mu.Unlock()
+
+	p, err := s.openProfile(profileID)
+	if err != nil {
 		return nil, err
 	}
-	s.multi.profiles[profileID] = runtime
-	return runtime, nil
+	s.multi.mu.Lock()
+	defer s.multi.mu.Unlock()
+	if cur := s.multi.profiles[profileID]; cur != nil {
+		cur.refs.Add(1)
+		cur.used.Store(time.Now().UnixNano())
+		s.evictLocked(time.Now())
+		return cur, nil
+	}
+	p.refs.Store(1)
+	p.used.Store(time.Now().UnixNano())
+	s.multi.profiles[profileID] = p
+	s.evictLocked(time.Now())
+	return p, nil
+}
+
+func (s *Server) releaseProfile(p *profileState) {
+	if p == nil {
+		return
+	}
+	p.used.Store(time.Now().UnixNano())
+	p.refs.Add(-1)
+}
+
+func (s *Server) openProfile(profileID string) (*profileState, error) {
+	store := s.Store.ForProfile(profileID)
+	idx := index.New(s.Cfg)
+	tp := taste.New()
+	cfg := s.Cfg
+	cfg.RankerPath = filepath.Join(filepath.Dir(cfg.RankerPath), "profiles", profileID, "ranker.json")
+	play := playback.New(cfg, store, idx, tp, queue.NewBuilder(idx, cfg))
+	s.wire(play)
+	cat, err := s.App.Catalog.Current()
+	if err != nil {
+		return nil, err
+	}
+	if err := app.ReloadProfile(store, idx, tp, play, cat); err != nil {
+		return nil, err
+	}
+	log.Printf("profile %s ready tracks=%d", profileID, idx.Size())
+	return &profileState{store: store, idx: idx, taste: tp, play: play}, nil
+}
+
+func (s *Server) reloadProfiles() error {
+	if s.multi == nil {
+		return nil
+	}
+	cat, err := s.App.Catalog.Current()
+	if err != nil {
+		return err
+	}
+	s.multi.mu.Lock()
+	list := make([]*profileState, 0, len(s.multi.profiles))
+	for _, p := range s.multi.profiles {
+		list = append(list, p)
+	}
+	s.multi.mu.Unlock()
+	for _, p := range list {
+		if err := app.ReloadProfile(p.store, p.idx, p.taste, p.play, cat); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Server) dropProfile(profileID string) {
+	if s.multi == nil || profileID == "" {
+		return
+	}
+	s.multi.mu.Lock()
+	delete(s.multi.profiles, profileID)
+	s.multi.mu.Unlock()
+}
+
+func (s *Server) profileJanitor() {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for range tick.C {
+		s.sweepProfiles()
+	}
+}
+
+func (s *Server) sweepProfiles() {
+	if s.multi == nil {
+		return
+	}
+	s.multi.mu.Lock()
+	defer s.multi.mu.Unlock()
+	s.evictLocked(time.Now())
+}
+
+func (s *Server) evictLocked(now time.Time) {
+	for id, p := range s.multi.profiles {
+		if p.refs.Load() > 0 {
+			continue
+		}
+		if now.Sub(time.Unix(0, p.used.Load())) >= profileIdleAfter {
+			delete(s.multi.profiles, id)
+		}
+	}
+	extra := len(s.multi.profiles) - profileCacheMax
+	if extra <= 0 {
+		return
+	}
+	type idle struct {
+		id   string
+		used int64
+	}
+	quiet := make([]idle, 0, len(s.multi.profiles))
+	for id, p := range s.multi.profiles {
+		if p.refs.Load() == 0 {
+			quiet = append(quiet, idle{id, p.used.Load()})
+		}
+	}
+	sort.Slice(quiet, func(i, j int) bool { return quiet[i].used < quiet[j].used })
+	for i := 0; i < extra && i < len(quiet); i++ {
+		delete(s.multi.profiles, quiet[i].id)
+	}
 }
 
 func (s *Server) handleOIDCStart(w http.ResponseWriter, r *http.Request) {
@@ -379,6 +559,10 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleLocalRegister accepts an invitation with a new local account.
 func (s *Server) handleLocalRegister(w http.ResponseWriter, r *http.Request) {
+	if !s.Cfg.MultiUser {
+		writeErr(w, http.StatusNotFound, "not_found", "not found")
+		return
+	}
 	if s.loginLimiter != nil && !s.loginLimiter.Allow(r) {
 		writeErr(w, 429, "rate_limited", "too many attempts")
 		return
@@ -533,6 +717,7 @@ func (s *Server) handleProfileDelete(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "profile_not_found", "profile not found")
 		return
 	}
+	s.dropProfile(r.PathValue("profile_id"))
 	writeJSON(w, map[string]any{"ok": true})
 }
 func (s *Server) handleProfileActivate(w http.ResponseWriter, r *http.Request) {
@@ -593,4 +778,24 @@ func (s *Server) handleInvitationRevoke(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, map[string]any{"ok": true})
+}
+
+// Additional deployment names are explicitly trusted for authentication.
+// They do not grant CORS access or remove the CSRF check for cookie sessions.
+func (s *Server) allowedBrowserOrigin(origin string) bool {
+	if origin == strings.TrimRight(s.Cfg.PublicBaseURL, "/") {
+		return true
+	}
+	for _, candidate := range s.Cfg.AuthAllowedOrigins {
+		if candidate != origin {
+			continue
+		}
+		u, err := url.Parse(candidate)
+		if err == nil && u.Scheme == "https" && u.Hostname() != "" &&
+			u.User == nil && u.Path == "" && u.RawPath == "" &&
+			!strings.ContainsAny(candidate, "?#*") {
+			return true
+		}
+	}
+	return false
 }

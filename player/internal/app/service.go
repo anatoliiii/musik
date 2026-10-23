@@ -30,11 +30,9 @@ type Service struct {
 	Taste *taste.Profile
 	Play  *playback.Engine
 	HTTP  *http.Client
-	// Catalog is the process-wide catalog every runtime's index attaches to.
+	// Catalog is the process-wide embedding catalog. Profile indexes attach
+	// to it; they do not each load their own copy.
 	Catalog *index.CatalogSource
-	// ProfileRuntime marks a per-profile runtime. It attaches to the catalog
-	// the installation runtime refreshed and writes no shared derivatives.
-	ProfileRuntime bool
 }
 
 func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile, play *playback.Engine, client *http.Client) *Service {
@@ -45,44 +43,63 @@ func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile
 }
 
 func (s *Service) Reload() error {
-	refresh := s.Catalog.Refresh
-	if s.ProfileRuntime {
-		refresh = s.Catalog.Current
-	}
-	cat, err := refresh()
+	cat, err := s.Catalog.Refresh()
 	if err != nil {
 		return err
 	}
-	stats, err := s.Store.LoadTrackStats()
-	if err != nil {
-		return err
-	}
-	s.Idx.Attach(cat, stats)
-	pos, neg, _ := s.Store.ListenSignalCounts()
-	if blob, err := s.Store.LatestProfile("global"); err == nil && len(blob) > 0 {
-		v := index.BytesToFloat32(blob)
-		if len(v) == s.Idx.Dim() {
-			s.Taste.SetWithMeta(v, pos, neg, "online_ema")
+	if s.Play != nil {
+		if err := ReloadProfile(s.Store, s.Idx, s.Taste, s.Play, cat); err != nil {
+			return err
 		}
-	} else if !s.Taste.Ready() {
-		s.Taste.SetWithMeta(s.Idx.Centroid(), pos, neg, "centroid")
+		log.Printf("reloaded index n=%d dim=%d maturity=%s", s.Idx.Size(), s.Idx.Dim(),
+			s.Taste.Maturity(s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt))
 	} else {
-		s.Taste.SetCounts(pos, neg)
+		log.Printf("reloaded catalog n=%d dim=%d", cat.Size(), cat.Dim())
 	}
-	log.Printf("reloaded index n=%d dim=%d maturity=%s", s.Idx.Size(), s.Idx.Dim(),
-		s.Taste.Maturity(s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt))
-	s.Play.ReloadTransitions()
-	s.Play.ReloadRanker()
-	if s.Store.ReadOnly || s.ProfileRuntime {
-		return nil
+	s.publishEntityVectors(cat)
+	return nil
+}
+
+// ReloadProfile attaches cat to one profile's index and refreshes that
+// profile's taste vector, transitions, and ranker. The shared catalog and
+// installation entity vectors stay with Service.Reload.
+func ReloadProfile(store *db.Store, idx *index.Index, tp *taste.Profile, play *playback.Engine, cat *index.Catalog) error {
+	stats, err := store.LoadTrackStats()
+	if err != nil {
+		return err
 	}
-	entityRows := s.Idx.EntityVectorRows(db.EntityModelVersion)
+	idx.Attach(cat, stats)
+	pos, neg, _ := store.ListenSignalCounts()
+	if blob, err := store.LatestProfile("global"); err == nil && len(blob) > 0 {
+		v := index.BytesToFloat32(blob)
+		if len(v) == idx.Dim() {
+			tp.SetWithMeta(v, pos, neg, "online_ema")
+		}
+	} else if !tp.Ready() {
+		tp.SetWithMeta(idx.Centroid(), pos, neg, "centroid")
+	} else {
+		tp.SetCounts(pos, neg)
+	}
+	if play != nil {
+		play.ReloadTransitions()
+		play.ReloadRanker()
+	}
+	return nil
+}
+
+func (s *Service) publishEntityVectors(cat *index.Catalog) {
+	if s.Store == nil || s.Store.ReadOnly || cat == nil {
+		return
+	}
+	idx := index.New(s.Cfg)
+	idx.Attach(cat, nil)
+	rows := idx.EntityVectorRows(db.EntityModelVersion)
+	store := s.Store
 	go func() {
-		if err := s.Store.ReplaceEntityVectors(db.EntityModelVersion, entityRows); err != nil {
+		if err := store.ReplaceEntityVectors(db.EntityModelVersion, rows); err != nil {
 			log.Printf("entity vectors refresh: %v", err)
 		}
 	}()
-	return nil
 }
 
 func (s *Service) WorkerHealthy() bool {

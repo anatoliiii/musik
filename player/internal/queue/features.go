@@ -9,45 +9,27 @@ import (
 	"github.com/torwin-job/musik/player/internal/index"
 )
 
-const FeatureSchemaVersion = 1
+// FeatureSchemaVersion is the active impression-feature contract (v3).
+//
+// History — training drops snapshots with a lower schema_version:
+//   - v2: likes, finish/partial rates, impression fatigue, hours since finish, duration, queue position
+//   - v3: impression_fatigue = log1p(shows − radio_completions); a library play does not clear
+//     fatigue from a shown-but-not-finished radio impression
+//
+// Source one-hots stay on the impression as quota policy, not model features.
+const FeatureSchemaVersion = 3
 
-var FeatureOrder = []string{
-	"sim_taste",
-	"sim_current",
-	"sim_session",
-	"sim_daypart",
-	"sim_mood",
-	"sim_place",
-	"sim_activity",
-	"sim_centroid_max",
-	"transition_weight",
-	"transition_score",
-	"bpm_distance",
-	"bpm_missing",
-	"lufs_diff",
-	"lufs_missing",
-	"key_compat",
-	"energy_diff",
-	"artist_repeat",
-	"album_repeat",
-	"new_boost",
-	"source_exploit",
-	"source_transition",
-	"source_explore_adjacent",
-	"source_resurface",
-	"source_new_in_library",
-	"source_wildcard",
-	"plays_log",
-	"early_skip_rate",
-	"hours_since_played",
-	"never_played",
-	"negative_penalty",
-}
+// FeatureOrder is filled from ranker_spec.json so Go and Python share one list.
+var FeatureOrder []string
 
 type FeatureContext struct {
-	Daypart    string   `json:"daypart,omitempty"`
-	ContextIDs []string `json:"context_ids,omitempty"`
-	Profile    string   `json:"profile,omitempty"`
+	Daypart     string             `json:"daypart,omitempty"`
+	ContextIDs  []string           `json:"context_ids,omitempty"`
+	Profile     string             `json:"profile,omitempty"`
+	Position    int                `json:"position"`
+	DurationSec float64            `json:"duration_sec,omitempty"`
+	SampledP    float64            `json:"sampled_p,omitempty"`
+	Pairwise    map[string]float64 `json:"pairwise,omitempty"`
 }
 
 type FeatureSnapshot struct {
@@ -72,11 +54,13 @@ type FeatureInputs struct {
 	TransitionW     float64
 	TransitionScore float64
 	Current         *index.Meta
-	Sources         []string
 	NewBoost        float64
 	NegativePenalty float64
 	ArtistRepeat    float64
 	AlbumRepeat     float64
+	// QueuePosition is filled after a track is placed. Scoring leaves it at 0
+	// so the slot itself is not a reason to pick the track.
+	QueuePosition float64
 }
 
 func VectorFromInputs(in FeatureInputs) []float64 {
@@ -87,7 +71,7 @@ func VectorFromInputs(in FeatureInputs) []float64 {
 	if in.Meta.Plays > 0 {
 		earlyRate = float64(in.Meta.EarlySkips) / float64(in.Meta.Plays)
 	}
-	src := sourceFlags(in.Sources)
+	finishedHours, _ := cappedHours(in.Meta.LastFinishedAt, in.Now)
 	return []float64{
 		in.SimTaste,
 		in.SimCurrent,
@@ -108,17 +92,19 @@ func VectorFromInputs(in FeatureInputs) []float64 {
 		in.ArtistRepeat,
 		in.AlbumRepeat,
 		in.NewBoost,
-		src["exploit"],
-		src["transition"],
-		src["explore_adjacent"],
-		src["resurface"],
-		src["new_in_library"],
-		src["wildcard"],
 		math.Log1p(float64(in.Meta.Plays)),
 		earlyRate,
 		hours,
 		never,
 		in.NegativePenalty,
+		math.Log1p(float64(in.Meta.Likes)),
+		math.Log1p(float64(in.Meta.Dislikes)),
+		countRate(in.Meta.Finishes, in.Meta.Plays),
+		countRate(in.Meta.Partial, in.Meta.Plays),
+		impressionFatigue(in.Meta.Shown, in.Meta.Completed),
+		finishedHours,
+		in.Meta.Duration / 60,
+		in.QueuePosition,
 	}
 }
 
@@ -132,19 +118,6 @@ func Snapshot(modelVersion string, values []float64, ctx FeatureContext) (Featur
 	}
 	raw, _ := json.Marshal(snap)
 	return snap, string(raw)
-}
-
-func sourceFlags(sources []string) map[string]float64 {
-	out := map[string]float64{
-		"exploit": 0, "transition": 0, "explore_adjacent": 0,
-		"resurface": 0, "new_in_library": 0, "wildcard": 0,
-	}
-	for _, src := range sources {
-		if _, ok := out[src]; ok {
-			out[src] = 1
-		}
-	}
-	return out
 }
 
 func bpmDistance(cur *index.Meta, next index.Meta) (float64, float64) {
@@ -237,14 +210,41 @@ func neighbors(a, b int) bool {
 }
 
 func recency(meta index.Meta, now time.Time) (float64, float64) {
-	if meta.LastPlayedAt.IsZero() {
+	hours, missing := cappedHours(meta.LastPlayedAt, now)
+	if missing {
 		return 0, 1
 	}
-	hours := now.Sub(meta.LastPlayedAt).Hours()
+	return hours, 0
+}
+
+// cappedHours scales an age into the same unit as hours_since_played:
+// hours/720, capped at 4. A zero timestamp is missing.
+func cappedHours(at, now time.Time) (float64, bool) {
+	if at.IsZero() {
+		return 0, true
+	}
+	hours := now.Sub(at).Hours()
 	if hours < 0 {
 		hours = 0
 	}
-	return math.Min(hours/720, 4), 0
+	return math.Min(hours/720, 4), false
+}
+
+func countRate(part, total int) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(part) / float64(total)
+}
+
+// impressionFatigue is how often a recommendation was shown without a radio
+// completion. Plays from the library do not close the gap.
+func impressionFatigue(shown, completed int) float64 {
+	gap := shown - completed
+	if gap <= 0 {
+		return 0
+	}
+	return math.Log1p(float64(gap))
 }
 
 func clamp01(v float64) float64 {

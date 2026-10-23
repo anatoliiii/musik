@@ -1,8 +1,10 @@
 package db
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -52,17 +54,25 @@ ORDER BY l.position ASC, l.added_at DESC`, s.ProfileID)
 }
 
 func (s *Store) trackListAdd(table string, trackID int64) error {
+	return insertTrackList(s.DB, table, s.ProfileID, trackID)
+}
+
+func insertTrackList(q sqlQuery, table, profileID string, trackID int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := q.Exec(`
 INSERT INTO `+table+`(track_id, added_at, position, profile_id)
 SELECT ?, ?, COALESCE(MAX(position),0)+1, ? FROM `+table+` WHERE profile_id = ?
 ON CONFLICT(profile_id,track_id) DO UPDATE SET added_at=excluded.added_at`,
-		trackID, now, s.ProfileID, s.ProfileID)
+		trackID, now, profileID, profileID)
 	return err
 }
 
 func (s *Store) trackListRemove(table string, trackID int64) error {
-	_, err := s.DB.Exec(`DELETE FROM `+table+` WHERE profile_id = ? AND track_id = ?`, s.ProfileID, trackID)
+	return deleteTrackList(s.DB, table, s.ProfileID, trackID)
+}
+
+func deleteTrackList(q sqlQuery, table, profileID string, trackID int64) error {
+	_, err := q.Exec(`DELETE FROM `+table+` WHERE profile_id = ? AND track_id = ?`, profileID, trackID)
 	return err
 }
 
@@ -107,20 +117,28 @@ func (s *Store) FavArtistsList() ([]FavArtist, error) {
 }
 
 func (s *Store) FavArtistAdd(artist string) error {
+	return favArtistAdd(s.DB, s.ProfileID, artist)
+}
+
+func favArtistAdd(q sqlQuery, profileID, artist string) error {
 	artist = strings.TrimSpace(artist)
 	if artist == "" {
 		return fmt.Errorf("artist required")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := q.Exec(`
 INSERT INTO favorite_artists(artist, added_at, position, profile_id)
 SELECT ?, ?, COALESCE(MAX(position),0)+1, ? FROM favorite_artists WHERE profile_id = ?
-ON CONFLICT(profile_id,artist) DO UPDATE SET added_at=excluded.added_at`, artist, now, s.ProfileID, s.ProfileID)
+ON CONFLICT(profile_id,artist) DO UPDATE SET added_at=excluded.added_at`, artist, now, profileID, profileID)
 	return err
 }
 
 func (s *Store) FavArtistRemove(artist string) error {
-	_, err := s.DB.Exec(`DELETE FROM favorite_artists WHERE profile_id = ? AND artist = ?`, s.ProfileID, strings.TrimSpace(artist))
+	return favArtistRemove(s.DB, s.ProfileID, artist)
+}
+
+func favArtistRemove(q sqlQuery, profileID, artist string) error {
+	_, err := q.Exec(`DELETE FROM favorite_artists WHERE profile_id = ? AND artist = ?`, profileID, strings.TrimSpace(artist))
 	return err
 }
 
@@ -143,23 +161,31 @@ func (s *Store) FavAlbumsList() ([]FavAlbum, error) {
 }
 
 func (s *Store) FavAlbumAdd(artist, album string) error {
+	return favAlbumAdd(s.DB, s.ProfileID, artist, album)
+}
+
+func favAlbumAdd(q sqlQuery, profileID, artist, album string) error {
 	artist = strings.TrimSpace(artist)
 	album = strings.TrimSpace(album)
 	if album == "" {
 		return fmt.Errorf("album required")
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.DB.Exec(`
+	_, err := q.Exec(`
 INSERT INTO favorite_albums(artist, album, added_at, position, profile_id)
 SELECT ?, ?, ?, COALESCE(MAX(position),0)+1, ? FROM favorite_albums WHERE profile_id = ?
 ON CONFLICT(profile_id,artist, album) DO UPDATE SET added_at=excluded.added_at`,
-		artist, album, now, s.ProfileID, s.ProfileID)
+		artist, album, now, profileID, profileID)
 	return err
 }
 
 func (s *Store) FavAlbumRemove(artist, album string) error {
-	_, err := s.DB.Exec(`DELETE FROM favorite_albums WHERE profile_id = ? AND artist = ? AND album = ?`,
-		s.ProfileID, strings.TrimSpace(artist), strings.TrimSpace(album))
+	return favAlbumRemove(s.DB, s.ProfileID, artist, album)
+}
+
+func favAlbumRemove(q sqlQuery, profileID, artist, album string) error {
+	_, err := q.Exec(`DELETE FROM favorite_albums WHERE profile_id = ? AND artist = ? AND album = ?`,
+		profileID, strings.TrimSpace(artist), strings.TrimSpace(album))
 	return err
 }
 
@@ -174,6 +200,106 @@ func (s *Store) FavAlbumCount() int {
 	var n int
 	_ = s.DB.QueryRow(`SELECT COUNT(*) FROM favorite_albums WHERE profile_id = ?`, s.ProfileID).Scan(&n)
 	return n
+}
+
+// FavoriteToggle is the state after one favorite flip, including the three counts.
+type FavoriteToggle struct {
+	Type      string
+	Favorited bool
+	TrackID   int64
+	Artist    string
+	Album     string
+	Tracks    int
+	Artists   int
+	Albums    int
+}
+
+// ToggleFavorite flips one favorite row and reads the counts in the same
+// transaction. kind is track, artist, or album.
+func (s *Store) ToggleFavorite(ctx context.Context, kind string, trackID int64, artist, album string) (FavoriteToggle, error) {
+	out := FavoriteToggle{Type: kind, TrackID: trackID, Artist: strings.TrimSpace(artist), Album: strings.TrimSpace(album)}
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
+		q := queryCtx{ctx: ctx, tx: tx}
+		var err error
+		switch kind {
+		case "track":
+			out.Favorited, err = toggleTrackList(q, "favorites", s.ProfileID, trackID)
+		case "artist":
+			out.Favorited, err = toggleFavArtist(q, s.ProfileID, out.Artist)
+		case "album":
+			out.Favorited, err = toggleFavAlbum(q, s.ProfileID, out.Artist, out.Album)
+		default:
+			return fmt.Errorf("type must be track|artist|album")
+		}
+		if err != nil {
+			return err
+		}
+		out.Tracks, err = countTable(q, "favorites", s.ProfileID)
+		if err != nil {
+			return err
+		}
+		out.Artists, err = countTable(q, "favorite_artists", s.ProfileID)
+		if err != nil {
+			return err
+		}
+		out.Albums, err = countTable(q, "favorite_albums", s.ProfileID)
+		return err
+	})
+	if err != nil {
+		return FavoriteToggle{}, err
+	}
+	return out, nil
+}
+
+func toggleTrackList(q sqlQuery, table, profileID string, trackID int64) (bool, error) {
+	on, err := rowExists(q, `SELECT 1 FROM `+table+` WHERE profile_id = ? AND track_id = ?`, profileID, trackID)
+	if err != nil {
+		return false, err
+	}
+	if on {
+		return false, deleteTrackList(q, table, profileID, trackID)
+	}
+	return true, insertTrackList(q, table, profileID, trackID)
+}
+
+func toggleFavArtist(q sqlQuery, profileID, artist string) (bool, error) {
+	on, err := rowExists(q, `SELECT 1 FROM favorite_artists WHERE profile_id = ? AND artist = ?`, profileID, artist)
+	if err != nil {
+		return false, err
+	}
+	if on {
+		return false, favArtistRemove(q, profileID, artist)
+	}
+	return true, favArtistAdd(q, profileID, artist)
+}
+
+func toggleFavAlbum(q sqlQuery, profileID, artist, album string) (bool, error) {
+	on, err := rowExists(q, `SELECT 1 FROM favorite_albums WHERE profile_id = ? AND artist = ? AND album = ?`, profileID, artist, album)
+	if err != nil {
+		return false, err
+	}
+	if on {
+		return false, favAlbumRemove(q, profileID, artist, album)
+	}
+	return true, favAlbumAdd(q, profileID, artist, album)
+}
+
+func rowExists(q sqlQuery, query string, args ...any) (bool, error) {
+	var n int
+	err := q.QueryRow(query, args...).Scan(&n)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func countTable(q sqlQuery, table, profileID string) (int, error) {
+	var n int
+	err := q.QueryRow(`SELECT COUNT(*) FROM `+table+` WHERE profile_id = ?`, profileID).Scan(&n)
+	return n, err
 }
 
 func (s *Store) LatestPlaylist(kind string) (*Playlist, error) {

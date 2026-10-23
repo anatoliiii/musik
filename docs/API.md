@@ -1,178 +1,158 @@
-# musik API v1
+# musik API
 
 Base URL: `http://127.0.0.1:8787`  
-OpenAPI: [`GET /api/openapi.json`](/api/openapi.json)
+Машиночитаемая спецификация: [`GET /api/openapi.json`](/api/openapi.json). Её источник — `player/internal/api/openapi.json`; `docs/openapi.yaml` — тот же документ. Тест `TestEmbeddedOpenAPIMatchesRegisteredRoutes` сверяет пути с таблицей `apiRoutes`.
 
-Документ описывает работающий API v1. Radio current/queue items содержат
-`request_id`, `impression_id` и `source`. Новые клиенты повторяют события с тем
-же `event_id`; legacy Flutter его не отправляет, поэтому сервер генерирует id
-для каждого такого запроса и не обещает дедупликацию сырых строк истории.
-Контексты вкуса, radio rules и пользовательские/smart playlists доступны через
-`/api/contexts`, `/api/rules` и `/api/playlists`.
+JSON, кроме стрима, обложек, фото и `POST /api/library/upload`. Ошибка: `{"error":"…","code":"…"}`.
 
-Content-Type: `application/json` (кроме stream/artwork и `POST /api/library/upload`).
-Все JSON-ошибки используют envelope `{"error":"…","code":"…"}`.
+Маршрут принадлежит одному scope. Middleware читает эту таблицу, а не отдельный список префиксов.
 
-## Auth (один владелец)
+| Scope | Кто | Что |
+|-------|-----|-----|
+| `public` | без сессии | health, вход, манифест, чужой MP3-эфир |
+| `user` | вошедший аккаунт | пароль, свои профили, свои токены устройств |
+| `profile` | активный профиль слушателя | каталог, радио, вкус, плейлисты, своя статистика |
+| `admin` | администратор установки | библиотека, задания, настройки, приглашения, учётки |
 
-Этот раздел описывает legacy-режим для одного владельца. Flutter-клиент в этом
-режиме использует общий `MUSIK_API_TOKEN`; в multi-user режиме он заменяется
-персональным токеном устройства, созданным из браузерной учётной записи.
+В режиме одного пароля cookie или `Authorization: Bearer <MUSIK_API_TOKEN>` открывают `profile` и `admin`. `MUSIK_AUTH_DISABLED=1` выключает проверку и не предназначен для публичного адреса. Логин: не больше 5 попыток в минуту с одного IP.
 
-| | |
-|--|--|
-| UI | пароль `MUSIK_PASSWORD` → `POST /api/auth/login` → httpOnly cookie `musik_session` |
-| API / скрипты | `Authorization: Bearer <MUSIK_API_TOKEN>` |
-| Отключить | только явно: `MUSIK_AUTH_DISABLED=1` |
+Режим аккаунтов (`MUSIK_MULTI_USER=1`, HTTPS `MUSIK_PUBLIC_BASE_URL`) не принимает общий пароль, общий API-токен и `MUSIK_AUTH_DISABLED`. Изменяющие запросы из браузера несут cookie, `X-CSRF-Token` и тот же `Origin`, что публичный URL. Cookie и `Authorization` вместе — `400 credential_conflict`. Токен устройства ходит только в `profile`, плюс `POST /api/jobs/mix_pack` и `GET /api/jobs/{id}` своего задания. Чужой `session_id` — `404`.
 
-Публично без auth: `GET /api/health` (без `tracks`/`dim`), `GET /api/openapi.json`, `GET /api/auth/me`, `POST /api/auth/login`, **`GET /listen/{token}`** (share radio).  
-`POST /api/reload` — loopback **или** Bearer (callback worker).  
-**Старт без пароля/токена запрещён**, кроме `MUSIK_AUTH_DISABLED=1`. Login rate-limit: 5/мин/IP.
+## public
 
-Мобильный протокол и фактические маршруты клиента: [MOBILE.md](MOBILE.md).
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/health` | `{ok, version, api_version, auth}`; с авторизацией ещё `tracks` и `dim` |
+| GET | `/api/themes` | встроенные темы и пакеты из каталога тем |
+| GET | `/api/openapi.json` | эта спецификация |
+| GET | `/api/auth/me` | без сессии и для токена устройства: `{ok, auth_enabled}`; неверный Bearer здесь `200` и `ok:false`. Браузерная сессия аккаунта: пользователь, роли, профили |
+| POST | `/api/auth/login` | один пароль: `{password}` → cookie ~14 дней. Аккаунты: `{username, password}` |
+| POST | `/api/auth/register` | `{invitation, username, password}` — новый локальный аккаунт и сразу вход. Имя 1–64 символа, пароль 8–256. В режиме одного пароля маршрута нет: `404` |
+| POST | `/api/auth/token` | телефон. Аккаунты: `{username, password, device_name, profile_id?}` → токен устройства на 180 дней. Один пароль: `{password}` → `MUSIK_API_TOKEN` |
+| POST | `/api/auth/logout` | сброс cookie. У вошедшего аккаунта нужен CSRF |
+| GET | `/api/auth/oidc/default/start` | старт OIDC, Authorization Code + PKCE |
+| GET | `/api/auth/oidc/default/callback` | ответ провайдера → серверная сессия |
+| GET | `/listen/{token}` | непрерывный MP3. Принимается и `/listen/{token}.mp3`. Слушатель не пишет вкус и статистику владельца ссылки |
+| GET | `/manifest.webmanifest` | манифест PWA |
 
-| Method | Path | Описание |
-|--------|------|----------|
-| POST | `/api/auth/login` | `{ "password": "…" }` → cookie, TTL ~14 дней |
-| POST | `/api/auth/logout` | сброс cookie |
-| GET | `/api/auth/me` | `{ok, auth_enabled}` |
+## user
 
-## Multi-user
+Только сессия аккаунта, не токен устройства.
 
-Режим включается через `MUSIK_MULTI_USER=1` и HTTPS `MUSIK_PUBLIC_BASE_URL`.
-Пользователи регистрируются по ссылке-приглашению `/?invitation=<secret>` с
-именем и паролем (`POST /api/auth/register`), входят через `POST
-/api/auth/login` `{username, password}` и меняют пароль через `POST
-/api/account/password`. Мобильное приложение входит без браузера: `POST
-/api/auth/token` `{username, password, device_name, profile_id?}` выдаёт токен
-устройства для профиля (по умолчанию основного) и список профилей; дальше
-приложение шлёт `Authorization: Bearer <token>`. В однопользовательском режиме
-тот же запрос с `{password}` возвращает `MUSIK_API_TOKEN`. OIDC — необязательный второй способ входа:
-`MUSIK_OIDC_ISSUER`, `MUSIK_OIDC_CLIENT_ID` с необязательным секретом клиента.
-`MUSIK_PASSWORD`, `MUSIK_API_TOKEN` и `MUSIK_AUTH_DISABLED` в этом режиме
-запрещены как общие настройки. Старые личные данные после миграции остаются в профиле первого
-администратора. После входа владелец может выпустить отдельный Bearer-токен для
-каждого устройства. Такой токен фиксированно связан с выбранным профилем,
-действует 180 дней и не получает административных прав. Подробности первого
-запуска описаны в [DEPLOY.md](DEPLOY.md).
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| POST | `/api/account/password` | `{current, new}` — смена пароля текущего локального аккаунта |
+| POST | `/api/auth/oidc/default/link` | начать привязку другого OIDC-входа |
+| GET | `/api/profiles` | профили этого пользователя |
+| POST | `/api/profiles` | `{name}` — новый профиль |
+| PATCH | `/api/profiles/{profile_id}` | переименовать свой профиль |
+| DELETE | `/api/profiles/{profile_id}` | мягко удалить свой профиль, если он не последний |
+| POST | `/api/profiles/{profile_id}/activate` | сделать профиль активным в этой сессии |
+| GET | `/api/account/device-tokens` | метаданные токенов; секрета в ответе нет |
+| POST | `/api/account/device-tokens` | `{name, profile_id?}` — секрет показывается один раз |
+| DELETE | `/api/account/device-tokens/{id}` | отозвать свой токен |
+| POST | `/api/account/device-tokens/{id}/replace` | отозвать и выпустить новый секрет на тот же профиль |
 
-Для изменяющих запросов обязательны cookie-сессия, `X-CSRF-Token` и тот же
-`Origin`, что у публичного HTTPS URL. `GET /api/auth/me` возвращает учётку,
-роли и список профилей; `/api/profiles` управляет только профилями вошедшего
-пользователя. Администраторы управляют приглашениями и статусами учёток через
-`/api/admin/*`. Явная привязка другого OIDC-входа начинается через
-`POST /api/auth/oidc/default/link`. Shared password и Bearer token не являются
-резервным способом входа в этом режиме. Персональные device Bearer-токены —
-отдельный способ доступа к обычным пользовательским API, streaming и artwork.
+## profile
 
-| Method | Path | Описание |
-|--------|------|----------|
-| GET | `/api/account/device-tokens` | список метаданных устройств текущего пользователя; секретов в ответе нет |
-| POST | `/api/account/device-tokens` | `{name, profile_id?}` → метаданные и полный секрет для однократного копирования |
-| DELETE | `/api/account/device-tokens/{id}` | отзыв своего токена |
-| POST | `/api/account/device-tokens/{id}/replace` | атомарный отзыв и выпуск нового секрета для того же профиля |
+### Каталог и файлы
 
-Все эти маршруты требуют OIDC cookie-сессию и CSRF/Origin-проверку. Bearer-
-токен устройства не может выпускать или отзывать токены, менять профили,
-управлять аккаунтами, общей библиотекой или административными заданиями.
-Устройство может поставить на выполнение только личную операцию
-`POST /api/jobs/mix_pack` и читать результат своего задания. Если запрос
-содержит одновременно браузерную cookie и `Authorization`, сервер отвечает
-`400 credential_conflict`; клиент должен отправлять один способ авторизации.
-
-Для device Bearer `GET /api/auth/me` сохраняет совместимый ответ
-`{"ok":true,"auth_enabled":true}`. Невалидный/отозванный токен получает на
-этом маршруте HTTP 200 с `ok:false`; остальные защищённые маршруты отвечают
-`401`. OIDC HTML redirect для запросов API не используется. Playback sessions
-и данные вычисляются для закреплённого профиля; чужой или устаревший
-`session_id` отвечает `404`, включая задержавшееся событие.
-
-## Core
-
-| Method | Path | Описание |
-|--------|------|----------|
-| GET | `/api/health` | `{ok, version, api_version, auth}` (+ `tracks`, `dim` если auth) |
-| GET | `/api/status` | tracks, maturity, mode, session, explore, `db_backend` (`sqlite` или `postgresql`) |
-| GET | `/api/profile` | maturity, signals, top_artists/clusters, confidence, explore bounds |
-| PUT | `/api/profile/explore` | `{explore_lo, explore_hi}` — UI bounds for gated Thompson sampling |
-| GET | `/api/library` | плоский список треков |
-| GET | `/api/artists` | `{artists, count}` |
-| GET | `/api/albums` | `{albums, count}` |
-| GET | `/api/tracks/{id}` | один трек |
-| GET | `/api/stream/{id}` | оригинал (Range); `?q=mobile|aac|mp3`, alias `?fmt=…` — мобильный transcode |
-| GET | `/api/artwork/{id}` | JPEG 96/256/640 (`?w=`, default 640); `?full=1` — оригинал |
-| GET | `/api/similar/{id}` | top-10 cosine |
-| POST | `/api/reload` | перечитать индекс из выбранной БД |
-| GET | `/api/now` | current + queue (`?session_id=`) |
-| POST | `/api/events` | playback events |
-| POST | `/api/session/start` | `{seed_track_id?}` |
-| POST | `/api/session/jump` | прыжок по индексу в fixed playlist |
-| POST | `/api/session/back` | предыдущий трек в списке или радио |
-| POST | `/api/radio/start` | радио по вкусу (diverse seed) |
-| POST | `/api/share/radio` | создать публичную ссылку на эфир |
-| GET | `/api/share/radio` | список ссылок (`?all=1` — с отозванными) |
-| DELETE | `/api/share/radio/{token}` | отозвать ссылку |
-| GET | `/listen/{token}` · `/listen/{token}.mp3` | непрерывный MP3-эфир (публично, ffmpeg) |
-| POST | `/api/play` | listen: track / artist / album / track_ids |
-| GET/POST | `/api/contexts` | пользовательские mood/place/activity |
-| GET/PATCH/DELETE | `/api/contexts/{id}` | получить, изменить, архивировать |
-| POST | `/api/contexts/{id}/activate` | включить контекст в сессии |
-| POST | `/api/session/contexts` | заменить активные контексты |
-| GET/POST | `/api/rules` | временные block/downrank/cooldown |
-| POST | `/api/rules/undo` | вернуть последнее правило |
-| GET/POST | `/api/playlists` | ручные и smart плейлисты |
-| POST | `/api/playlists/import` | импорт M3U/JSON без server path |
-| GET | `/api/playlists/{id}/export` | экспорт JSON или `?format=m3u` |
-| POST | `/api/playlists/{id}/play` | играть с позиции |
-| POST | `/api/playlists/from-favorites` | скопировать избранное |
-
-## Mixes & playlists
-
-| Method | Path | Описание |
-|--------|------|----------|
-| GET | `/api/mixes` | полки |
-| POST | `/api/mixes/{kind}/play` | играть микс (в т.ч. daily) |
-| GET | `/api/later` | отложенные |
-| POST | `/api/later` | `{track_id}` |
-| DELETE | `/api/later` | `{track_id}` |
-
-## Favorites & recommend
-
-| Method | Path | Описание |
-|--------|------|----------|
-| GET | `/api/favorites` | tracks / artists / albums |
-| POST | `/api/favorites` | добавить |
-| DELETE | `/api/favorites` | убрать |
-| POST | `/api/favorites/toggle` | toggle |
-| GET | `/api/favorites/status` | `?type=track\|artist\|album&…` → `{favorited}` |
-| GET | `/api/recommend/seed` | `?type=&track_id=\|artist=\|album=` → похожие треки |
-| GET | `/api/recommend/favorites` | по центроидам избранного |
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/library` | плоский список. `?artist=` `?album=` `?limit=` (потолок 2000). У строки есть `plays`, `early_skips`, `last_played_at`. Сортировку «чаще / давно не играло / ни разу» делает интерфейс |
+| GET | `/api/artists` | `{artists, count}`. `?limit=` до 500 |
+| GET | `/api/albums` | `{albums, count}`. `?limit=` до 500 |
+| GET | `/api/tracks/{id}` | трек и `passport`. Нет трека — `404` |
+| GET | `/api/tracks/{id}/lyrics` | текст, если он уже лежит в базе |
+| GET | `/api/stream/{id}` | файл, с `Range`. `?q=mobile\|aac\|mp3` или `?fmt=` — мобильный транскод |
+| GET | `/api/artwork/{id}` | JPEG 96/256/640 (`?w=`, по умолчанию 640). `?full=1` — оригинал |
+| GET | `/api/artist-photos` | имя артиста → URL фото |
+| GET | `/api/artist-photos/{id}` | JPEG. `?w=96\|256\|640`, `?full=1` — оригинал |
+| GET | `/api/similar/{id}` | 10 ближайших по косинусу |
 | GET | `/api/similar/artists` | похожие артисты |
 | GET | `/api/similar/albums` | похожие альбомы |
 
-## Jobs & discover
+Строка библиотеки в интерфейсе: число `plays`; «ни разу», если их нет; «часто бросаешь», если запусков не меньше трёх и ранних скипов не меньше половины.
 
-| Method | Path | Описание |
-|--------|------|----------|
-| GET | `/api/jobs` | `?status=` список |
-| GET | `/api/jobs/{id}` | статус |
-| POST | `/api/jobs/{kind}` | scan\|embed\|clusters\|daily\|album_tips\|full_rescan\|mix_pack; ответ содержит одинаковые aliases `id` и `job_id` |
-| POST | `/api/library/upload` | multipart: `file` + `path` (относительный путь внутри библиотеки) |
-| POST | `/api/library/rescan` | enqueue full_rescan; ответ содержит одинаковые aliases `id` и `job_id` |
-| GET | `/api/discover/albums` | new album tips |
-| GET | `/api/discover/resurfaced` | старый каталог |
-| GET | `/api/metrics/weekly` | outcome/source/daypart/maturity/date за 7 дней, интервалы 95% и готовность baseline |
-| GET | `/api/metrics/recommendations` | 90-дневные outcomes, p50/p95/p99 latency, last_policy, recent_requests, training_runs и состояние explore/bandit |
+### Паспорт трека
 
-## Events `POST /api/events`
+`passport` есть только у `GET /api/tracks/{id}`. Это один запрос по id: файл, `features`, строка `track_stats` этого профиля и `track_preferences`. Поля пропадают, если значения нет.
+
+| Поле | Смысл |
+|------|--------|
+| `plays`, `finishes`, `early_skips` | запуски, дослушивания, ранние скипы |
+| `last_played_at` | последний запуск |
+| `rating` | `like` или `dislike`. Нейтральная оценка в ответ не входит |
+| `year`, `duration`, `genres` | год, длительность, жанры файла |
+| `lufs`, `bpm`, `key`, `mode` | измеренные признаки. `mode` — `major` или `minor` |
+| `format`, `bitrate`, `sample_rate`, `channels` | контейнер и параметры файла |
+
+Отдельной шкалы звёзд нет: человеку видны лайк, дизлайк и доля дослушиваний.
+
+### Сессия и радио
+
+`session_id` приходит из старта радио, `/api/play`, `/api/session/start` или микса. Сессии лежат в базе и переживают перезапуск плеера. `GET /api/now` и прыжки принимают id в query, теле `session_id` или заголовке `X-Session-Id`.
+
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| POST | `/api/radio/start` | радио. Тело ниже |
+| POST | `/api/session/start` | `{seed_track_id?}`. Режим `session`: без радио-исключений и без якоря |
+| POST | `/api/session/jump` | `{session_id, index? \| track_id}` в фиксированном списке |
+| POST | `/api/session/back` | предыдущий трек списка или радио |
+| GET | `/api/now` | current, queue, имя, режим. `?session_id=` |
+| POST | `/api/play` | фиксированный список: `{track_id \| track_ids \| artist \| album, start_index?, start_track_id?, name?}` |
+| GET | `/api/playback/state` | где остановились: сессия, трек, позиция |
+| PUT | `/api/playback/state` | записать позицию с устройства, которое сейчас играет |
+| POST | `/api/events` | события прослушивания |
+
+`POST /api/radio/start` зовёт тот же `Start("radio", seed)`, не второй движок. Поля:
+
+| Поле | Смысл |
+|------|--------|
+| `seed_track_id` | якорь-трек. Он становится текущим, если его не закрыло жёсткое правило |
+| `seed_artist` | якорь-артист, вектор — центроид его треков |
+| `seed_album` | якорь-альбом. Если задан альбом, артист сам по себе якорем не становится |
+| `station` | сейчас только `forgotten` |
+| `proximity` | `closer` или `wider` — один шаг на уже открытой сессии |
+| `session_id` | нужен вместе с `proximity`, чтобы не открывать новую сессию |
+| `context_ids` | включить контексты на старте |
+| `transition_profile` | профиль переходов, если это новый старт, а не подстройка |
+
+Якорь в ответе — `anchor`: `kind` (`track`, `artist`, `album`, `forgotten`), `track_id`, `artist`, `album`, `label`, `proximity` (`near`, `close`, `wide`). Пока близость не `wide`, `name` равен «радио от: …». На `wide` имя снова «радио», но якорь в сессии остаётся, и «ближе» может вернуть его в смесь. Обычный старт без семени — `anchor: null`.
+
+Старт — `near` (якорь и вкус поровну). «Ближе» с `wide` даёт `near`, с `near` — `close` (якорь доминирует). «Шире» спускает на шаг и на `wide` оставляет обычный вкус. Подстройка случается, только если `session_id` указывает на радио, у которого якорь уже есть. Иначе открывается новая сессия.
+
+`next_source` — ключ источника первого трека очереди. Тот же ключ лежит в `source` у current и элементов queue, рядом с `request_id` и `impression_id`. Интерфейс переводит ключи так:
+
+| `source` | Подпись |
+|----------|---------|
+| `exploit` | похоже на тебя |
+| `transition` | часто после этой |
+| `explore`, `explore_adjacent` | чуть в сторону |
+| `resurface` | давно не звучало |
+| `new_in_library` | новое в библиотеке |
+| `wildcard` | для разнообразия |
+| `manual` | ты выбрал |
+| `radio_start` | старт радио |
+| `refill` | добор очереди |
+
+Станция `forgotten` якорится на треки с не меньше чем тремя дослушиваниями и последним запуском старше 60 дней. Если таких нет — `409`, код `empty_station`. Жёсткий block и cooldown не обходятся: ключ правила исключает цель, фильтр остаётся в `BuildCore`.
+
+`POST /api/playlists/{id}/radio` стартует радио от первого трека плейлиста, то есть с якорем-треком. Отдельных методов «ещё такое» и «сохранить станцию» нет.
+
+Очередь — одно ядро: кандидаты, признаки, оценка, выбор. Доля нового сначала статическая. Thompson sampling включается после минимума разрешённых исходов на источник и остаётся внутри границ `explore_lo` / `explore_hi`.
+
+Зрелость: `discovering`, пока положительных сигналов меньше `MUSIK_PROFILE_FORMING_AT` (по умолчанию 3); `forming` — до `MUSIK_PROFILE_READY_AT` (по умолчанию 8); дальше `ready`.
+
+### События
 
 ```json
 {
   "type": "track_start|progress|track_end|skip|like|dislike",
-  "event_id": "client-stable-id-for-retries (optional for legacy clients)",
-  "impression_id": "128-bit-id-from-current-or-queue",
-  "client_id": "stable-browser-id",
-  "device_id": "Linux x86_64",
+  "event_id": "стабильный id повтора, можно не присылать",
+  "impression_id": "32 hex из current или queue",
+  "client_id": "id браузера",
+  "device_id": "имя устройства",
   "track_id": 83,
   "session_id": "...",
   "position_sec": 12.5,
@@ -182,48 +162,115 @@ Content-Type: `application/json` (кроме stream/artwork и `POST /api/librar
 }
 ```
 
-Новый radio-клиент обязан вернуть `impression_id` из current/queue и повторять
-тот же `event_id` при retry. Установленный Flutter `v0.1.1+2` не отправляет
-`event_id` или `impression_id`; сервер назначает event id сам и привязывает
-запись к профилю device token и его `session_id`. Для старых событий сервер ищет единственный
-последний pending impression по `(session_id, track_id)`; неоднозначность
-возвращает `409 ambiguous_impression`, а не приписывает feedback случайной
-рекомендации. Повторный start/end/skip не меняет impression или `track_stats`.
-Public share-radio не пишет owner events, transitions, taste или метрики.
+Обязательны `type`, `track_id`, `session_id`. Новый клиент повторяет тот же `event_id` и возвращает `impression_id`. Клиент без них получает id от сервера; для старого события ищется единственный pending impression пары `(session_id, track_id)`. Несколько подходящих — `409 ambiguous_impression`. Повтор start, end или skip не двигает impression и `track_stats`. Лайк и дизлайк пишутся в `track_preferences` и кормят вкус. Ответ skip и track_end: `{ok, next, queue, maturity, signed_weight, session_id, …}`.
 
-Ответ на skip/track_end: `{ok, next, queue, maturity, signed_weight, session_id, …}`.
+### Полка, избранное, рекомендации
 
-## Сессии и вкус
+Полка — только виды из `player/internal/playback/mixes.json`: `for_you`, `daily`, `favorites`, `later`, `new_releases`, `weekly` и `weekday_mon` … `weekday_sun`.
 
-- Каждая вкладка — свой `session_id` из `/api/radio/start`, `/api/play`, `/api/session/start`.
-- Сессии персистятся в выбранной БД (`play_sessions`) и переживают рестарт player.
-- Вкус использует отдельные long/daypart/session positive-векторы. Малоданный
-  daypart откатывается к long/session; session state переживает рестарт.
-  Early skip попадает только в session negative prototypes, dislike — в
-  persistent negative prototypes и не вычитается из positive taste.
-- `transitions` участвуют в score очереди аддитивно (`+ λ · norm(log1p(weight))`); без данных поведение как раньше.
-- Радио строит очередь одним ядром `candidates → features → score → select`.
-  Explore-доля сначала статическая; Thompson sampling включается только после
-  минимума разрешённых исходов на каждый exploratory source и остаётся внутри
-  `explore_lo`/`explore_hi`.
-- `offline_report` — Python CLI, не затирает global.
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/mixes` | полка |
+| POST | `/api/mixes/{kind}/play` | играть этот вид, включая дневной микс |
+| GET | `/api/later` | «потом» |
+| POST | `/api/later` | `{track_id}` |
+| DELETE | `/api/later` | `{track_id}` |
+| GET | `/api/favorites` | треки, артисты, альбомы |
+| POST | `/api/favorites` | добавить. `{type: track\|artist\|album, track_id?, artist?, album?}` |
+| DELETE | `/api/favorites` | убрать, то же тело |
+| POST | `/api/favorites/toggle` | переключить |
+| GET | `/api/favorites/status` | `?type=track\|artist\|album` и id или имя → `{favorited}` |
+| GET | `/api/recommend/seed` | `?type=` и `track_id`, `artist` или `album` — похожие треки |
+| GET | `/api/recommend/favorites` | микс по любимым трекам, артистам и альбомам. Лайкнутое вне топа похожих тоже может попасть. Ответ: `tracks`, `artists`, `albums`, `based_on`, `explanation`; пустое избранное — `empty: true` и `hint` |
+| GET | `/api/discover/albums` | подсказки новых альбомов |
+| GET | `/api/discover/resurfaced` | давно не открытый каталог |
 
-## Maturity
+### Плейлисты и метки
 
-| maturity | условие | поведение |
-|----------|---------|-----------|
-| `discovering` | n_positive &lt; forming_at (default 3) | выше explore, больше новых и соседних источников |
-| `forming` | &lt; ready_at (default 8) | смесь |
-| `ready` | ≥ ready_at | вкус + continuity; старт радио — sample из top-K |
+Умный плейлист — тот же `POST /api/playlists` с `type: smart` и `rule_json`. Нового вида полки нет. Правило, `schema_version: 1`:
 
-Пороги настраиваются через `MUSIK_PROFILE_FORMING_AT` и `MUSIK_PROFILE_READY_AT`.
+- поля: `tag`, `artist`, `album`, `liked`, `plays`, `last_played`, `year`, `bpm`, `lufs`, `duration`;
+- операции: `eq`, `neq`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`, `between`, `older_than_days`, `newer_than_days`;
+- сортировка: `plays`, `plays_desc`, `last_played`, `year_desc`, `bpm`.
 
-## Share radio
+Интерфейс создаёт два таких правила. «Часто слушаю»: `plays >= 3`, сортировка `plays_desc`. «Забытое»: `last_played` старше 60 дней и `plays >= 1`, сортировка `last_played`. Это не станция `forgotten`: та смотрит на дослушивания, а не на число запусков.
 
-`POST /api/share/radio` → `{ url, token }` — URL вида `http://host:8787/listen/<token>.mp3`.  
-Вставь в VLC / браузер / любой HTTP-аудио клиент. Поток бесконечный (перекодирование через ffmpeg в MP3).  
-Слушатели **не** обновляют вкус владельца. Лимит параллельных слушателей: `MUSIK_SHARE_MAX_LISTENERS` (default 4).
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/playlists` | свои и умные. `?type=` через запятую, `?all=1` — с архивными |
+| POST | `/api/playlists` | создать. Для умного — `rule_json` |
+| GET | `/api/playlists/{id}` | один плейлист |
+| PATCH | `/api/playlists/{id}` | имя, правило и прочие правки |
+| DELETE | `/api/playlists/{id}` | в архив. `?hard=1` удаляет |
+| POST | `/api/playlists/import` | M3U или JSON. Путь на сервере не принимается |
+| POST | `/api/playlists/preview` | `{rule_json}` — какие id выйдут, без записи |
+| POST | `/api/playlists/from-favorites` | скопировать избранное в новый плейлист |
+| POST | `/api/playlists/from-later` | то же для «потом» |
+| POST | `/api/playlists/{id}/tracks` | добавить трек |
+| DELETE | `/api/playlists/{id}/tracks/{item_id}` | убрать пункт |
+| POST | `/api/playlists/{id}/reorder` | новый порядок |
+| POST | `/api/playlists/{id}/duplicate` | копия |
+| POST | `/api/playlists/{id}/from-queue` | дописать текущую очередь. `{session_id}` |
+| POST | `/api/playlists/{id}/play` | играть с позиции |
+| POST | `/api/playlists/{id}/radio` | радио от первого трека |
+| GET | `/api/playlists/{id}/export` | JSON, или M3U при `?format=m3u` |
+| GET | `/api/tags` | свои метки |
+| POST | `/api/tags` | создать метку |
+| POST | `/api/tags/{id}/tracks` | повесить метку на трек |
+| DELETE | `/api/tags/{id}/tracks` | снять метку |
 
-Для абсолютных URL с LAN задай `MUSIK_PUBLIC_BASE_URL`.
+### Вкус, правила, статистика
 
-Env: `MUSIK_PASSWORD`, `MUSIK_API_TOKEN`, `MUSIK_SESSION_SECRET`, `MUSIK_AUTH_DISABLED`, `MUSIK_SECURE_COOKIE`, `MUSIK_PUBLIC_BASE_URL`, `MUSIK_FFMPEG`, `MUSIK_SHARE_BITRATE`, `MUSIK_SHARE_MAX_LISTENERS`, `MUSIK_PROFILE_*`, `MUSIK_WORKER_URL`.
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/status` | число треков, зрелость, режим, сессия, explore, `db_backend` (`sqlite` или `postgresql`) |
+| GET | `/api/profile` | снимок вкуса: зрелость, сигналы, топ артистов и кластеров, границы explore. Только чтение |
+| PUT | `/api/profile/explore` | `{explore_lo, explore_hi}` |
+| GET | `/api/contexts` | контексты `mood`, `place`, `activity`. `?all=1` — с архивными |
+| POST | `/api/contexts` | `{kind, name, icon?, influence?, learning_enabled?, seeds?}` |
+| GET | `/api/contexts/{id}` | один контекст |
+| PATCH | `/api/contexts/{id}` | правка |
+| DELETE | `/api/contexts/{id}` | в архив |
+| POST | `/api/contexts/{id}/activate` | включить в сессии |
+| POST | `/api/contexts/{id}/deactivate` | выключить |
+| POST | `/api/session/contexts` | заменить активный набор контекстов сессии |
+| GET | `/api/rules` | `block`, `downrank`, `cooldown`. `?all=1` — с архивными |
+| POST | `/api/rules` | цель `track`, `song`, `artist`, `album`, `genre` или `cluster`. Можно передать `preset`, `track_id`, `artist`, `album` |
+| PATCH | `/api/rules/{id}` | правка |
+| DELETE | `/api/rules/{id}` | в архив |
+| POST | `/api/rules/undo` | вернуть последнее архивное правило |
+| POST | `/api/share/radio` | `{url, token}` — ссылка `/listen/<token>.mp3` |
+| GET | `/api/share/radio` | ссылки профиля. `?all=1` — с отозванными |
+| DELETE | `/api/share/radio/{token}` | отозвать |
+| GET | `/api/metrics/weekly` | семь дней. Поле `listening`: `listened_sec`, `plays`, `finishes`, `finish_rate`, `top_tracks`, `top_artists`. Экран профиля читает его. Рядом в том же ответе лежат служебные срезы исходов |
+| GET | `/api/metrics/listening` | `on_this_day` (тот же календарный день прошлых лет) и `year` (этот год: время, доля дослушиваний, топы) |
+| GET | `/api/metrics/recommendations` | 90 дней исходов, latency p50/p95/p99, последняя политика, недавние запросы, прогоны обучения, состояние explore. На экран недели не выводится |
+
+Лимит одновременных слушателей шары — `MUSIK_SHARE_MAX_LISTENERS` (по умолчанию 4). Абсолютный URL берётся из `MUSIK_PUBLIC_BASE_URL`.
+
+## admin
+
+Токен устройства сюда не входит, кроме двух исключений у заданий.
+
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| POST | `/api/admin/invitations` | приглашение. Секрет в ответе один раз |
+| GET | `/api/admin/invitations` | список без секретов |
+| GET | `/api/admin/invitations/{id}` | одно приглашение, без секрета |
+| DELETE | `/api/admin/invitations/{id}` | отозвать неиспользованное |
+| GET | `/api/admin/users` | учётки и статусы |
+| PATCH | `/api/admin/users/{id}` | статус или роль администратора |
+| POST | `/api/reload` | перечитать индекс. Воркер с loopback проходит без сессии; иначе нужен admin или Bearer. Ответ `{ok, tracks}` |
+| GET | `/api/settings` | сохранённый `.env` и то, с чем процесс сейчас слушает: адрес, публичный URL, папка музыки |
+| PUT | `/api/settings` | записать адрес, публичный URL и библиотеку в `.env`. Применяется после перезапуска |
+| GET | `/api/settings/dirs` | подпапки `?path=` для выбора папки. Пустой path — корни дисков |
+| GET | `/api/settings/external-ip` | внешний IP (кэш 10 минут). `?refresh=1` спрашивает снова |
+| GET | `/api/settings/qr` | SVG. Обязателен `?url=` — публичный адрес. В код входит `musik://connect?url=…&token=…` |
+| POST | `/api/settings/restart` | перезапуск воркера и плеера с записанными настройками |
+| POST | `/api/library/upload` | multipart: `file` и `path` внутри библиотеки |
+| POST | `/api/library/rescan` | поставить `full_rescan`. В ответе одинаковые `id` и `job_id` |
+| GET | `/api/jobs` | список. `?status=` |
+| GET | `/api/jobs/{id}` | одно задание. Токен устройства может прочитать своё |
+| POST | `/api/jobs/{kind}` | `scan`, `embed`, `clusters`, `daily`, `album_tips`, `full_rescan`, `mix_pack`, `train_ranker`. Токен устройства может поставить только `mix_pack`. В ответе одинаковые `id` и `job_id` |
+
+Переменные окружения — в [CONFIG.md](CONFIG.md). Установка — в [DEPLOY.md](DEPLOY.md).

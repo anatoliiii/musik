@@ -3,6 +3,7 @@ package index
 import (
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/torwin-job/musik/player/internal/config"
 	"github.com/torwin-job/musik/player/internal/db"
@@ -112,6 +113,70 @@ func TestArtistAndAlbumIndexes(t *testing.T) {
 	albums := idx.AlbumCentroids()
 	if len(albums) != 3 {
 		t.Fatalf("album centroids=%d, want 3", len(albums))
+	}
+}
+
+func TestIDsForTargetUsesRuleKeys(t *testing.T) {
+	idx := New(config.Config{})
+	rows := []db.TrackRow{
+		{ID: 1, Artist: "Gone", Title: "Hidden", Album: "Al", ClusterID: 7, FileMD5: "abc", Embedding: Float32Bytes([]float32{1, 0}), Dim: 2},
+		{ID: 2, Artist: "Kept", Title: "Stay", Album: "Other", FileMD5: "abc", Embedding: Float32Bytes([]float32{0, 1}), Dim: 2},
+	}
+	if err := idx.Load(rows); err != nil {
+		t.Fatal(err)
+	}
+	if got := idx.IDsForTarget("artist", ArtistKey("Gone")); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("artist=%v", got)
+	}
+	if got := idx.IDsForTarget("artist", "kept-segment-only"); got != nil {
+		t.Fatalf("unknown artist=%v", got)
+	}
+	if got := idx.IDsForTarget("album", AlbumKey("Gone", "Al")); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("album=%v", got)
+	}
+	if got := idx.IDsForTarget("track", TrackKey(2)); len(got) != 1 || got[0] != 2 {
+		t.Fatalf("track=%v", got)
+	}
+	if got := idx.IDsForTarget("cluster", ClusterKey(7)); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("cluster=%v", got)
+	}
+	got := idx.IDsForTarget("song", "abc")
+	if len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("md5=%v", got)
+	}
+	if got := idx.IDsForTarget("song", SongKey("Gone", "Hidden")); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("song key=%v", got)
+	}
+}
+
+func TestForgottenRowsUsesLastFinish(t *testing.T) {
+	idx := New(config.Config{})
+	rows := []db.TrackRow{
+		{ID: 1, Artist: "A", Title: "Old", Embedding: Float32Bytes([]float32{1, 0}), Dim: 2},
+		{ID: 2, Artist: "B", Title: "Recent", Embedding: Float32Bytes([]float32{0, 1}), Dim: 2},
+		{ID: 3, Artist: "C", Title: "Unstamped", Embedding: Float32Bytes([]float32{-1, 0}), Dim: 2},
+	}
+	cat, err := BuildCatalog(rows)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().UTC().Add(-90 * 24 * time.Hour).Format(time.RFC3339Nano)
+	recent := time.Now().UTC().Add(-2 * 24 * time.Hour).Format(time.RFC3339Nano)
+	idx.Attach(cat, map[int64]db.TrackStats{
+		1: {Finishes: 4, Likes: 1, LastFinishedAt: old, LastPlayedAt: recent},
+		2: {Finishes: 4, LastFinishedAt: recent, LastPlayedAt: old},
+		3: {Finishes: 4, LastPlayedAt: old},
+	})
+	got := idx.ForgottenRows(3, time.Now().UTC().Add(-60*24*time.Hour))
+	if len(got) != 1 || idx.MetaAt(got[0]).ID != 1 {
+		ids := make([]int64, len(got))
+		for i, row := range got {
+			ids[i] = idx.MetaAt(row).ID
+		}
+		t.Fatalf("forgotten=%v, want [1]", ids)
+	}
+	if meta := idx.MetaAt(got[0]); meta.Likes != 1 || meta.LastPlayedAt.IsZero() {
+		t.Fatalf("counters=%+v", meta)
 	}
 }
 

@@ -9,7 +9,7 @@ func (s *Server) EnsureWorker() {
 // WatchJobs preserves the server lifecycle API while delegating polling to the
 // application layer.
 func (s *Server) WatchJobs() {
-	// Server.Reload updates the root index and every cached profile runtime.
+	// Server.Reload refreshes the shared catalog and every cached profile.
 	s.App.WatchJobs(s.Reload)
 }
 

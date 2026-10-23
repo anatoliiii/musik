@@ -36,6 +36,8 @@ type Config struct {
 	AuthDisabled         bool
 	SecureCookie         bool
 	PublicBaseURL        string
+	AuthAllowedOrigins   []string
+	UI                   string
 	FFmpegPath           string
 	ShareBitrate         string
 	ShareMaxListeners    int
@@ -82,6 +84,8 @@ func Load() Config {
 		AuthDisabled:         envBool("MUSIK_AUTH_DISABLED", false),
 		SecureCookie:         envBool("MUSIK_SECURE_COOKIE", false),
 		PublicBaseURL:        stringsTrimRightSlash(env("MUSIK_PUBLIC_BASE_URL", "")),
+		AuthAllowedOrigins:   splitCSV(env("MUSIK_AUTH_ALLOWED_ORIGINS", "")),
+		UI:                   env("MUSIK_UI", "mozgolika"),
 		FFmpegPath:           env("MUSIK_FFMPEG", "ffmpeg"),
 		ShareBitrate:         env("MUSIK_SHARE_BITRATE", "192k"),
 		ShareMaxListeners:    envInt("MUSIK_SHARE_MAX_LISTENERS", 4),

@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select, update
 
 from musik.db.schema import connect, row_to_dict, utcnow
 from musik.db.models import Job
+
+log = logging.getLogger(__name__)
+
+# claim_next only takes pending. A crash after claim leaves status=running.
+# Progress updates and claim refresh updated_at; a row quieter than this is
+# treated as abandoned and returned to pending.
+STALE_RUNNING_AFTER = timedelta(hours=6)
 
 
 def _job_row(row: Any) -> dict[str, Any] | None:
@@ -83,6 +92,35 @@ def claim_next(*, kinds: tuple[str, ...] | None = None) -> dict[str, Any] | None
         )
         job = conn.session.execute(statement).scalar_one_or_none()
         return _job_row(_job_mapping(job)) if job is not None else None
+
+
+def recover_stale_running(*, max_age: timedelta = STALE_RUNNING_AFTER) -> list[dict[str, Any]]:
+    """Return running jobs older than max_age to pending so they can be claimed again."""
+    if max_age < timedelta(0):
+        raise ValueError("max_age must be >= 0")
+    cutoff = (datetime.now(timezone.utc) - max_age).isoformat()
+    now = utcnow()
+    with connect() as conn:
+        statement = (
+            update(Job)
+            .where(Job.status == "running", Job.updated_at < cutoff)
+            .values(status="pending", result_json=None, error=None, updated_at=now)
+            .returning(Job)
+        )
+        jobs = conn.session.execute(statement).scalars().all()
+        recovered: list[dict[str, Any]] = []
+        for job in jobs:
+            row = _job_row(_job_mapping(job))
+            if row is None:
+                continue
+            recovered.append(row)
+            log.warning(
+                "requeued stale running job #%s kind=%s (no update since before %s)",
+                row["id"],
+                row["kind"],
+                cutoff,
+            )
+        return recovered
 
 
 def finish_job(job_id: int, result: dict[str, Any] | None = None) -> None:

@@ -83,7 +83,7 @@ func (s *Server) sessionCurrentJSON(sess *playback.Session) any {
 }
 
 func (s *Server) playResponse(sess *playback.Session) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"session_id": sess.ID,
 		"mode":       sess.Mode,
 		"kind":       sess.PlaylistKind,
@@ -95,14 +95,41 @@ func (s *Server) playResponse(sess *playback.Session) map[string]any {
 		"tracks":     s.sessionTracks(sess),
 		"fixed":      playback.IsFixedMode(sess.Mode),
 	}
+	annotateRadio(out, sess)
+	return out
 }
 
 func (s *Server) sessionStartResponse(sess *playback.Session) map[string]any {
-	return map[string]any{
-		"session_id": sess.ID,
-		"mode":       sess.Mode,
-		"maturity":   s.Play.Maturity(),
-		"current":    s.sessionCurrentJSON(sess),
-		"queue":      sess.Queue,
+	out := map[string]any{
+		"session_id":  sess.ID,
+		"mode":        sess.Mode,
+		"maturity":    s.Play.Maturity(),
+		"current":     s.sessionCurrentJSON(sess),
+		"queue":       sess.Queue,
+		"context_ids": sessionContextIDs(sess),
 	}
+	annotateRadio(out, sess)
+	return out
+}
+
+func annotateRadio(out map[string]any, sess *playback.Session) {
+	if out == nil || sess == nil || sess.Mode != "radio" {
+		return
+	}
+	out["name"] = sess.StationName()
+	if sess.Anchor.Kind != "" {
+		out["anchor"] = sess.Anchor
+	} else {
+		out["anchor"] = nil
+	}
+	if len(sess.Queue) > 0 && sess.Queue[0].Source != "" {
+		out["next_source"] = sess.Queue[0].Source
+	}
+}
+
+func sessionContextIDs(sess *playback.Session) []string {
+	if sess == nil || sess.ActiveContextIDs == nil {
+		return []string{}
+	}
+	return append([]string(nil), sess.ActiveContextIDs...)
 }

@@ -3,22 +3,22 @@
 PRAGMA foreign_keys = OFF;
 BEGIN TRANSACTION;
 CREATE TABLE alembic_version (
-	version_num VARCHAR(32) NOT NULL, 
+	version_num VARCHAR(32) NOT NULL,
 	CONSTRAINT alembic_version_pkc PRIMARY KEY (version_num)
 );
-INSERT INTO "alembic_version" VALUES('musik_11');
+INSERT INTO "alembic_version" VALUES('musik_14');
 CREATE TABLE artist_photos (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            name_key   TEXT NOT NULL UNIQUE,
-            artist     TEXT NOT NULL,
-            path       TEXT,
-            status     TEXT NOT NULL,
-            source     TEXT NOT NULL DEFAULT '',
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name_key TEXT NOT NULL UNIQUE,
+            artist TEXT NOT NULL,
+            path TEXT,
+            status TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
             checked_at TEXT NOT NULL
         );
 CREATE TABLE artwork_lookups (
-            album_key  TEXT PRIMARY KEY,
-            status     TEXT NOT NULL,
+            album_key TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
             checked_at TEXT NOT NULL
         );
 CREATE TABLE auth_sessions (
@@ -237,18 +237,18 @@ taste_state_json TEXT,
 active_contexts_json TEXT,
 transition_profile TEXT NOT NULL DEFAULT 'smooth',
 UNIQUE(profile_id,id));
-CREATE TABLE playback_state (
-            profile_id   TEXT NOT NULL REFERENCES profiles(id),
-            owner_scope  TEXT NOT NULL DEFAULT 'local',
-            session_id   TEXT NOT NULL DEFAULT '',
-            track_id     INTEGER NOT NULL DEFAULT 0,
-            position_sec REAL NOT NULL DEFAULT 0,
-            listened_sec REAL NOT NULL DEFAULT 0,
-            playing      INTEGER NOT NULL DEFAULT 0,
-            client_id    TEXT NOT NULL DEFAULT '',
-            updated_at   TEXT NOT NULL,
-            PRIMARY KEY (profile_id, owner_scope)
-        );
+CREATE TABLE "playback_state" (
+                profile_id   TEXT NOT NULL REFERENCES profiles(id),
+                owner_scope  TEXT NOT NULL DEFAULT 'local',
+                session_id   TEXT NOT NULL DEFAULT '',
+                track_id     INTEGER NOT NULL DEFAULT 0,
+                position_sec REAL NOT NULL DEFAULT 0,
+                listened_sec REAL NOT NULL DEFAULT 0,
+                playing      INTEGER NOT NULL DEFAULT 0,
+                client_id    TEXT NOT NULL DEFAULT '',
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY (profile_id, owner_scope)
+            );
 CREATE TABLE "playlist_tracks" (profile_id TEXT NOT NULL DEFAULT '8458c014-517b-401b-93de-54c6ab327596' REFERENCES profiles(id),
 item_id TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
 playlist_id INTEGER NOT NULL ,
@@ -751,4 +751,4 @@ INSERT INTO "sqlite_sequence" VALUES('recommendation_impressions',0);
 INSERT INTO "sqlite_sequence" VALUES('user_profile_snapshots',0);
 COMMIT;
 PRAGMA foreign_keys = ON;
-PRAGMA user_version = 11;
+PRAGMA user_version = 14;

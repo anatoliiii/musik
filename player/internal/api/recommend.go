@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/torwin-job/musik/player/internal/queue"
 	"github.com/torwin-job/musik/player/internal/recommend"
 )
 
@@ -191,7 +192,11 @@ func (s *Server) handleRecommendSeed(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRecommendFavorites(w http.ResponseWriter, _ *http.Request) {
 	started := time.Now()
 	defer func() { s.latency.Observe("recommend_favorites", time.Since(started)) }()
-	mix := recommend.FromFavorites(s.Store, s.Idx)
+	model := queue.DefaultModel()
+	if s.Play != nil && len(s.Play.Ranker.Weights) > 0 {
+		model = s.Play.Ranker
+	}
+	mix := recommend.FromFavorites(s.Store, s.Idx, model)
 	if mix.Empty {
 		writeJSON(w, map[string]any{
 			"ok": false, "empty": true,
@@ -228,6 +233,6 @@ func (s *Server) handleRecommendFavorites(w http.ResponseWriter, _ *http.Request
 	writeJSON(w, map[string]any{
 		"ok": true, "based_on": mix.BasedOn,
 		"tracks": tracks, "artists": artists, "albums": albums,
-		"explanation": "на основе твоих любимых — по звучанию (CLAP)",
+		"explanation": "на основе твоих любимых — по звучанию и лайкам",
 	})
 }

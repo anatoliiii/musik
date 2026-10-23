@@ -80,7 +80,7 @@ def profile_scope_unique_index(table: str, sql: str) -> str:
     return sql[: opening + 1] + "profile_id," + sql[opening + 1 :]
 
 
-def migrate_profiles(conn: sqlite3.Connection) -> None:
+def migrate_profiles(conn: sqlite3.Connection, *, version: int) -> None:
     conn.commit()
     conn.execute("PRAGMA foreign_keys = OFF")
     try:
@@ -139,10 +139,34 @@ def migrate_profiles(conn: sqlite3.Connection) -> None:
             conn.execute(f'CREATE INDEX "idx_{table}_profile" ON "{table}"(profile_id)')
             if conn.execute(f'SELECT count(*) FROM "{table}"').fetchone()[0] != counts[table]:
                 raise RuntimeError(f"ownership migration lost rows in {table}")
+        # Move playback ownership in the same transaction as every personal
+        # table and user_version. A failure must leave the old schema retryable.
+        conn.execute("""
+            CREATE TABLE playback_state_by_profile (
+                profile_id   TEXT NOT NULL REFERENCES profiles(id),
+                owner_scope  TEXT NOT NULL DEFAULT 'local',
+                session_id   TEXT NOT NULL DEFAULT '',
+                track_id     INTEGER NOT NULL DEFAULT 0,
+                position_sec REAL NOT NULL DEFAULT 0,
+                listened_sec REAL NOT NULL DEFAULT 0,
+                playing      INTEGER NOT NULL DEFAULT 0,
+                client_id    TEXT NOT NULL DEFAULT '',
+                updated_at   TEXT NOT NULL,
+                PRIMARY KEY (profile_id, owner_scope)
+            )
+        """)
+        conn.execute("""
+            INSERT INTO playback_state_by_profile
+            SELECT ?, owner_scope, session_id, track_id, position_sec,
+                   listened_sec, playing, client_id, updated_at
+            FROM playback_state
+        """, (profile_id,))
+        conn.execute("DROP TABLE playback_state")
+        conn.execute("ALTER TABLE playback_state_by_profile RENAME TO playback_state")
         violations = conn.execute("PRAGMA foreign_key_check").fetchall()
         if violations:
             raise RuntimeError(f"ownership migration found {len(violations)} broken references")
-        conn.execute("PRAGMA user_version = 7")
+        conn.execute(f"PRAGMA user_version = {version}")
         conn.commit()
     except Exception:
         conn.rollback()

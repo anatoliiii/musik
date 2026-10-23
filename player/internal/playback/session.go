@@ -34,6 +34,11 @@ type Session struct {
 	TasteState        taste.SessionState
 	ActiveContextIDs  []string
 	TransitionProfile string
+	Anchor            RadioAnchor
+	Chapter           TasteChapter
+	// ephemeral sessions belong to one share listener. They stay in memory
+	// for that connection and are not part of the owner's session limit.
+	ephemeral bool
 }
 
 func (s *Session) Lock()   { s.mu.Lock() }
@@ -88,6 +93,14 @@ func (e *Engine) Get(id string) *Session {
 	return sess
 }
 
+// persistedSessionTaste stores the radio anchor next to the taste snapshot
+// so a restarted session still holds the station. Older rows have no anchor.
+type persistedSessionTaste struct {
+	taste.SessionState
+	Anchor  RadioAnchor  `json:"radio_anchor,omitempty"`
+	Chapter TasteChapter `json:"taste_chapter,omitempty"`
+}
+
 func hydrate(row db.PlaySessionRow) *Session {
 	sess := &Session{
 		ID:           row.ID,
@@ -110,7 +123,12 @@ func hydrate(row db.PlaySessionRow) *Session {
 		_ = json.Unmarshal([]byte(row.CurrentItemJSON), &sess.CurrentItem)
 	}
 	if row.TasteStateJSON != "" {
-		_ = json.Unmarshal([]byte(row.TasteStateJSON), &sess.TasteState)
+		var stored persistedSessionTaste
+		if json.Unmarshal([]byte(row.TasteStateJSON), &stored) == nil {
+			sess.TasteState = stored.SessionState
+			sess.Anchor = stored.Anchor
+			sess.Chapter = stored.Chapter
+		}
 	}
 	if row.ExcludeJSON != "" {
 		var ids []int64
@@ -134,7 +152,7 @@ func hydrate(row db.PlaySessionRow) *Session {
 }
 
 func (e *Engine) persistLocked(sess *Session) {
-	if sess == nil {
+	if sess == nil || sess.ephemeral {
 		return
 	}
 	id := sess.ID
@@ -157,11 +175,13 @@ func (e *Engine) persistLocked(sess *Session) {
 	dailyIDs := append([]int64(nil), sess.DailyIDs...)
 	contextIDs := append([]string(nil), sess.ActiveContextIDs...)
 	profile := sess.TransitionProfile
+	anchor := sess.Anchor
+	chapter := sess.Chapter
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	e.enqueue(func() {
 		qj, _ := json.Marshal(queueItems)
 		cij, _ := json.Marshal(currentItem)
-		tsj, _ := json.Marshal(tasteState)
+		tsj, _ := json.Marshal(persistedSessionTaste{SessionState: tasteState, Anchor: anchor, Chapter: chapter})
 		ej, _ := json.Marshal(exclude)
 		rj, _ := json.Marshal(rated)
 		dj, _ := json.Marshal(dailyIDs)
@@ -182,8 +202,12 @@ func (e *Engine) gcLocked() {
 	cutoffRAM := time.Now().Add(-6 * time.Hour)
 	for id, sess := range e.sessions {
 		sess.mu.Lock()
+		ephemeral := sess.ephemeral
 		stale := sess.UpdatedAt.Before(cutoffRAM)
 		sess.mu.Unlock()
+		if ephemeral {
+			continue
+		}
 		if stale {
 			_ = e.Store.AbandonSessionImpressions(id)
 			delete(e.sessions, id)
@@ -191,7 +215,7 @@ func (e *Engine) gcLocked() {
 	}
 	_ = e.Store.DeleteStalePlaySessions(time.Now().Add(-7 * 24 * time.Hour))
 	const maxSessions = 64
-	if len(e.sessions) <= maxSessions {
+	if e.ownerSessionCountLocked() <= maxSessions {
 		if n, err := e.Store.CountPlaySessions(); err == nil && n > maxSessions {
 			ids, _ := e.Store.OldestPlaySessionIDs(n - maxSessions)
 			for _, id := range ids {
@@ -202,22 +226,42 @@ func (e *Engine) gcLocked() {
 		}
 		return
 	}
-	for len(e.sessions) > maxSessions {
+	for e.ownerSessionCountLocked() > maxSessions {
 		var oldestID string
 		var oldestTime time.Time
 		first := true
 		for id, sess := range e.sessions {
 			sess.mu.Lock()
+			ephemeral := sess.ephemeral
 			updatedAt := sess.UpdatedAt
 			sess.mu.Unlock()
+			if ephemeral {
+				continue
+			}
 			if first || updatedAt.Before(oldestTime) {
 				oldestID = id
 				oldestTime = updatedAt
 				first = false
 			}
 		}
+		if oldestID == "" {
+			return
+		}
 		delete(e.sessions, oldestID)
 		_ = e.Store.AbandonSessionImpressions(oldestID)
 		_ = e.Store.DeletePlaySession(oldestID)
 	}
+}
+
+func (e *Engine) ownerSessionCountLocked() int {
+	n := 0
+	for _, sess := range e.sessions {
+		sess.mu.Lock()
+		ephemeral := sess.ephemeral
+		sess.mu.Unlock()
+		if !ephemeral {
+			n++
+		}
+	}
+	return n
 }

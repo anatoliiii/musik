@@ -11,6 +11,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from musik.config import get_settings
+from musik.db.migrations import migrate_database
 from musik.db.models import Feature, Genre, Track, TrackGenre
 from musik.db.orm import engine_for
 from musik.db.schema import connect
@@ -29,10 +30,11 @@ pytestmark = pytest.mark.skipif(not POSTGRES_URL, reason="requires a disposable 
 
 
 def test_catalog_repository_uses_mapped_orm_on_postgres(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, empty_postgres_database: str
 ) -> None:
-    assert POSTGRES_URL is not None
-    monkeypatch.setenv("MUSIK_DATABASE_URL", POSTGRES_URL)
+    # Own database, migrated here: the shared one is not prepared in every CI step.
+    migrate_database(empty_postgres_database, tmp_path / "unused.sqlite")
+    monkeypatch.setenv("MUSIK_DATABASE_URL", empty_postgres_database)
     monkeypatch.delenv("MUSIK_DB_PATH", raising=False)
     get_settings.cache_clear()
 
@@ -64,7 +66,7 @@ def test_catalog_repository_uses_mapped_orm_on_postgres(
         assert first_id not in {row["id"] for row in pending}
         assert second_id not in {row["id"] for row in pending}
     finally:
-        engine = engine_for(POSTGRES_URL, tmp_path / "unused.sqlite")
+        engine = engine_for(empty_postgres_database, tmp_path / "unused.sqlite")
         with Session(engine) as session, session.begin():
             tracks = session.scalars(select(Track).where(Track.path.in_(paths))).all()
             track_ids = [track.id for track in tracks]

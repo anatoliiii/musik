@@ -5,6 +5,7 @@ from musik.jobs.queue import (
     finish_job,
     get_job,
     list_recent,
+    recover_stale_running,
 )
 from musik.jobs.runner import JOB_KINDS, process_job, run_one, run_pending
 
@@ -16,6 +17,7 @@ __all__ = [
     "finish_job",
     "get_job",
     "list_recent",
+    "recover_stale_running",
     "process_job",
     "run_one",
     "run_pending",

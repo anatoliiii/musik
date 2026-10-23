@@ -1,8 +1,13 @@
-"""VK-style mix pack: for_you, today, new, weekdays, weekly."""
+"""VK-style mix pack. Shelf kinds come from the player contract
+(player/internal/playback/mixes.json); this module only knows how to build them.
+"""
 
 from __future__ import annotations
 
+import json
+import os
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -22,15 +27,48 @@ from musik.config import get_settings
 from musik.db.schema import connect, utcnow
 from musik.index.brute import EmbeddingIndex, load_index
 
-WEEKDAY_KEYS = (
-    ("weekday_mon", "Понедельник", 0),
-    ("weekday_tue", "Вторник", 1),
-    ("weekday_wed", "Среда", 2),
-    ("weekday_thu", "Четверг", 3),
-    ("weekday_fri", "Пятница", 4),
-    ("weekday_sat", "Суббота", 5),
-    ("weekday_sun", "Воскресенье", 6),
-)
+_PLAIN_KINDS = frozenset({"for_you", "daily", "new_releases", "weekly"})
+
+
+def mix_contract_path() -> Path:
+    """The shelf registry owned by the Go player."""
+    override = os.environ.get("MUSIK_MIX_CONTRACT", "").strip()
+    if override:
+        return Path(override)
+    for parent in Path(__file__).resolve().parents:
+        candidate = parent / "player" / "internal" / "playback" / "mixes.json"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError("player mix contract mixes.json was not found")
+
+
+def load_mix_contract() -> list[dict[str, Any]]:
+    """Read the same shelf the player serves and sends in mix_pack jobs."""
+    with mix_contract_path().open(encoding="utf-8") as fh:
+        data = json.load(fh)
+    if not isinstance(data, list) or not data:
+        raise ValueError("mix contract must be a non-empty list")
+    return data
+
+
+def resolve_mix_contract(mixes: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """A job payload wins. Otherwise the on-disk registry, generated shelves only."""
+    if mixes is None:
+        return [item for item in load_mix_contract() if item.get("source") == "generated"]
+    if not isinstance(mixes, list):
+        raise ValueError("mix contract must be a list")
+    return mixes
+
+
+def ensure_mix_generator(item: dict[str, Any]) -> None:
+    """Reject a shelf the worker cannot build, instead of skipping it."""
+    kind = str(item.get("kind") or "")
+    if kind in _PLAIN_KINDS:
+        return
+    weekday = item.get("weekday")
+    if kind.startswith("weekday_") and isinstance(weekday, int) and not isinstance(weekday, bool) and 0 <= weekday <= 6:
+        return
+    raise ValueError(f"worker has no generator for mix kind {kind!r}")
 
 
 def _weekday_taste(index: EmbeddingIndex, weekday: int) -> tuple[np.ndarray, str, int]:
@@ -179,11 +217,13 @@ def generate_for_you(
 def generate_weekday(
     weekday: int,
     *,
+    kind: str,
+    title: str,
     size: int = 30,
     explore_ratio: float | None = None,
     forbidden_track_ids: set[int] | None = None,
 ) -> PlaylistBuild:
-    """Плейлист дня недели (0=Пн … 6=Вс)."""
+    """Плейлист дня недели (0=Пн … 6=Вс). kind and title come from the mix contract."""
     if weekday < 0 or weekday > 6:
         raise ValueError("weekday 0..6")
     index = load_index()
@@ -191,7 +231,7 @@ def generate_weekday(
         raise RuntimeError("Нет ready-эмбеддингов")
     settings = get_settings()
     explore_ratio = settings.explore_ratio if explore_ratio is None else explore_ratio
-    key, title, _ = WEEKDAY_KEYS[weekday]
+    key = kind
     center, center_src, signal_count = _weekday_taste(index, weekday)
     # Rotate nightly while preserving a deterministic result for the same day.
     seed = int(f"{date.today().strftime('%Y%m%d')}{weekday}")
@@ -282,8 +322,6 @@ def generate_new_releases(
             """
         ).fetchall()
 
-    import json
-
     cand_ids: list[int] = []
     for tr in tip_rows:
         try:
@@ -344,6 +382,52 @@ def generate_new_releases(
     )
 
 
+def _mix_size(
+    kind: str,
+    *,
+    daily_size: int,
+    for_you_size: int,
+    weekday_size: int,
+    weekly_size: int,
+    new_size: int,
+) -> int:
+    if kind == "for_you":
+        return for_you_size
+    if kind == "daily":
+        return daily_size
+    if kind == "new_releases":
+        return new_size
+    if kind == "weekly":
+        return weekly_size
+    return weekday_size
+
+
+def _build_contract_mix(
+    item: dict[str, Any],
+    *,
+    size: int,
+    forbidden: set[int],
+) -> PlaylistBuild:
+    kind = str(item["kind"])
+    if kind == "for_you":
+        return generate_for_you(size=size, forbidden_track_ids=forbidden)
+    if kind == "daily":
+        build = generate_daily(size=size, forbidden_track_ids=forbidden)
+        build.name = f"На сегодня · {date.today().strftime('%d.%m')}"
+        return build
+    if kind == "new_releases":
+        return generate_new_releases(size=size, forbidden_track_ids=forbidden)
+    if kind == "weekly":
+        return generate_weekly(size=size, forbidden_track_ids=forbidden)
+    return generate_weekday(
+        int(item["weekday"]),
+        kind=kind,
+        title=str(item["title"]),
+        size=size,
+        forbidden_track_ids=forbidden,
+    )
+
+
 def generate_mix_pack(
     *,
     daily_size: int = 30,
@@ -352,10 +436,16 @@ def generate_mix_pack(
     weekly_size: int = 50,
     new_size: int = 25,
     reserve_prefix: int = 10,
+    mixes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Build and persist the full VK-style shelf set (25–50 tracks)."""
+    """Build and persist the shelves in the player mix contract."""
+    contract = resolve_mix_contract(mixes)
+    for item in contract:
+        ensure_mix_generator(item)
+
     results: dict[str, Any] = {}
     reserved: set[int] = set(blocked_track_ids())
+    weekdays: list[dict[str, Any]] = []
 
     def reserve(build: PlaylistBuild) -> None:
         reserved.update(
@@ -363,40 +453,36 @@ def generate_mix_pack(
             for entry in build.entries[: max(1, reserve_prefix)]
         )
 
-    fy = generate_for_you(size=for_you_size)
-    results["for_you"] = {"id": fy.persist(), "name": fy.name, "n": len(fy.entries)}
-    reserve(fy)
-
-    daily = generate_daily(size=daily_size, forbidden_track_ids=reserved)
-    # rename for UX
-    daily.name = f"На сегодня · {date.today().strftime('%d.%m')}"
-    results["daily"] = {"id": daily.persist(), "name": daily.name, "n": len(daily.entries)}
-    reserve(daily)
-
-    neu = generate_new_releases(size=new_size, forbidden_track_ids=reserved)
-    neu_id = neu.persist() if neu.entries else None
-    results["new_releases"] = {
-        "id": neu_id,
-        "name": neu.name,
-        "n": len(neu.entries),
-        "empty": len(neu.entries) == 0,
-    }
-    reserve(neu)
-
-    weekly = generate_weekly(size=weekly_size, forbidden_track_ids=reserved)
-    results["weekly"] = {"id": weekly.persist(), "name": weekly.name, "n": len(weekly.entries)}
-    reserve(weekly)
-
-    weekdays = []
-    for key, title, wd in WEEKDAY_KEYS:
-        build = generate_weekday(
-            wd,
-            size=weekday_size,
-            forbidden_track_ids=reserved,
+    for item in contract:
+        kind = str(item["kind"])
+        build = _build_contract_mix(
+            item,
+            size=_mix_size(
+                kind,
+                daily_size=daily_size,
+                for_you_size=for_you_size,
+                weekday_size=weekday_size,
+                weekly_size=weekly_size,
+                new_size=new_size,
+            ),
+            forbidden=reserved,
         )
-        pid = build.persist()
-        weekdays.append({"kind": key, "id": pid, "name": build.name, "n": len(build.entries)})
+        if kind == "new_releases":
+            playlist_id = build.persist() if build.entries else None
+            results["new_releases"] = {
+                "id": playlist_id,
+                "name": build.name,
+                "n": len(build.entries),
+                "empty": len(build.entries) == 0,
+            }
+        elif item.get("weekday") is not None:
+            playlist_id = build.persist()
+            weekdays.append({"kind": kind, "id": playlist_id, "name": build.name, "n": len(build.entries)})
+        else:
+            playlist_id = build.persist()
+            results[kind] = {"id": playlist_id, "name": build.name, "n": len(build.entries)}
         reserve(build)
+
     results["weekdays"] = weekdays
     results["reserved_prefix"] = max(1, reserve_prefix)
     results["reserved_tracks"] = len(reserved)
@@ -405,60 +491,64 @@ def generate_mix_pack(
 
 
 def mix_catalog() -> list[dict[str, Any]]:
-    """Shelf cards for API/UI (latest of each kind)."""
+    """Shelf cards in the same order as the player registry."""
     today_wd = date.today().weekday()  # Mon=0
     shelves: list[dict[str, Any]] = []
-
-    def card(kind: str, title: str, subtitle: str, *, highlight: bool = False) -> dict[str, Any]:
-        pl = latest_playlist(kind)
-        n = len(pl["tracks"]) if pl else 0
-        return {
+    for item in load_mix_contract():
+        kind = str(item["kind"])
+        title = str(item["title"])
+        subtitle = str(item.get("subtitle") or "")
+        source = str(item.get("source") or "generated")
+        highlight = kind in {"for_you", "daily"} or item.get("weekday") == today_wd
+        if source == "later":
+            count = _table_count("listen_later")
+            shelves.append({
+                "kind": kind,
+                "title": title,
+                "subtitle": subtitle,
+                "playlist_id": None,
+                "tracks": count,
+                "ready": count > 0,
+                "highlight": highlight,
+                "cover_track_id": None,
+                "special": "later",
+            })
+            continue
+        if source == "favorites":
+            count = _table_count("favorites")
+            shelves.append({
+                "kind": kind,
+                "title": title,
+                "subtitle": subtitle,
+                "playlist_id": None,
+                "tracks": count,
+                "ready": count > 0,
+                "highlight": highlight,
+                "cover_track_id": None,
+                "special": "favorites",
+            })
+            continue
+        playlist = latest_playlist(kind)
+        track_count = len(playlist["tracks"]) if playlist else 0
+        shelves.append({
             "kind": kind,
             "title": title,
             "subtitle": subtitle,
-            "playlist_id": pl["id"] if pl else None,
-            "tracks": n,
-            "ready": pl is not None and n > 0,
+            "playlist_id": playlist["id"] if playlist else None,
+            "tracks": track_count,
+            "ready": playlist is not None and track_count > 0,
             "highlight": highlight,
-            "cover_track_id": pl["tracks"][0]["track_id"] if pl and pl["tracks"] else None,
-        }
-
-    shelves.append(card("for_you", "Для вас", "Персональный микс под вкус", highlight=True))
-    shelves.append(card("daily", "На сегодня", "Свежий микс на день", highlight=True))
-    shelves.append(
-        {
-            "kind": "later",
-            "title": "Потом",
-            "subtitle": "Отложенные треки",
-            "playlist_id": None,
-            "tracks": _later_count(),
-            "ready": _later_count() > 0,
-            "highlight": False,
-            "cover_track_id": None,
-            "special": "later",
-        }
-    )
-    neu = card("new_releases", "Новинки", "Недавно в библиотеке")
-    shelves.append(neu)
-    shelves.append(card("weekly", "Недельный микс", f"Неделя {date.today().isocalendar().week}"))
-
-    for key, title, wd in WEEKDAY_KEYS:
-        shelves.append(
-            card(
-                key,
-                title,
-                "Микс дня недели",
-                highlight=(wd == today_wd),
-            )
-        )
+            "cover_track_id": playlist["tracks"][0]["track_id"] if playlist and playlist["tracks"] else None,
+        })
     return shelves
 
 
-def _later_count() -> int:
+def _table_count(table: str) -> int:
+    if table not in {"listen_later", "favorites"}:
+        raise ValueError(table)
     with connect() as conn:
         row = conn.execute(
-            "SELECT COUNT(*) AS c FROM listen_later WHERE profile_id = :profile",
+            f"SELECT COUNT(*) AS c FROM {table} WHERE profile_id = :profile",
             {"profile": conn.profile_id},
         ).fetchone()
     return int(row["c"]) if row else 0
-

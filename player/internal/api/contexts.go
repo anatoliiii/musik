@@ -2,19 +2,19 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
 	"github.com/torwin-job/musik/player/internal/db"
-	"github.com/torwin-job/musik/player/internal/index"
-	"github.com/torwin-job/musik/player/internal/taste"
+	"github.com/torwin-job/musik/player/internal/playback"
 )
 
 type contextWrite struct {
 	Kind            string          `json:"kind"`
 	Name            string          `json:"name"`
 	Icon            string          `json:"icon"`
-	Influence       float64         `json:"influence"`
+	Influence       *float64        `json:"influence"`
 	LearningEnabled *bool           `json:"learning_enabled"`
 	Seeds           db.ContextSeeds `json:"seeds"`
 }
@@ -39,18 +39,19 @@ func (s *Server) handleContextsCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx := db.TasteContext{
 		Kind: req.Kind, Name: req.Name, Icon: req.Icon,
-		Influence: req.Influence, Seeds: req.Seeds, LearningEnabled: true,
+		Seeds: req.Seeds, LearningEnabled: true,
+	}
+	if req.Influence != nil {
+		ctx.Influence = *req.Influence
 	}
 	if req.LearningEnabled != nil {
 		ctx.LearningEnabled = *req.LearningEnabled
 	}
-	created, err := s.Store.CreateTasteContext(ctx)
+	out, err := playback.CreateTasteContext(r.Context(), s.Store, s.Idx, ctx)
 	if err != nil {
-		writeErr(w, 400, "context", err.Error())
+		writeContextErr(w, err)
 		return
 	}
-	s.seedContextVector(created)
-	out, _ := s.Store.GetTasteContext(created.ID)
 	writeJSON(w, out)
 }
 
@@ -73,31 +74,14 @@ func (s *Server) handleContextPatch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad_json", "bad json")
 		return
 	}
-	existing, err := s.Store.GetTasteContext(r.PathValue("id"))
-	if err != nil || existing == nil {
-		writeErr(w, 404, "not_found", "context not found")
+	out, err := playback.UpdateTasteContext(r.Context(), s.Store, s.Idx, r.PathValue("id"), playback.TasteContextPatch{
+		Name: req.Name, Icon: req.Icon, Influence: req.Influence,
+		LearningEnabled: req.LearningEnabled, Seeds: req.Seeds,
+	})
+	if err != nil {
+		writeContextErr(w, err)
 		return
 	}
-	existing.Name = firstNonEmpty(req.Name, existing.Name)
-	existing.Icon = firstNonEmpty(req.Icon, existing.Icon)
-	if req.Influence > 0 {
-		existing.Influence = req.Influence
-	}
-	if req.LearningEnabled != nil {
-		existing.LearningEnabled = *req.LearningEnabled
-	}
-	if req.Seeds.SchemaVersion > 0 || len(req.Seeds.Tracks)+len(req.Seeds.Artists)+len(req.Seeds.Albums) > 0 {
-		existing.Seeds = req.Seeds
-		if existing.Seeds.SchemaVersion == 0 {
-			existing.Seeds.SchemaVersion = 1
-		}
-	}
-	if err := s.Store.UpdateTasteContext(*existing); err != nil {
-		writeErr(w, 400, "context", err.Error())
-		return
-	}
-	s.seedContextVector(*existing)
-	out, _ := s.Store.GetTasteContext(existing.ID)
 	writeJSON(w, out)
 }
 
@@ -175,23 +159,12 @@ func (s *Server) handleSessionContexts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true, "context_ids": req.ContextIDs})
 }
 
-func (s *Server) seedContextVector(ctx db.TasteContext) {
-	albums := make([][2]string, 0, len(ctx.Seeds.Albums))
-	for _, album := range ctx.Seeds.Albums {
-		albums = append(albums, [2]string{album.Artist, album.Album})
-	}
-	vec := taste.SeedVector(s.Idx, ctx.Seeds.Tracks, ctx.Seeds.Artists, albums)
-	if len(vec) == 0 {
+func writeContextErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, db.ErrContextNotFound) {
+		writeErr(w, 404, "not_found", "context not found")
 		return
 	}
-	samples := 0
-	if state, _ := s.Store.LoadTasteContextState(ctx.ID); state != nil {
-		samples = state.PositiveSamples
-	}
-	_ = s.Store.UpsertTasteContextState(db.TasteContextState{
-		ContextID: ctx.ID, PositiveVector: index.Float32Bytes(vec),
-		EmbeddingDim: len(vec), PositiveSamples: samples,
-	})
+	writeErr(w, 400, "context", err.Error())
 }
 
 func decodeContextWrite(r *http.Request) (contextWrite, error) {
@@ -204,13 +177,4 @@ func decodeContextWrite(r *http.Request) (contextWrite, error) {
 		return req, nil
 	}
 	return req, json.Unmarshal(body, &req)
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

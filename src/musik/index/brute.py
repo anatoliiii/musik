@@ -110,16 +110,33 @@ def load_index() -> EmbeddingIndex:
     with connect() as conn:
         rows = conn.execute(
             """
-            SELECT t.id, t.title, t.artist, t.path, t.file_md5,
-                   f.embedding, f.embedding_dim, f.cluster_id, f.bpm, f.lufs
+            SELECT t.id, t.title, t.artist, t.album, t.path, t.file_md5,
+                   t.duration, t.created_at,
+                   f.embedding, f.embedding_dim, f.cluster_id, f.bpm,
+                   COALESCE(f.lufs, t.lufs) AS lufs, f.key_name,
+                   COALESCE(ts.plays, 0) AS plays,
+                   COALESCE(ts.finishes, 0) AS finishes,
+                   COALESCE(ts.partial, 0) AS partial,
+                   COALESCE(ts.early_skips, 0) AS early_skips,
+                   COALESCE(ts.likes, 0) AS likes,
+                   COALESCE(ts.dislikes, 0) AS dislikes,
+                   ts.last_played_at, ts.last_finished_at,
+                   COALESCE(rs.shown, 0) AS shown,
+                   COALESCE(rs.skipped_early, 0) AS skip_early,
+                   COALESCE(rs.completed, 0) AS completed
             FROM tracks t
             JOIN features f ON f.track_id = t.id
+            LEFT JOIN track_stats ts
+              ON ts.track_id = t.id AND ts.profile_id = :profile
+            LEFT JOIN rec_stats rs
+              ON rs.track_id = t.id AND rs.profile_id = :profile
             WHERE t.is_active = 1
               AND t.is_duplicate_of IS NULL
               AND f.status = 'ready'
               AND f.embedding IS NOT NULL
             ORDER BY t.id
-            """
+            """,
+            {"profile": conn.profile_id},
         ).fetchall()
 
     if not rows:
@@ -148,11 +165,26 @@ def load_index() -> EmbeddingIndex:
                 "id": int(r["id"]),
                 "title": r["title"],
                 "artist": r["artist"],
+                "album": r["album"],
                 "path": r["path"],
                 "file_md5": r["file_md5"],
+                "duration": r["duration"],
+                "created_at": r["created_at"],
                 "cluster_id": r["cluster_id"],
                 "bpm": r["bpm"],
                 "lufs": r["lufs"],
+                "key": r["key_name"],
+                "plays": int(r["plays"] or 0),
+                "finishes": int(r["finishes"] or 0),
+                "partial": int(r["partial"] or 0),
+                "early_skips": int(r["early_skips"] or 0),
+                "likes": int(r["likes"] or 0),
+                "dislikes": int(r["dislikes"] or 0),
+                "last_played_at": r["last_played_at"],
+                "last_finished_at": r["last_finished_at"],
+                "shown": int(r["shown"] or 0),
+                "skip_early": int(r["skip_early"] or 0),
+                "completed": int(r["completed"] or 0),
             }
         )
         md5s.append(r["file_md5"] or "")
@@ -202,4 +234,3 @@ def get_track(track_id: int) -> dict | None:
             {"track_id": track_id},
         ).fetchone()
         return dict(row) if row else None
-

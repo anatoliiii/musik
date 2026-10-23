@@ -34,3 +34,26 @@ func TestDataRootIsIndependentFromDatabaseBackend(t *testing.T) {
 		t.Fatalf("legacy data root = %q, want /music/data", got)
 	}
 }
+
+func TestLoadDefaultWebEdition(t *testing.T) {
+	t.Setenv("MUSIK_UI", "mozgolika")
+	if got := Load().UI; got != "mozgolika" {
+		t.Fatalf("UI=%q", got)
+	}
+	t.Setenv("MUSIK_UI", "")
+	if got := Load().UI; got != "mozgolika" {
+		t.Fatalf("default UI=%q", got)
+	}
+}
+
+func TestLoadAuthAllowedOrigins(t *testing.T) {
+	t.Setenv("MUSIK_AUTH_ALLOWED_ORIGINS", " https://home.example.test, ,https://vpn.example.test:8443 ")
+	got := Load().AuthAllowedOrigins
+	if len(got) != 2 || got[0] != "https://home.example.test" || got[1] != "https://vpn.example.test:8443" {
+		t.Fatalf("AuthAllowedOrigins=%q", got)
+	}
+	t.Setenv("MUSIK_AUTH_ALLOWED_ORIGINS", "")
+	if len(Load().AuthAllowedOrigins) != 0 {
+		t.Fatal("additional origins must be disabled by default")
+	}
+}

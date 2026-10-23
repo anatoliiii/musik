@@ -5,28 +5,75 @@ import (
 	"time"
 )
 
-// LoadTransitionGraph loads from→to weights (min weight 1).
+// LoadTransitionGraph loads from→to weights for radio.
+// transition_stats.decayed_weight wins and is decayed again to now, including
+// a negative edge left by a skip. transitions.weight of at least 1 fills only
+// the pairs that do not have a decay row yet.
 func (s *Store) LoadTransitionGraph() (map[int64]map[int64]float64, error) {
+	out := map[int64]map[int64]float64{}
+	covered := map[int64]map[int64]struct{}{}
+	note := func(from, to int64) {
+		edges := covered[from]
+		if edges == nil {
+			edges = map[int64]struct{}{}
+			covered[from] = edges
+		}
+		edges[to] = struct{}{}
+	}
+	put := func(from, to int64, weight float64) {
+		edges := out[from]
+		if edges == nil {
+			edges = map[int64]float64{}
+			out[from] = edges
+		}
+		edges[to] = weight
+	}
+
 	rows, err := s.DB.Query(`
-SELECT from_id, to_id, weight FROM transitions WHERE profile_id = ? AND weight >= 1
+SELECT from_id, to_id, decayed_weight, COALESCE(updated_at,'')
+FROM transition_stats WHERE profile_id = ?
+ORDER BY ABS(decayed_weight) DESC LIMIT 50000`, s.ProfileID)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	for rows.Next() {
+		var from, to int64
+		var weight float64
+		var updated string
+		if err := rows.Scan(&from, &to, &weight, &updated); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		note(from, to)
+		if w := DecayTransitionWeight(weight, updated, now); w != 0 {
+			put(from, to, w)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+
+	rows, err = s.DB.Query(`
+SELECT from_id, to_id, weight FROM transitions
+WHERE profile_id = ? AND weight >= 1
 ORDER BY weight DESC LIMIT 50000`, s.ProfileID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	out := map[int64]map[int64]float64{}
 	for rows.Next() {
 		var from, to int64
-		var w float64
-		if err := rows.Scan(&from, &to, &w); err != nil {
+		var weight float64
+		if err := rows.Scan(&from, &to, &weight); err != nil {
 			return nil, err
 		}
-		m := out[from]
-		if m == nil {
-			m = map[int64]float64{}
-			out[from] = m
+		if _, ok := covered[from][to]; ok {
+			continue
 		}
-		m[to] = w
+		put(from, to, weight)
 	}
 	return out, rows.Err()
 }
@@ -142,14 +189,16 @@ func (s *Store) DeleteStalePlaySessions(olderThan time.Time) error {
 	return err
 }
 
+// CountPlaySessions counts the owner's sessions. Listener rows (mode=share)
+// are not part of the limit, including leftovers from older builds.
 func (s *Store) CountPlaySessions() (int, error) {
 	var n int
-	err := s.DB.QueryRow(`SELECT COUNT(*) FROM play_sessions WHERE profile_id = ?`, s.ProfileID).Scan(&n)
+	err := s.DB.QueryRow(`SELECT COUNT(*) FROM play_sessions WHERE profile_id = ? AND mode <> 'share'`, s.ProfileID).Scan(&n)
 	return n, err
 }
 
 func (s *Store) OldestPlaySessionIDs(limit int) ([]string, error) {
 	return QueryAll(s.DB, func(rows *sql.Rows, id *string) error {
 		return rows.Scan(id)
-	}, `SELECT id FROM play_sessions WHERE profile_id = ? ORDER BY updated_at ASC LIMIT ?`, s.ProfileID, limit)
+	}, `SELECT id FROM play_sessions WHERE profile_id = ? AND mode <> 'share' ORDER BY updated_at ASC LIMIT ?`, s.ProfileID, limit)
 }

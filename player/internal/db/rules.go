@@ -121,22 +121,24 @@ func (s *Store) ArchiveRadioRule(id string) error {
 	return err
 }
 
+// UndoLastRadioRule restores the most recently archived rule in one statement.
+// A second undo cannot observe the same row once this update has committed.
 func (s *Store) UndoLastRadioRule() (*RadioRule, error) {
-	var id string
-	err := s.DB.QueryRow(`
-SELECT rule_id FROM radio_rules
-WHERE profile_id = ? AND archived_at IS NOT NULL
-ORDER BY archived_at DESC LIMIT 1`, s.ProfileID).Scan(&id)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
+	row := s.DB.QueryRow(`
+UPDATE radio_rules SET archived_at = NULL
+WHERE profile_id = ? AND rule_id = (
+  SELECT rule_id FROM radio_rules
+  WHERE profile_id = ? AND archived_at IS NOT NULL
+  ORDER BY archived_at DESC LIMIT 1
+)
+RETURNING rule_id, target_type, action, scope, target_key, strength,
+          COALESCE(session_id,''), COALESCE(context_id,''), COALESCE(expires_at,''),
+          created_at, COALESCE(archived_at,'')`, s.ProfileID, s.ProfileID)
+	rule, err := scanRadioRule(row)
+	if err != nil || rule == nil {
 		return nil, err
 	}
-	if _, err := s.DB.Exec(`UPDATE radio_rules SET archived_at = NULL WHERE profile_id = ? AND rule_id = ?`, s.ProfileID, id); err != nil {
-		return nil, err
-	}
-	return s.GetRadioRule(id)
+	return rule, nil
 }
 
 func (s *Store) GetRadioRule(id string) (*RadioRule, error) {

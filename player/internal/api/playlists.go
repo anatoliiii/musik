@@ -2,12 +2,14 @@ package api
 
 import (
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/torwin-job/musik/player/internal/db"
+	"github.com/torwin-job/musik/player/internal/playback"
 	"github.com/torwin-job/musik/player/internal/playlist"
 )
 
@@ -25,18 +27,24 @@ func (s *Server) handlePlaylistsList(w http.ResponseWriter, r *http.Request) {
 		list = []db.UserPlaylist{}
 	}
 	if blocks := s.globalBlocks(); blocks != nil {
+		ids := make([]int64, 0)
+		for i := range list {
+			if generatedPlaylist(&list[i]) {
+				ids = append(ids, list[i].ID)
+			}
+		}
+		tracks, err := s.Store.ListPlaylistTrackIDs(r.Context(), ids)
+		if err != nil {
+			writeErr(w, 500, "db", err.Error())
+			return
+		}
 		for i := range list {
 			if !generatedPlaylist(&list[i]) {
 				continue
 			}
-			items, err := s.Store.ListPlaylistItems(list[i].ID)
-			if err != nil {
-				writeErr(w, 500, "db", err.Error())
-				return
-			}
 			n := 0
-			for _, item := range items {
-				if item.TrackID != 0 && blocks.HardBlocked(item.TrackID) {
+			for _, trackID := range tracks[list[i].ID] {
+				if trackID != 0 && blocks.HardBlocked(trackID) {
 					continue
 				}
 				n++
@@ -54,21 +62,24 @@ func (s *Server) handlePlaylistsCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Type == "smart" && req.RuleJSON != "" {
-		if _, err := playlist.ParseRule(req.RuleJSON); err != nil {
-			writeErr(w, 400, "rule", err.Error())
+		out, err := playlist.CreateSmart(r.Context(), s.Store, req)
+		if err != nil {
+			s.writePlaylistErr(w, err)
 			return
 		}
-		req.RuleSchema = playlist.RuleSchemaVersion
+		writeJSON(w, out)
+		return
 	}
 	created, err := s.Store.CreateUserPlaylist(req)
 	if err != nil {
 		writeErr(w, 400, "playlist", err.Error())
 		return
 	}
-	if created.Type == "smart" && created.RuleJSON != "" {
-		_ = s.materializeSmart(created.ID, created.RuleJSON)
+	out, err := s.Store.GetUserPlaylist(created.ID)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
 	}
-	out, _ := s.Store.GetUserPlaylist(created.ID)
 	writeJSON(w, out)
 }
 
@@ -104,20 +115,23 @@ func (s *Server) handlePlaylistPatch(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ID = id
 	if req.RuleJSON != "" {
-		if _, err := playlist.ParseRule(req.RuleJSON); err != nil {
-			writeErr(w, 400, "rule", err.Error())
+		out, err := playlist.UpdateSmart(r.Context(), s.Store, req)
+		if err != nil {
+			s.writePlaylistErr(w, err)
 			return
 		}
-		req.RuleSchema = playlist.RuleSchemaVersion
+		writeJSON(w, out)
+		return
 	}
 	if err := s.Store.UpdateUserPlaylist(req); err != nil {
 		writeErr(w, 400, "playlist", err.Error())
 		return
 	}
-	if req.RuleJSON != "" {
-		_ = s.materializeSmart(id, req.RuleJSON)
+	out, err := s.Store.GetUserPlaylist(id)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
 	}
-	out, _ := s.Store.GetUserPlaylist(id)
 	writeJSON(w, out)
 }
 
@@ -166,23 +180,21 @@ func (s *Server) handlePlaylistAddTrack(w http.ResponseWriter, r *http.Request) 
 	if source == "" {
 		source = "manual"
 	}
-	added, skipped := 0, 0
-	var last db.UserPlaylistItem
+	items := make([]db.UserPlaylistItem, 0, len(ids))
 	for _, trackID := range ids {
-		item, err := s.Store.AddPlaylistItem(id, db.UserPlaylistItem{TrackID: trackID, Source: source})
-		if err != nil {
-			if strings.Contains(err.Error(), "duplicate") {
-				skipped++
-				continue
-			}
-			writeErr(w, 400, "playlist", err.Error())
+		items = append(items, db.UserPlaylistItem{TrackID: trackID, Source: source})
+	}
+	res, err := s.Store.AddPlaylistItems(r.Context(), id, items)
+	if err != nil {
+		if errors.Is(err, db.ErrPlaylistNotFound) {
+			writeErr(w, 404, "not_found", "playlist not found")
 			return
 		}
-		added++
-		last = item
+		writeErr(w, 400, "playlist", err.Error())
+		return
 	}
 	writeJSON(w, map[string]any{
-		"ok": true, "added": added, "skipped": skipped, "item": last, "item_id": last.ItemID,
+		"ok": true, "added": res.Added, "skipped": res.Skipped, "item": res.Last, "item_id": res.Last.ItemID,
 	})
 }
 
@@ -216,7 +228,11 @@ func (s *Server) handlePlaylistReorder(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "playlist", err.Error())
 		return
 	}
-	out, _ := s.Store.GetUserPlaylist(id)
+	out, err := s.Store.GetUserPlaylist(id)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
 	writeJSON(w, out)
 }
 
@@ -258,10 +274,23 @@ func (s *Server) handlePlaylistFromQueue(w http.ResponseWriter, r *http.Request)
 		ids = append(ids, item.TrackID)
 	}
 	sess.Unlock()
+	items := make([]db.UserPlaylistItem, 0, len(ids))
 	for _, trackID := range ids {
-		_, _ = s.Store.AddPlaylistItem(id, db.UserPlaylistItem{TrackID: trackID, Source: "radio"})
+		items = append(items, db.UserPlaylistItem{TrackID: trackID, Source: "radio"})
 	}
-	out, _ := s.Store.GetUserPlaylist(id)
+	if _, err := s.Store.AddPlaylistItems(r.Context(), id, items); err != nil {
+		if errors.Is(err, db.ErrPlaylistNotFound) {
+			writeErr(w, 404, "not_found", "playlist not found")
+			return
+		}
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
+	out, err := s.Store.GetUserPlaylist(id)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
 	writeJSON(w, out)
 }
 
@@ -282,8 +311,19 @@ func (s *Server) handlePlaylistPlay(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pl.Type == "smart" && pl.RuleJSON != "" {
-		_ = s.materializeSmart(pl.ID, pl.RuleJSON)
-		pl, _ = s.Store.GetUserPlaylist(id)
+		if err := playlist.Materialize(r.Context(), s.Store, pl.ID, pl.RuleJSON); err != nil {
+			writeErr(w, 500, "playlist", err.Error())
+			return
+		}
+		pl, err = s.Store.GetUserPlaylist(id)
+		if err != nil {
+			writeErr(w, 500, "db", err.Error())
+			return
+		}
+		if pl == nil {
+			writeErr(w, 404, "not_found", "playlist not found")
+			return
+		}
 	}
 	ids := resolvedTrackIDs(pl)
 	if generatedPlaylist(pl) {
@@ -292,7 +332,7 @@ func (s *Server) handlePlaylistPlay(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(ids) == 0 {
-		writeErr(w, 404, "play", "нет доступных треков")
+		writeErr(w, 404, "play", playback.ErrNoTracks.Error())
 		return
 	}
 	sess := s.Play.StartFixed(ids, "playlist", pl.Name, "user", req.StartIndex, req.StartTrackID)
@@ -317,7 +357,7 @@ func (s *Server) handlePlaylistRadio(w http.ResponseWriter, r *http.Request) {
 	if len(ids) > 0 {
 		seed = &ids[0]
 	}
-	sess := s.Play.StartRadio(seed)
+	sess := s.Play.Start("radio", seed, nil)
 	sess.Lock()
 	defer sess.Unlock()
 	writeJSON(w, s.sessionStartResponse(sess))
@@ -336,7 +376,7 @@ func (s *Server) handlePlaylistPreview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "rule", err.Error())
 		return
 	}
-	ids, err := playlist.Evaluate(s.Store, rule)
+	ids, err := playlist.Evaluate(r.Context(), s.Store, rule)
 	if err != nil {
 		writeErr(w, 400, "rule", err.Error())
 		return
@@ -360,17 +400,17 @@ func (s *Server) handlePlaylistImport(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "import", err.Error())
 		return
 	}
-	created, err := s.Store.CreateUserPlaylist(db.UserPlaylist{Name: doc.Name, Type: "manual", Kind: "user"})
+	items := playlist.ResolveImport(s.Store, doc)
+	created, err := s.Store.CreateUserPlaylistWithItems(r.Context(), db.UserPlaylist{Name: doc.Name, Type: "manual", Kind: "user"}, items)
 	if err != nil {
 		writeErr(w, 400, "playlist", err.Error())
 		return
 	}
-	items := playlist.ResolveImport(s.Store, doc)
-	if err := s.Store.ReplacePlaylistItems(created.ID, items); err != nil {
+	out, err := s.Store.GetUserPlaylist(created.ID)
+	if err != nil {
 		writeErr(w, 500, "db", err.Error())
 		return
 	}
-	out, _ := s.Store.GetUserPlaylist(created.ID)
 	writeJSON(w, out)
 }
 
@@ -421,20 +461,20 @@ func (s *Server) copySpecialList(w http.ResponseWriter, r *http.Request, default
 		writeErr(w, 500, "db", err.Error())
 		return
 	}
-	created, err := s.Store.CreateUserPlaylist(db.UserPlaylist{Name: req.Name, Type: "manual", Kind: "user"})
-	if err != nil {
-		writeErr(w, 400, "playlist", err.Error())
-		return
-	}
 	items := make([]db.UserPlaylistItem, 0, len(tracks))
 	for _, tr := range tracks {
 		items = append(items, db.UserPlaylistItem{TrackID: tr.TrackID, Source: "manual"})
 	}
-	if err := s.Store.ReplacePlaylistItems(created.ID, items); err != nil {
+	created, err := s.Store.CreateUserPlaylistWithItems(r.Context(), db.UserPlaylist{Name: req.Name, Type: "manual", Kind: "user"}, items)
+	if err != nil {
+		writeErr(w, 400, "playlist", err.Error())
+		return
+	}
+	out, err := s.Store.GetUserPlaylist(created.ID)
+	if err != nil {
 		writeErr(w, 500, "db", err.Error())
 		return
 	}
-	out, _ := s.Store.GetUserPlaylist(created.ID)
 	writeJSON(w, out)
 }
 
@@ -494,20 +534,16 @@ func (s *Server) handleTagRemoveTrack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-func (s *Server) materializeSmart(id int64, raw string) error {
-	rule, err := playlist.ParseRule(raw)
-	if err != nil {
-		return err
+func (s *Server) writePlaylistErr(w http.ResponseWriter, err error) {
+	if errors.Is(err, db.ErrPlaylistNotFound) {
+		writeErr(w, 404, "not_found", "playlist not found")
+		return
 	}
-	ids, err := playlist.Evaluate(s.Store, rule)
-	if err != nil {
-		return err
+	if playlist.IsRuleError(err) {
+		writeErr(w, 400, "rule", err.Error())
+		return
 	}
-	items := make([]db.UserPlaylistItem, 0, len(ids))
-	for _, trackID := range ids {
-		items = append(items, db.UserPlaylistItem{TrackID: trackID, Source: "rule"})
-	}
-	return s.Store.ReplacePlaylistItems(id, items)
+	writeErr(w, 400, "playlist", err.Error())
 }
 
 func resolvedTrackIDs(pl *db.UserPlaylist) []int64 {

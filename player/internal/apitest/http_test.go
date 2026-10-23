@@ -3,9 +3,13 @@ package apitest
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/torwin-job/musik/player/internal/db"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/torwin-job/musik/player/internal/db"
+	"github.com/torwin-job/musik/player/internal/playback"
 )
 
 func TestCatalogArtistsAlbumsTrack(t *testing.T) {
@@ -298,6 +302,108 @@ func TestRecommendHTTPErrors(t *testing.T) {
 	rec = serve(server, jsonReq("GET", "/api/recommend/seed", ""))
 	if rec.Code != 400 {
 		t.Fatalf("missing seed track status=%d", rec.Code)
+	}
+}
+
+func TestProfileReadDoesNotWriteCounts(t *testing.T) {
+	server := openTestServer(t)
+	server.Taste.SetCounts(0, 0)
+	if _, err := server.Store.DB.Exec(`
+INSERT INTO listening_history(profile_id, track_id, ts, action)
+VALUES (?, 11, ?, 'like')`, server.Store.ProfileID, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(server, jsonReq("GET", "/api/profile", ""))
+	if rec.Code != 200 {
+		t.Fatalf("profile status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		NPositive int    `json:"n_positive"`
+		Maturity  string `json:"maturity"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.NPositive != 1 || body.Maturity != "discovering" {
+		t.Fatalf("profile=%+v", body)
+	}
+	pos, neg := server.Taste.Counts()
+	if pos != 0 || neg != 0 {
+		t.Fatalf("GET /api/profile wrote taste counts %d/%d", pos, neg)
+	}
+}
+
+func TestEnqueueJobReturnsWorkerStatus(t *testing.T) {
+	server := openTestServer(t)
+	worker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/jobs" || r.Method != http.MethodPost {
+			t.Errorf("worker %s %s", r.Method, r.URL.Path)
+		}
+		var posted struct {
+			Kind    string `json:"kind"`
+			Payload struct {
+				Mixes []playback.MixContract `json:"mixes"`
+			} `json:"payload"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+			t.Errorf("decode job: %v", err)
+		}
+		want, _ := json.Marshal(playback.GeneratedMixContract())
+		got, _ := json.Marshal(posted.Payload.Mixes)
+		if posted.Kind != "mix_pack" || string(got) != string(want) {
+			t.Errorf("job contract kind=%s mixes=%s", posted.Kind, got)
+		}
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		_, _ = w.Write([]byte(`{"error":"bad kind"}`))
+	}))
+	t.Cleanup(worker.Close)
+	server.Cfg.WorkerURL = worker.URL
+	rec := serve(server, jsonReq("POST", "/api/jobs/mix_pack", ""))
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("enqueue status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "worker_error" {
+		t.Fatalf("body=%s", rec.Body.String())
+	}
+}
+
+func TestListeningMemoryAndEmptyForgottenStation(t *testing.T) {
+	server := openTestServer(t)
+	rec := serve(server, jsonReq("GET", "/api/metrics/listening", ""))
+	if rec.Code != 200 {
+		t.Fatalf("listening status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var mem struct {
+		OnThisDay struct {
+			Month  int   `json:"month"`
+			Day    int   `json:"day"`
+			Tracks []any `json:"tracks"`
+		} `json:"on_this_day"`
+		Year struct {
+			Year   int   `json:"year"`
+			Plays  int   `json:"plays"`
+			Tracks []any `json:"top_tracks"`
+		} `json:"year"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &mem); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if mem.OnThisDay.Month != int(now.Month()) || mem.OnThisDay.Day != now.Day() || mem.OnThisDay.Tracks == nil {
+		t.Fatalf("on this day = %+v", mem.OnThisDay)
+	}
+	if mem.Year.Year != now.Year() || mem.Year.Plays != 0 || mem.Year.Tracks == nil {
+		t.Fatalf("year = %+v", mem.Year)
+	}
+	rec = serve(server, jsonReq("POST", "/api/radio/start", `{"station":"forgotten"}`))
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("forgotten status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

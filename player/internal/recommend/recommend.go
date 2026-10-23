@@ -5,12 +5,12 @@ package recommend
 import (
 	"math/rand"
 	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/torwin-job/musik/player/internal/db"
 	"github.com/torwin-job/musik/player/internal/index"
+	"github.com/torwin-job/musik/player/internal/queue"
 )
 
 type TrackHit struct {
@@ -192,23 +192,62 @@ type FavoritesMix struct {
 	Albums  []AlbumHit
 }
 
-func FromFavorites(store *db.Store, idx *index.Index) FavoritesMix {
+// A hearted track is one point in taste. An album centroid is a smaller cloud
+// and an artist centroid is the broadest, so they do not share one slot in the
+// average.
+const (
+	favoriteTrackWeight  = 1.0
+	favoriteAlbumWeight  = 0.55
+	favoriteArtistWeight = 0.30
+	favoriteMixSize      = 24
+	favoritePool         = 200
+	// favoriteLikeArm is the liked tracks added when they miss the cosine top.
+	// One like can cover a moderate drop; a track with no likes stays out.
+	favoriteLikeArm     = 48
+	favoriteArtistLimit = 2
+	favoriteQueryNoise  = 0.05
+)
+
+type weightedVector struct {
+	vec    []float32
+	weight float64
+}
+
+func FromFavorites(store *db.Store, idx *index.Index, model queue.Model) FavoritesMix {
+	return fromFavorites(store, idx, time.Now(), model)
+}
+
+func fromFavorites(store *db.Store, idx *index.Index, now time.Time, model queue.Model) FavoritesMix {
+	if len(model.Weights) == 0 {
+		model = queue.DefaultModel()
+	}
 	exclude := map[int64]bool{}
 	if recent, err := store.RecentTrackIDs(24*7, 500); err == nil {
 		for _, id := range recent {
 			exclude[id] = true
 		}
 	}
-	var vecs [][]float32
+	skipArtists := map[string]bool{}
+	skipAlbums := map[string]bool{}
+	var parts []weightedVector
 	basedOn := map[string]any{}
 
 	favTracks, _ := store.FavoritesList()
 	trackTitles := make([]string, 0, len(favTracks))
 	for _, t := range favTracks {
 		exclude[t.TrackID] = true
-		if row, ok := idx.RowOf(t.TrackID); ok {
-			vecs = append(vecs, idx.Vector(row))
-			trackTitles = append(trackTitles, t.Title)
+		trackTitles = append(trackTitles, t.Title)
+		row, ok := idx.RowOf(t.TrackID)
+		if !ok {
+			continue
+		}
+		meta := idx.MetaAt(row)
+		skipArtists[creditKey(meta.Artist)] = true
+		if meta.Album != "" {
+			skipAlbums[creditKey(meta.Artist, meta.Album)] = true
+		}
+		if vec := idx.Vector(row); len(vec) > 0 {
+			parts = append(parts, weightedVector{vec: vec, weight: favoriteTrackWeight})
 		}
 	}
 	basedOn["tracks"] = trackTitles
@@ -217,12 +256,13 @@ func FromFavorites(store *db.Store, idx *index.Index) FavoritesMix {
 	artistNames := make([]string, 0, len(favArtists))
 	for _, a := range favArtists {
 		artistNames = append(artistNames, a.Artist)
+		skipArtists[creditKey(a.Artist)] = true
 		rows := idx.RowsForArtist(a.Artist)
 		for _, r := range rows {
 			exclude[idx.MetaAt(r).ID] = true
 		}
 		if v := idx.CentroidOf(rows); v != nil {
-			vecs = append(vecs, v)
+			parts = append(parts, weightedVector{vec: v, weight: favoriteArtistWeight})
 		}
 	}
 	basedOn["artists"] = artistNames
@@ -231,71 +271,301 @@ func FromFavorites(store *db.Store, idx *index.Index) FavoritesMix {
 	albumNames := make([]string, 0, len(favAlbums))
 	for _, a := range favAlbums {
 		albumNames = append(albumNames, a.Artist+" — "+a.Album)
+		skipArtists[creditKey(a.Artist)] = true
+		skipAlbums[creditKey(a.Artist, a.Album)] = true
 		rows := idx.RowsForAlbum(a.Artist, a.Album)
 		for _, r := range rows {
 			exclude[idx.MetaAt(r).ID] = true
 		}
 		if v := idx.CentroidOf(rows); v != nil {
-			vecs = append(vecs, v)
+			parts = append(parts, weightedVector{vec: v, weight: favoriteAlbumWeight})
 		}
 	}
 	basedOn["albums"] = albumNames
 
-	if len(vecs) == 0 {
+	query := combineWeighted(parts)
+	if query == nil {
 		return FavoritesMix{Empty: true, BasedOn: basedOn}
 	}
-
-	dim := len(vecs[0])
-	sum := make([]float64, dim)
-	used := 0
-	for _, v := range vecs {
-		if len(v) != dim {
-			continue
-		}
-		for d := 0; d < dim; d++ {
-			sum[d] += float64(v[d])
-		}
-		used++
-	}
-	q := make([]float32, dim)
-	inv := 1.0 / float64(used)
-	for d := 0; d < dim; d++ {
-		q[d] = float32(sum[d] * inv)
-	}
-	index.Normalize(q)
-
-	tracks := TopTracks(idx, q, exclude, 48)
-	daySeed, _ := strconv.ParseInt(time.Now().Format("20060102"), 10, 64)
-	rng := rand.New(rand.NewSource(daySeed))
-	rng.Shuffle(len(tracks), func(i, j int) { tracks[i], tracks[j] = tracks[j], tracks[i] })
-	if len(tracks) > 24 {
-		tracks = tracks[:24]
-	}
-
-	var simArtists []ArtistHit
-	var simAlbums []AlbumHit
-	day := time.Now().YearDay()
-	if len(favArtists) > 0 {
-		seed := favArtists[day%len(favArtists)]
-		simArtists = SimilarArtists(idx, seed.Artist, 10)
-	} else if len(favTracks) > 0 {
-		seed := favTracks[day%len(favTracks)]
-		simArtists = SimilarArtists(idx, seed.Artist, 10)
-	}
-	if len(favAlbums) > 0 {
-		seed := favAlbums[day%len(favAlbums)]
-		simAlbums = SimilarAlbums(idx, seed.Artist, seed.Album, 10)
-	} else if len(favTracks) > 0 {
-		seed := favTracks[day%len(favTracks)]
-		if row, ok := idx.RowOf(seed.TrackID); ok {
-			m := idx.MetaAt(row)
-			if m.Album != "" {
-				simAlbums = SimilarAlbums(idx, m.Artist, m.Album, 10)
-			}
-		}
-	}
+	query = perturbQuery(query, favoriteDaySeed(now), favoriteQueryNoise)
 
 	return FavoritesMix{
-		BasedOn: basedOn, Tracks: tracks, Artists: simArtists, Albums: simAlbums,
+		BasedOn: basedOn,
+		Tracks:  scoreFavoriteTracks(idx, query, exclude, now, model),
+		Artists: artistsLike(idx, query, skipArtists, 10),
+		Albums:  albumsLike(idx, query, skipAlbums, 10),
 	}
+}
+
+func combineWeighted(parts []weightedVector) []float32 {
+	dim := 0
+	for _, part := range parts {
+		if part.weight > 0 && len(part.vec) > dim {
+			dim = len(part.vec)
+		}
+	}
+	if dim == 0 {
+		return nil
+	}
+	sum := make([]float64, dim)
+	var total float64
+	for _, part := range parts {
+		if part.weight <= 0 || len(part.vec) != dim {
+			continue
+		}
+		total += part.weight
+		for d := 0; d < dim; d++ {
+			sum[d] += part.weight * float64(part.vec[d])
+		}
+	}
+	if total <= 0 {
+		return nil
+	}
+	out := make([]float32, dim)
+	inv := 1 / total
+	for d := range out {
+		out[d] = float32(sum[d] * inv)
+	}
+	index.Normalize(out)
+	return out
+}
+
+func favoriteDaySeed(now time.Time) int64 {
+	year, month, day := now.Date()
+	return int64(year)*10000 + int64(month)*100 + int64(day)
+}
+
+func perturbQuery(q []float32, seed int64, sigma float64) []float32 {
+	if len(q) == 0 {
+		return nil
+	}
+	rng := rand.New(rand.NewSource(seed))
+	out := append([]float32(nil), q...)
+	for i := range out {
+		out[i] += float32(rng.NormFloat64() * sigma)
+	}
+	index.Normalize(out)
+	return out
+}
+
+type mixCandidate struct {
+	row    int
+	id     int64
+	score  float64
+	cosine float64
+	vec    []float32
+	artist string
+	meta   index.Meta
+}
+
+// scoreFavoriteTracks unions the cosine top with liked tracks that missed it.
+// The linear score, MMR and artist cap still decide the shelf.
+func scoreFavoriteTracks(idx *index.Index, query []float32, exclude map[int64]bool, now time.Time, model queue.Model) []TrackHit {
+	if idx == nil || len(query) == 0 {
+		return nil
+	}
+	pool := idx.TopK(query, favoritePool, exclude)
+	seen := make(map[int64]bool, len(pool))
+	type rowSim struct {
+		row int
+		sim float64
+	}
+	rows := make([]rowSim, 0, len(pool)+favoriteLikeArm)
+	for _, hit := range pool {
+		seen[idx.MetaAt(hit.Row).ID] = true
+		rows = append(rows, rowSim{row: hit.Row, sim: float64(hit.Score)})
+	}
+	for _, row := range likedOutsideTop(idx, exclude, seen, favoriteLikeArm) {
+		rows = append(rows, rowSim{row: row, sim: float64(idx.Dot(row, query))})
+	}
+	cands := make([]mixCandidate, 0, len(rows))
+	for _, item := range rows {
+		meta := idx.MetaAt(item.row)
+		values := queue.VectorFromInputs(queue.FeatureInputs{
+			Meta: meta, Now: now, SimTaste: item.sim,
+		})
+		cands = append(cands, mixCandidate{
+			row: item.row, id: meta.ID, score: model.Score(values), cosine: item.sim,
+			vec: idx.Vector(item.row), artist: strings.ToLower(strings.TrimSpace(meta.Artist)),
+			meta: meta,
+		})
+	}
+	picked := selectFavoriteTracks(cands, favoriteMixSize, favoriteArtistLimit)
+	out := make([]TrackHit, 0, len(picked))
+	for _, cand := range picked {
+		out = append(out, TrackHit{
+			ID: cand.meta.ID, Artist: cand.meta.Artist, Title: cand.meta.Title, Album: cand.meta.Album,
+			Duration: cand.meta.Duration, Cosine: cand.cosine, HasArtwork: cand.meta.ArtworkPath != "",
+		})
+	}
+	return out
+}
+
+// likedOutsideTop is the liked arm: up to limit tracks with Likes > 0 that
+// missed the cosine pool and are not already excluded, highest likes first.
+func likedOutsideTop(idx *index.Index, exclude, seen map[int64]bool, limit int) []int {
+	if idx == nil || limit <= 0 {
+		return nil
+	}
+	skip := make(map[int64]bool, len(exclude)+len(seen))
+	for id := range exclude {
+		skip[id] = true
+	}
+	for id := range seen {
+		skip[id] = true
+	}
+	return idx.LikedRows(limit, skip)
+}
+
+// selectFavoriteTracks is MMR with a hard artist cap. Relevance is the shared
+// linear score; diversity is cosine to tracks already chosen.
+func selectFavoriteTracks(cands []mixCandidate, size, artistLimit int) []mixCandidate {
+	if size < 1 || len(cands) == 0 {
+		return nil
+	}
+	lambda := queue.ActiveSpec.MMRLambda
+	if lambda <= 0 || lambda > 1 {
+		lambda = 0.7
+	}
+	penalty := queue.ActiveSpec.ArtistPenalty
+	remaining := append([]mixCandidate(nil), cands...)
+	selected := make([]mixCandidate, 0, size)
+	artistCount := map[string]int{}
+	for len(selected) < size && len(remaining) > 0 {
+		bestI, bestScore := -1, -1e9
+		for i, cand := range remaining {
+			if artistLimit > 0 && artistCount[cand.artist] >= artistLimit {
+				continue
+			}
+			div := 0.0
+			for _, prev := range selected {
+				sim := dot32(cand.vec, prev.vec)
+				if sim > div {
+					div = sim
+				}
+			}
+			score := lambda*cand.score - (1-lambda)*div - penalty*float64(artistCount[cand.artist])
+			if score > bestScore {
+				bestScore = score
+				bestI = i
+			}
+		}
+		if bestI < 0 {
+			break
+		}
+		chosen := remaining[bestI]
+		selected = append(selected, chosen)
+		artistCount[chosen.artist]++
+		remaining = append(remaining[:bestI], remaining[bestI+1:]...)
+	}
+	return selected
+}
+
+func artistsLike(idx *index.Index, query []float32, skip map[string]bool, limit int) []ArtistHit {
+	if idx == nil || len(query) == 0 || limit <= 0 {
+		return nil
+	}
+	type scored struct {
+		artist string
+		rows   []int
+		sim    float32
+	}
+	var all []scored
+	for _, group := range idx.ArtistCentroids() {
+		if skip[creditKey(group.Artist)] || len(group.Vector) == 0 || len(group.Rows) == 0 {
+			continue
+		}
+		all = append(all, scored{group.Artist, group.Rows, dotQuery(group.Vector, query)})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].sim == all[j].sim {
+			return all[i].artist < all[j].artist
+		}
+		return all[i].sim > all[j].sim
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	out := make([]ArtistHit, 0, len(all))
+	for _, item := range all {
+		meta := idx.MetaAt(item.rows[0])
+		out = append(out, ArtistHit{
+			Artist: item.artist, Tracks: len(item.rows), Cosine: float64(item.sim),
+			CoverTrackID: meta.ID, HasArtwork: meta.ArtworkPath != "",
+			Explanation: "похоже на избранное",
+		})
+	}
+	return out
+}
+
+func albumsLike(idx *index.Index, query []float32, skip map[string]bool, limit int) []AlbumHit {
+	if idx == nil || len(query) == 0 || limit <= 0 {
+		return nil
+	}
+	type scored struct {
+		artist, album string
+		rows          []int
+		sim           float32
+	}
+	var all []scored
+	for _, group := range idx.AlbumCentroids() {
+		if group.Album == "" || skip[creditKey(group.Artist, group.Album)] || len(group.Vector) == 0 || len(group.Rows) == 0 {
+			continue
+		}
+		all = append(all, scored{group.Artist, group.Album, group.Rows, dotQuery(group.Vector, query)})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].sim == all[j].sim {
+			if all[i].artist == all[j].artist {
+				return all[i].album < all[j].album
+			}
+			return all[i].artist < all[j].artist
+		}
+		return all[i].sim > all[j].sim
+	})
+	if len(all) > limit {
+		all = all[:limit]
+	}
+	out := make([]AlbumHit, 0, len(all))
+	for _, item := range all {
+		meta := idx.MetaAt(item.rows[0])
+		out = append(out, AlbumHit{
+			Artist: item.artist, Album: item.album, Tracks: len(item.rows),
+			Cosine: float64(item.sim), CoverTrackID: meta.ID, HasArtwork: meta.ArtworkPath != "",
+			Explanation: "похоже на избранное",
+		})
+	}
+	return out
+}
+
+func creditKey(parts ...string) string {
+	out := make([]string, len(parts))
+	for i, part := range parts {
+		out[i] = strings.ToLower(strings.TrimSpace(part))
+	}
+	return strings.Join(out, "\x00")
+}
+
+func dotQuery(vec, query []float32) float32 {
+	n := len(vec)
+	if len(query) < n {
+		n = len(query)
+	}
+	var sum float32
+	for i := 0; i < n; i++ {
+		sum += vec[i] * query[i]
+	}
+	return sum
+}
+
+func dot32(a, b []float32) float64 {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	var sum float64
+	for i := 0; i < n; i++ {
+		sum += float64(a[i] * b[i])
+	}
+	return sum
 }

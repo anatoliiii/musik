@@ -1,8 +1,19 @@
 package playback
 
-// StartShare creates and initializes a session for a shared radio stream.
+import "time"
+
+// StartShare builds an in-memory radio session for one listener.
+// The session is not registered and is not written to play_sessions, so a
+// listener cannot occupy or evict the owner's sessions.
 func (e *Engine) StartShare() *Session {
-	sess := e.NewSession("share")
+	sess := &Session{
+		ID:        newSessionID(),
+		Mode:      "share",
+		Exclude:   map[int64]bool{},
+		Rated:     map[int64]string{},
+		UpdatedAt: time.Now(),
+		ephemeral: true,
+	}
 	sess.Lock()
 	startID := e.PickStart(sess, nil)
 	sess.Current = startID

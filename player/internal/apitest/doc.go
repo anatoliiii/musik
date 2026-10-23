@@ -1,3 +1,4 @@
 // Package apitest is the HTTP test suite for musik-player.
-// Handler implementations live in internal/api; tests call Server.Handler().
+// Tests call Server.Handler() from internal/api and cover the current routes:
+// catalog, playback, mixes, playlists, auth, and jobs.
 package apitest

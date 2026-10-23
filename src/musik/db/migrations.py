@@ -650,7 +650,7 @@ def _identity_foundation(conn: sqlite3.Connection) -> None:
 
 def _profile_ownership(conn: sqlite3.Connection) -> None:
     from musik.db.profile_migration import migrate_profiles
-    migrate_profiles(conn)
+    migrate_profiles(conn, version=12)
 
 
 def _device_tokens(conn: sqlite3.Connection) -> None:
@@ -675,44 +675,65 @@ def _device_tokens(conn: sqlite3.Connection) -> None:
     )
 
 
-def _catalog_extras_and_playback_state(conn: sqlite3.Connection) -> None:
-    # Remaster flag and collaborator segments are parsed at scan time (the
-    # scanner keeps the full album tag; "Thomas / БИ-2 / Сплин" is split once
-    # so API and UI show the same credits).
+def _remaster_marker(conn: sqlite3.Connection) -> None:
+    # The scanner keeps the full album tag (including "… (2001 Remastered)")
+    # and records whether the marker was present. Dedup uses the flag together
+    # with album and year to keep an original and its remaster apart.
     _add_column(conn, "tracks", "is_remaster INTEGER NOT NULL DEFAULT 0")
+
+
+def _artist_segments(conn: sqlite3.Connection) -> None:
+    # Collaborator credits ("Thomas / БИ-2 / Сплин") are parsed once during the
+    # scan; the segments live here so every reader (API, UI) shows the same
+    # split and no client has to re-implement the parsing rule.
     _add_column(conn, "tracks", "artist_segments TEXT")
-    conn.executescript(
+
+
+def _playback_state(conn: sqlite3.Connection) -> None:
+    # One row per owner: which session/track was playing, where, and on which
+    # device. A page reload or another device reads it to resume the track at
+    # the same position; listened_sec keeps the listen statistics continuous.
+    conn.execute(
         """
-        -- Where playback stopped, per profile and device scope, so a reload or
-        -- another device of the same profile resumes the track at that point.
         CREATE TABLE IF NOT EXISTS playback_state (
-            profile_id   TEXT NOT NULL REFERENCES profiles(id),
-            owner_scope  TEXT NOT NULL DEFAULT 'local',
-            session_id   TEXT NOT NULL DEFAULT '',
-            track_id     INTEGER NOT NULL DEFAULT 0,
+            owner_scope TEXT PRIMARY KEY DEFAULT 'local',
+            session_id TEXT NOT NULL DEFAULT '',
+            track_id INTEGER NOT NULL DEFAULT 0,
             position_sec REAL NOT NULL DEFAULT 0,
             listened_sec REAL NOT NULL DEFAULT 0,
-            playing      INTEGER NOT NULL DEFAULT 0,
-            client_id    TEXT NOT NULL DEFAULT '',
-            updated_at   TEXT NOT NULL,
-            PRIMARY KEY (profile_id, owner_scope)
-        );
-        -- Catalog lookups shared by every profile. status='missing' remembers
-        -- an online lookup without a match so hourly runs do not repeat it.
+            playing INTEGER NOT NULL DEFAULT 0,
+            client_id TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _artist_photos_and_lookups(conn: sqlite3.Connection) -> None:
+    # Artist photos fetched online (Deezer), keyed by the normalized artist
+    # name ("сплин"). status='missing' remembers a lookup without a match so
+    # the hourly run does not ask again every time.
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS artist_photos (
-            id         INTEGER PRIMARY KEY AUTOINCREMENT,
-            name_key   TEXT NOT NULL UNIQUE,
-            artist     TEXT NOT NULL,
-            path       TEXT,
-            status     TEXT NOT NULL,
-            source     TEXT NOT NULL DEFAULT '',
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name_key TEXT NOT NULL UNIQUE,
+            artist TEXT NOT NULL,
+            path TEXT,
+            status TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
             checked_at TEXT NOT NULL
-        );
+        )
+        """
+    )
+    # Album cover lookups without a match, for the same reason.
+    conn.execute(
+        """
         CREATE TABLE IF NOT EXISTS artwork_lookups (
-            album_key  TEXT PRIMARY KEY,
-            status     TEXT NOT NULL,
+            album_key TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
             checked_at TEXT NOT NULL
-        );
+        )
         """
     )
 
@@ -737,12 +758,15 @@ MIGRATIONS = (
     Migration(3, "recommendation_lifecycle_and_taste", _recommendation_lifecycle_and_taste),
     Migration(4, "playlists_contexts_queue", _playlists_contexts_queue),
     Migration(5, "ranker_and_explore", _ranker_and_explore),
-    Migration(6, "identity_foundation", _identity_foundation),
-    Migration(7, "profile_ownership", _profile_ownership),
-    Migration(8, "device_tokens_and_admin_guard", _device_tokens),
-    Migration(9, "catalog_extras_and_playback_state", _catalog_extras_and_playback_state),
+    Migration(6, "remaster_marker", _remaster_marker),
+    Migration(7, "artist_segments", _artist_segments),
+    Migration(8, "playback_state", _playback_state),
+    Migration(9, "artist_photos_and_lookups", _artist_photos_and_lookups),
     Migration(10, "album_artist_and_compilation", _album_artist_and_compilation),
-    Migration(11, "local_passwords", _local_passwords),
+    Migration(11, "identity_foundation", _identity_foundation),
+    Migration(12, "profile_ownership", _profile_ownership),
+    Migration(13, "device_tokens_and_admin_guard", _device_tokens),
+    Migration(14, "local_passwords", _local_passwords),
 )
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1].version
 
@@ -772,6 +796,38 @@ def migrate_db(db_path: Path) -> int:
     return migrate_database(None, db_path)
 
 
+def _adopt_home_v11(connection) -> None:
+    """Home v11 and upstream v14 describe the same schema under different IDs."""
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(connection)
+    if "alembic_version" not in inspector.get_table_names():
+        return
+    revisions = connection.execute(text("SELECT version_num FROM alembic_version")).scalars().all()
+    if revisions != ["musik_11"]:
+        return
+    # Do not stamp an unknown or partial schema merely because its ID matches.
+    required = {
+        "tracks": {"is_remaster", "artist_segments", "album_artist", "is_compilation"},
+        "external_identities": {"user_id", "password_hash"},
+        "favorites": {"profile_id", "track_id"},
+        "listening_history": {"profile_id", "track_id"},
+        "playback_state": {"profile_id", "owner_scope"},
+        "device_tokens": {"user_id", "profile_id", "secret_hash"},
+    }
+    tables = set(inspector.get_table_names())
+    for table, columns in required.items():
+        if table not in tables or not columns <= {c["name"] for c in inspector.get_columns(table)}:
+            raise RuntimeError(f"home v11 schema is incomplete: {table}")
+    if connection.dialect.name == "sqlite":
+        if connection.exec_driver_sql("PRAGMA user_version").scalar_one() != 11:
+            raise RuntimeError("home v11 SQLite schema version does not match its revision")
+        connection.exec_driver_sql("PRAGMA user_version = 14")
+    # v14 checks/adds password_hash idempotently. No ownership migration is
+    # repeated, so existing profiles, credentials and personal rows stay put.
+    connection.execute(text("UPDATE alembic_version SET version_num='musik_13'"))
+
+
 def migrate_database(database_url: str | None, db_path: Path) -> int:
     """Run the single Alembic history for SQLite or PostgreSQL."""
     from alembic import command
@@ -786,6 +842,7 @@ def migrate_database(database_url: str | None, db_path: Path) -> int:
     alembic.set_main_option("script_location", str(Path(__file__).parent / "alembic"))
     try:
         with engine.connect() as connection:
+            _adopt_home_v11(connection)
             alembic.attributes["connection"] = connection
             command.upgrade(alembic, "head")
             connection.commit()

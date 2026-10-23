@@ -2,6 +2,7 @@ package playback
 
 import (
 	"encoding/json"
+	"log"
 	"math"
 	"time"
 
@@ -43,10 +44,35 @@ func (e *Engine) PickStart(sess *Session, seed *int64) int64 {
 	} else {
 		startID = e.pickTasteStart(sess)
 	}
-	if _, ok := e.Idx.RowOf(startID); !ok && e.Idx.Size() > 0 {
-		startID = e.Idx.MetaAt(0).ID
+	if _, ok := e.Idx.RowOf(startID); ok {
+		return startID
 	}
-	return startID
+	return e.pickRandomOrRelax(sess)
+}
+
+// pickRandomOrRelax picks outside exclude. When exclude covers the catalog,
+// it drops the soft exclude, keeps hard rule blocks, and logs that choice.
+// It returns 0 when nothing playable remains, which stops the radio.
+func (e *Engine) pickRandomOrRelax(sess *Session) int64 {
+	if sess.Exclude == nil {
+		sess.Exclude = map[int64]bool{}
+	}
+	if id := e.Builder.PickRandom(sess.Exclude); id != 0 {
+		return id
+	}
+	if e.Idx.Size() == 0 || len(sess.Exclude) == 0 {
+		return 0
+	}
+	log.Printf("radio: exclude covers catalog session=%s mode=%s excluded=%d catalog=%d; relaxing exclude",
+		sess.ID, sess.Mode, len(sess.Exclude), e.Idx.Size())
+	sess.Exclude = map[int64]bool{}
+	e.excludeRuleTargets(sess)
+	id := e.Builder.PickRandom(sess.Exclude)
+	if id == 0 {
+		log.Printf("radio: no playable track after relaxing exclude session=%s mode=%s; stopping",
+			sess.ID, sess.Mode)
+	}
+	return id
 }
 
 func (e *Engine) pickTasteStart(sess *Session) int64 {
@@ -126,14 +152,20 @@ func (e *Engine) pickTasteStart(sess *Session) int64 {
 
 func (e *Engine) tasteForQueue(sess *Session) []float32 {
 	dp := db.DayPart(time.Now().Hour())
+	var base []float32
 	if e.TasteState != nil {
 		if sess == nil {
 			return e.TasteState.Effective(dp, nil, taste.DefaultDaypartMinimum)
 		}
-		base := e.TasteState.Effective(dp, &sess.TasteState, taste.DefaultDaypartMinimum)
-		return taste.BlendContexts(base, e.contextBlends(sess.ActiveContextIDs))
+		base = e.TasteState.Effective(dp, &sess.TasteState, taste.DefaultDaypartMinimum)
+		base = taste.BlendContexts(base, e.contextBlends(sess.ActiveContextIDs))
+	} else if e.Taste != nil {
+		base = e.Taste.Get()
 	}
-	return e.Taste.Get()
+	if sess == nil || sess.Anchor.Kind == "" {
+		return base
+	}
+	return blendAnchor(base, e.anchorVector(sess), anchorWeight(sess.Anchor.Proximity))
 }
 
 func (e *Engine) transitionsFrom(currentID int64) map[int64]float64 {
@@ -253,7 +285,7 @@ func (e *Engine) RefreshQueue(sess *Session, currentID int64, reason string) {
 	started := time.Now()
 	defer func() { e.observe("queue_build", time.Since(started)) }()
 	previous := append([]queue.Item(nil), sess.Queue...)
-	e.applyHardBlocks(sess)
+	e.excludeRuleTargets(sess)
 	size := e.Cfg.QueueSize
 	if size < 1 {
 		size = 6
@@ -266,10 +298,11 @@ func (e *Engine) RefreshQueue(sess *Session, currentID int64, reason string) {
 		Now: time.Now().UTC(), Rng: e.Builder.ForkRNG(),
 	})
 	model := e.Ranker
+	tasteVec := e.tasteForQueue(sess)
 	built := e.Builder.BuildCore(queue.CoreOpts{
-		CurrentID: currentID, Taste: e.tasteForQueue(sess),
+		CurrentID: currentID, Taste: tasteVec,
 		Session: sess.TasteState.Positive.Vector, Daypart: e.daypartVector(dp),
-		Centroids: e.tasteCentroidVecs(), Contexts: e.contextBlends(sess.ActiveContextIDs),
+		Centroids: e.centroidsForQueue(sess, tasteVec), Contexts: e.contextBlends(sess.ActiveContextIDs),
 		Exclude: sess.Exclude, Rules: e.sessionRules(sess),
 		Transitions: e.transitionsFrom(currentID),
 		Profile:     queue.TransitionProfile(sess.TransitionProfile),
@@ -279,6 +312,7 @@ func (e *Engine) RefreshQueue(sess *Session, currentID int64, reason string) {
 		},
 		DaypartName: dp, ContextIDs: sess.ActiveContextIDs,
 		Discover: e.Discovering(), Allocation: &decision,
+		LearnedTransition: e.learnedTransition(),
 	})
 	if reason != "" && sess.Mode != "share" {
 		requestID := db.NewID()
@@ -429,7 +463,7 @@ func (e *Engine) Advance(sess *Session) int64 {
 		nextID = sess.CurrentItem.TrackID
 		sess.Queue = sess.Queue[1:]
 	} else if sess.Mode == "radio" || sess.Mode == "session" || sess.Mode == "share" {
-		nextID = e.Builder.PickRandom(sess.Exclude)
+		nextID = e.pickRandomOrRelax(sess)
 	}
 	if nextID != 0 && nextID != sess.Current {
 		e.rememberBack(sess)
@@ -515,7 +549,7 @@ func (e *Engine) persistTasteState(daypart string) {
 
 func (e *Engine) rebuildTasteCentroids() {
 	rows, err := e.Store.PositiveTasteSamples(400)
-	if err != nil || len(rows) == 0 {
+	if err != nil {
 		return
 	}
 	samples := make([]taste.Sample, 0, len(rows))
@@ -530,6 +564,7 @@ func (e *Engine) rebuildTasteCentroids() {
 		})
 	}
 	if len(samples) == 0 {
+		_ = e.Store.ReplaceTasteCentroids(taste.CentroidAlgorithmVersion, nil)
 		return
 	}
 	var warm []taste.Centroid
@@ -553,5 +588,5 @@ func (e *Engine) rebuildTasteCentroids() {
 			SampleCount: centroid.SampleCount, AlgorithmVersion: taste.CentroidAlgorithmVersion,
 		})
 	}
-	_ = e.Store.ReplaceTasteCentroids(out)
+	_ = e.Store.ReplaceTasteCentroids(taste.CentroidAlgorithmVersion, out)
 }

@@ -75,7 +75,32 @@
           },
           "source": {
             "type": "string"
+          },
+          "passport": {
+            "$ref": "#/components/schemas/TrackPassport"
           }
+        }
+      },
+      "TrackPassport": {
+        "type": "object",
+        "description": "File measurements and this profile's listening counters. Only on GET /api/tracks/{id}. Fields are omitted when unknown. Rating is the existing like or dislike.",
+        "properties": {
+          "format": { "type": "string" },
+          "bitrate": { "type": "integer" },
+          "sample_rate": { "type": "integer" },
+          "channels": { "type": "integer" },
+          "lufs": { "type": "number" },
+          "bpm": { "type": "number" },
+          "key": { "type": "string" },
+          "mode": { "type": "string", "enum": ["major", "minor"] },
+          "year": { "type": "integer" },
+          "duration": { "type": "number" },
+          "genres": { "type": "array", "items": { "type": "string" } },
+          "plays": { "type": "integer" },
+          "finishes": { "type": "integer" },
+          "early_skips": { "type": "integer" },
+          "last_played_at": { "type": "string" },
+          "rating": { "type": "string", "enum": ["like", "dislike"] }
         }
       },
       "PlaybackEvent": {
@@ -646,6 +671,25 @@
                 "properties": {
                   "seed_track_id": {
                     "type": "integer"
+                  },
+                  "seed_artist": {
+                    "type": "string"
+                  },
+                  "seed_album": {
+                    "type": "string"
+                  },
+                  "proximity": {
+                    "type": "string",
+                    "enum": ["closer", "wider"],
+                    "description": "One step tighter or looser on the current radio session. Send session_id."
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "station": {
+                    "type": "string",
+                    "enum": ["forgotten"],
+                    "description": "forgotten anchors the station on tracks with high finishes and an old last play."
                   }
                 }
               }
@@ -655,6 +699,9 @@
         "responses": {
           "200": {
             "description": "session + current + queue"
+          },
+          "409": {
+            "description": "forgotten station has no tracks yet"
           }
         }
       }
@@ -825,7 +872,7 @@
         "summary": "Recommend from favorites",
         "responses": {
           "200": {
-            "description": "tracks/artists/albums"
+            "description": "Tracks, artists and albums from favorites. Liked tracks outside the cosine top stay eligible. Empty favorites return empty=true and hint."
           }
         }
       }
@@ -903,6 +950,16 @@
         "responses": {
           "200": {
             "description": "ok"
+          }
+        }
+      }
+    },
+    "/api/metrics/listening": {
+      "get": {
+        "summary": "On this day and a short year in music",
+        "responses": {
+          "200": {
+            "description": "on_this_day and year, counted from listening_history"
           }
         }
       }

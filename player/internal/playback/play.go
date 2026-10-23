@@ -1,7 +1,6 @@
 package playback
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
@@ -27,18 +26,6 @@ func IsFixedMode(mode string) bool {
 	}
 }
 
-// GeneratedMixKind is a shelf the worker builds. Manual and saved lists are not.
-func GeneratedMixKind(kind string) bool {
-	switch kind {
-	case "for_you", "daily", "new_releases", "weekly",
-		"weekday_mon", "weekday_tue", "weekday_wed", "weekday_thu",
-		"weekday_fri", "weekday_sat", "weekday_sun":
-		return true
-	default:
-		return false
-	}
-}
-
 func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err error) {
 	if len(spec.TrackIDs) > 0 {
 		for _, id := range spec.TrackIDs {
@@ -51,7 +38,7 @@ func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err er
 			name = "Плейлист"
 		}
 		if len(ids) == 0 {
-			return nil, "", fmt.Errorf("нет доступных треков")
+			return nil, "", ErrNoTracks
 		}
 		return ids, name, nil
 	}
@@ -71,7 +58,7 @@ func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err er
 			ids = append(ids, m.ID)
 		}
 		if len(ids) == 0 {
-			return nil, "", fmt.Errorf("ничего не найдено")
+			return nil, "", ErrNothingFound
 		}
 		switch {
 		case artist != "" && album != "":
@@ -91,7 +78,7 @@ func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err er
 		if _, ok := e.Idx.RowOf(spec.TrackID); !ok {
 			path, err := e.Store.TrackPath(spec.TrackID)
 			if err != nil || path == "" {
-				return nil, "", fmt.Errorf("track not found")
+				return nil, "", ErrTrackNotFound
 			}
 		}
 		name = spec.Name
@@ -100,7 +87,7 @@ func (e *Engine) ResolvePlayIDs(spec PlaySpec) (ids []int64, name string, err er
 		}
 		return []int64{spec.TrackID}, name, nil
 	}
-	return nil, "", fmt.Errorf("укажи track_id, track_ids, artist или album")
+	return nil, "", ErrPlaySpec
 }
 
 func (e *Engine) StartFixed(ids []int64, mode, name, kind string, startIndex int, startTrackID int64) *Session {
@@ -145,7 +132,7 @@ func (e *Engine) Jump(sess *Session, index *int, trackID int64) error {
 			pos = *index
 		}
 		if pos < 0 || pos >= len(sess.DailyIDs) {
-			return fmt.Errorf("track not in playlist")
+			return ErrTrackNotInPlaylist
 		}
 		sess.DailyPos = pos
 		sess.Current = sess.DailyIDs[pos]
@@ -165,7 +152,7 @@ func (e *Engine) Jump(sess *Session, index *int, trackID int64) error {
 		}
 	}
 	if trackID == 0 || pos < 0 {
-		return fmt.Errorf("track not in queue")
+		return ErrTrackNotInQueue
 	}
 	item := sess.Queue[pos]
 	if item.TrackID != sess.Current {
@@ -221,7 +208,7 @@ func (e *Engine) trackItem(id int64) queue.Item {
 func (e *Engine) Back(sess *Session) error {
 	if len(sess.DailyIDs) > 0 {
 		if sess.DailyPos <= 0 {
-			return fmt.Errorf("нет предыдущего трека")
+			return ErrNoPrevious
 		}
 		sess.DailyPos--
 		sess.Current = sess.DailyIDs[sess.DailyPos]
@@ -236,7 +223,7 @@ func (e *Engine) Back(sess *Session) error {
 		return nil
 	}
 	if len(sess.BackStack) == 0 {
-		return fmt.Errorf("нет предыдущего трека")
+		return ErrNoPrevious
 	}
 	prev := sess.BackStack[len(sess.BackStack)-1]
 	sess.BackStack = sess.BackStack[:len(sess.BackStack)-1]
@@ -266,43 +253,51 @@ func (e *Engine) pickAllowedStart(sess *Session, seed *int64) int64 {
 	if eval == nil || !eval.HardBlocked(startID) {
 		return startID
 	}
-	e.applyHardBlocks(sess)
-	if id := e.Builder.PickRandom(sess.Exclude); id != 0 {
-		return id
-	}
-	return 0
+	e.excludeRuleTargets(sess)
+	return e.pickRandomOrRelax(sess)
 }
 
-func (e *Engine) StartRadio(seed *int64) *Session {
-	sess := e.NewSession("radio")
+// Start opens a radio-style session in mode ("radio" or "session").
+// Radio applies contexts, hides recently played tracks, and keeps the
+// starting track out of the next queue. A RadioStart anchor (track, artist,
+// album, or the forgotten set) stays in the taste blend until the mode changes.
+// Passing RadioStart.Session retunes proximity on that session instead of
+// opening another one. Session mode skips the radio exclude and the anchor.
+func (e *Engine) Start(mode string, seed *int64, contextIDs []string, radio ...RadioStart) *Session {
+	var opt RadioStart
+	if len(radio) > 0 {
+		opt = radio[0]
+	}
+	if opt.Session != nil {
+		opt.Session.Lock()
+		e.tuneLocked(opt.Session, opt.Proximity)
+		opt.Session.Unlock()
+		return opt.Session
+	}
+	sess := e.NewSession(mode)
 	sess.Lock()
-	e.SeedRadioExclude(sess)
+	defer sess.Unlock()
+	if mode == "radio" {
+		if len(contextIDs) > 0 {
+			_ = e.SetSessionContexts(sess, contextIDs)
+		}
+		e.SeedRadioExclude(sess)
+		e.attachAnchor(sess, seed, opt)
+	}
 	startID := e.pickAllowedStart(sess, seed)
+	if mode == "radio" && (sess.Anchor.Kind == "artist" || sess.Anchor.Kind == "album" || sess.Anchor.Kind == "forgotten") {
+		startID = e.pickAnchoredStart(sess, seed)
+	}
 	sess.Current = startID
 	sess.Prev = 0
-	e.ExcludeTrack(sess, startID)
+	if mode == "radio" {
+		e.ExcludeTrack(sess, startID)
+	}
 	source := "radio_start"
-	if seed != nil {
+	if seed != nil || sess.Anchor.Kind != "" {
 		source = "manual"
 	}
 	e.createCurrentImpression(sess, source, "radio_start")
 	e.RefreshQueue(sess, startID, "radio_start")
-	sess.Unlock()
-	return sess
-}
-
-func (e *Engine) StartSession(seed *int64) *Session {
-	sess := e.NewSession("session")
-	sess.Lock()
-	startID := e.pickAllowedStart(sess, seed)
-	sess.Current = startID
-	sess.Prev = 0
-	source := "radio_start"
-	if seed != nil {
-		source = "manual"
-	}
-	e.createCurrentImpression(sess, source, "radio_start")
-	e.RefreshQueue(sess, startID, "radio_start")
-	sess.Unlock()
 	return sess
 }

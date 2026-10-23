@@ -169,6 +169,7 @@ def _run_mix_pack(payload: dict[str, Any]) -> dict[str, Any]:
         weekday_size=int(payload.get("weekday_size", 25)),
         weekly_size=int(payload.get("weekly_size", 40)),
         new_size=int(payload.get("new_size", 20)),
+        mixes=payload.get("mixes"),
     )
 
 

@@ -5,8 +5,8 @@ from sqlalchemy import Column, Text, inspect
 from musik.db.migrations import migrate_connection
 
 
-revision = "musik_11"
-down_revision = "musik_10"
+revision = "musik_14"
+down_revision = "musik_13"
 branch_labels = None
 depends_on = None
 

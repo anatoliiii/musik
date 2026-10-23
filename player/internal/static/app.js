@@ -10,6 +10,14 @@ const WEEKDAY_RU = {
   weekday_sun: "вс",
 };
 
+function closeEventId(trackId) {
+  const id = Number(trackId) || 0;
+  if (!closeEvent || closeEvent.trackId !== id) {
+    closeEvent = { trackId: id, eventId: randomId() };
+  }
+  return closeEvent.eventId;
+}
+
 function randomId() {
   // crypto.randomUUID() exists only in a secure context: over http on a LAN
   // address — the setup docs/DEPLOY.md recommends for phones — it is undefined,
@@ -52,6 +60,7 @@ let playlist = [];
 let currentQueue = [];
 let queueKind = "queue"; // "queue" (radio) or "playlist" (fixed list)
 let fixedMode = false;
+let radioAnchor = null;
 let lastProgressAt = 0;
 let listenedAccum = 0;
 let lastPos = 0;
@@ -64,6 +73,7 @@ let plAddSort = "artist";
 let libTimer = null;
 let seeking = false;
 let playbackGen = 0;
+let closeEvent = null; // one event_id for track_end/skip of the track now closing
 let unplayableRun = 0; // tracks in a row that failed to play
 let toastTimer = null;
 let jobPollTimer = null;
@@ -106,9 +116,10 @@ function renderAccount(me) {
   $("login-tagline").textContent = !multiUser ? "Введи пароль, чтобы открыть библиотеку"
     : invitation ? "Придумай имя и пароль (от 8 символов)" : "Войди по имени и паролю";
   $("account-box").hidden = !account;
-  $("profile-switch").hidden = !account;
+  $("profile-switch-wrap").hidden = !account;
   const admin = !!account?.user?.roles?.includes("admin");
   $("invitation-box").hidden = !admin;
+  $("settings-box").hidden = multiUser && !admin;
   $("oidc-link").hidden = !multiUser || !account || !me.oidc;
   $("password-form").hidden = !account?.local_account;
   document.querySelector('[data-view="upload"]').hidden = multiUser && !admin;
@@ -122,14 +133,16 @@ function renderAccount(me) {
     sessionId = null;
     sessionStorage.setItem("musik_identity", identity);
   }
-  $("profile-switch").replaceChildren();
-  for (const profile of account.profiles) {
-    const option = document.createElement("option");
-    option.value = profile.id;
-    option.textContent = profile.name;
-    option.selected = profile.id === account.active_profile.id;
-    $("profile-switch").append(option);
-  }
+  document.querySelectorAll("[data-profile-switch]").forEach((select) => {
+    select.replaceChildren();
+    for (const profile of account.profiles) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.textContent = profile.name;
+      option.selected = profile.id === account.active_profile.id;
+      select.append(option);
+    }
+  });
   $("account-display").textContent = account.user.display_name;
   $("profile-active-name").value = account.active_profile.name;
   $("profile-delete").disabled = account.profiles.length < 2;
@@ -193,7 +206,7 @@ function deviceTokenRow(token) {
       finally { replace.disabled = false; }
     };
     const revoke = document.createElement("button");
-    revoke.className = "btn";
+    revoke.className = "btn danger";
     revoke.type = "button";
     revoke.textContent = "Отозвать";
     revoke.onclick = async () => {
@@ -274,7 +287,7 @@ async function refreshAdminLists() {
     const row = adminRow(invitation.email || "Без привязки к email", `${state} · до ${new Date(invitation.expires_at).toLocaleString()}`);
     if (pending) {
       const revoke = document.createElement("button");
-      revoke.className = "btn";
+      revoke.className = "btn danger";
       revoke.type = "button";
       revoke.textContent = "Отозвать";
       revoke.onclick = async () => {
@@ -428,8 +441,10 @@ function setView(name, nav = NAV_OF_VIEW[name]) {
   if (title) title.textContent = nav === "search" ? "Поиск" : "Коллекция";
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
-    // Primary tabs light up for their whole section, secondary ones only for their own screen.
-    const active = b.classList.contains("tab-secondary") ? b.dataset.view === name : b.dataset.nav === nav;
+    // In Mozgolika edition primary tabs light up for their whole section and
+    // secondary ones only for their own screen; the original tabs have no
+    // sections and light up for their view.
+    const active = !b.dataset.nav || b.classList.contains("tab-secondary") ? b.dataset.view === name : b.dataset.nav === nav;
     b.classList.toggle("active", active);
     if (active) b.setAttribute("aria-current", "page");
     else b.removeAttribute("aria-current");
@@ -626,6 +641,7 @@ function setFavoriteUI(on) {
   const btn = $("btn-like");
   if (!btn) return;
   btn.classList.toggle("active-rate", !!on);
+  btn.textContent = on ? "в любимых" : "любимое";
   btn.title = on ? "Убрать из любимых песен" : "Любимая песня";
 }
 
@@ -767,9 +783,29 @@ function sortTracks(list, sort) {
   out.sort((a, b) => {
     if (sort === "title") return cmpText(a.title, b.title) || cmpText(a.artist, b.artist);
     if (sort === "album") return cmpText(a.album, b.album) || cmpText(a.artist, b.artist) || cmpText(a.title, b.title);
+    if (sort === "plays") return (b.plays || 0) - (a.plays || 0) || cmpText(a.artist, b.artist);
+    if (sort === "stale") return cmpLastPlayed(a, b);
+    if (sort === "never") return ((a.plays || 0) === 0 ? 0 : 1) - ((b.plays || 0) === 0 ? 0 : 1) || cmpText(a.artist, b.artist);
     return cmpText(a.artist, b.artist) || cmpText(a.album, b.album) || cmpText(a.title, b.title);
   });
   return out;
+}
+
+function cmpLastPlayed(a, b) {
+  const ap = a.last_played_at || "";
+  const bp = b.last_played_at || "";
+  if (!ap && !bp) return cmpText(a.title, b.title);
+  if (!ap) return 1;
+  if (!bp) return -1;
+  return ap < bp ? -1 : ap > bp ? 1 : cmpText(a.title, b.title);
+}
+
+function listenMark(t) {
+  const plays = Number(t?.plays) || 0;
+  const skips = Number(t?.early_skips) || 0;
+  if (plays <= 0) return "ни разу";
+  if (plays >= 3 && skips / plays >= 0.5) return `${plays} · часто бросаешь`;
+  return String(plays);
 }
 
 function sortArtists(list, sort) {
@@ -796,6 +832,9 @@ function catalogSortOptions(tab) {
     return [
       ["album", "по альбому"],
       ["title", "по песне"],
+      ["plays", "чаще"],
+      ["stale", "давно не играло"],
+      ["never", "ни разу"],
     ];
   }
   if (tab === "artists") {
@@ -815,6 +854,9 @@ function catalogSortOptions(tab) {
     ["artist", "по артисту"],
     ["title", "по песне"],
     ["album", "по альбому"],
+    ["plays", "чаще"],
+    ["stale", "давно не играло"],
+    ["never", "ни разу"],
   ];
 }
 
@@ -860,7 +902,7 @@ function coverHue(name) {
 }
 
 function letterTileHTML(name) {
-  const first = escapeHtml((name || "♪").slice(0, 1).toUpperCase());
+  const first = escapeHtml((name || "?").slice(0, 1).toUpperCase());
   return `<div class="letter" style="--cover-h:${coverHue(name)}">${first}</div>`;
 }
 
@@ -942,8 +984,12 @@ const PAUSE_ICON = `<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><p
 
 function setPlayIcon(playing) {
   const icon = playing ? PAUSE_ICON : PLAY_ICON;
-  $("btn-play").innerHTML = icon;
-  $("mini-play").innerHTML = icon;
+  for (const id of ["btn-play", "mini-play"]) {
+    const btn = $(id);
+    if (!btn) continue;
+    btn.innerHTML = icon;
+    btn.setAttribute("aria-label", playing ? "Пауза" : "Играть");
+  }
   if ("mediaSession" in navigator) {
     try {
       navigator.mediaSession.playbackState = playing ? "playing" : "paused";
@@ -1073,6 +1119,7 @@ function applyPlayPayload(data, { autoplay = true } = {}) {
     // Restoring: load the track paused and do not announce a new listen.
     else renderNow(data.current, { autoplay: false, announce: false });
   }
+  syncRadioChrome(data);
 }
 
 // autoplay=false loads the track paused (resume after reload / from another
@@ -1091,12 +1138,13 @@ function renderNow(track, { autoplay = true, startAt = 0, listened = 0, announce
     updateMini(null);
     updateMediaSession(null);
     setPlayIcon(false);
+    clearCoverTint();
     return;
   }
   $("title").textContent = track.title || "#" + track.id;
   $("artist").textContent = [track.artist, track.album].filter(Boolean).join(" · ");
   setNowSource(track.source);
-  $("art-fallback").textContent = (track.title || "♪").slice(0, 1).toUpperCase();
+  $("art-fallback").textContent = (track.title || "").slice(0, 1).toUpperCase();
   if (track.artwork) {
     setCoverImg($("art-img"), thumbURL(track.artwork, 640), art);
   } else {
@@ -1109,9 +1157,14 @@ function renderNow(track, { autoplay = true, startAt = 0, listened = 0, announce
   const audio = $("audio");
   const url = track.stream || `/api/stream/${track.id}`;
   if (audio.dataset.trackId !== String(track.id)) {
+    closeEvent = null;
     const gen = bumpPlayback();
     audio.dataset.trackId = String(track.id);
+    delete audio.dataset.compatibleRetry;
+    audio.dataset.retryAutoplay = String(autoplay);
     audio.dataset.gen = String(gen);
+    // Only a track meant to play moves on by itself when it fails (see "error").
+    audio.dataset.autoplay = autoplay ? "1" : "";
     audio.src = url;
     const at = Math.max(0, Number(startAt) || 0);
     if (at > 0) {
@@ -1156,6 +1209,13 @@ function keyLabel(key, mode) {
   return mode ? `${key} ${mode === "minor" ? "minor" : "major"}` : key;
 }
 
+function playedOn(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("ru", { day: "numeric", month: "short" });
+}
+
 async function loadPassport(trackId) {
   const box = $("now-passport");
   if (!box) return;
@@ -1170,6 +1230,17 @@ async function loadPassport(trackId) {
     if (p.bpm) chips.push(`${Math.round(p.bpm)} BPM`);
     if (p.key) chips.push(keyLabel(p.key, p.mode));
     if (p.lufs != null) chips.push(`${p.lufs.toFixed(0).replace("-", "−")} LUFS`);
+    if (p.year) chips.push(String(p.year));
+    if (p.duration) chips.push(fmtTime(p.duration));
+    if (p.genres?.length) chips.push(p.genres.join(" · "));
+    if (!p.plays) chips.push("ни разу");
+    else chips.push(`${p.plays} ${ruPlural(p.plays, "раз", "раза", "раз")}`);
+    if (p.finishes) chips.push(`${p.finishes} дослушано`);
+    if (p.early_skips) chips.push(`${p.early_skips} ${ruPlural(p.early_skips, "ранний скип", "ранних скипа", "ранних скипов")}`);
+    if (p.rating === "like") chips.push("лайк");
+    if (p.rating === "dislike") chips.push("дизлайк");
+    const last = playedOn(p.last_played_at);
+    if (last) chips.push(`последний раз ${last}`);
     box.innerHTML = chips.map((c) => `<span>${escapeHtml(c)}</span>`).join("");
   } catch {
     /* passport is decorative; ignore */
@@ -1251,61 +1322,6 @@ function renderWhy(item) {
     <p class="np-why-note">Жми «Больше такого» или «Не то» — это сразу меняет вкус радио.</p>`;
 }
 
-// Accent colour follows the cover: average the artwork, keep it readable on dark.
-function rgbToHsl(r, g, b) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h = 0, sat = 0;
-  const l = (max + min) / 2;
-  if (max !== min) {
-    const d = max - min;
-    sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
-    h *= 60;
-  }
-  return [h, sat, l];
-}
-
-function setAccentHue(h, sat = 0.62) {
-  const root = document.documentElement.style;
-  const s = Math.round(Math.max(0.35, Math.min(0.75, sat)) * 100);
-  root.setProperty("--accent", `hsl(${Math.round(h)} ${s}% 60%)`);
-  root.setProperty("--np-tint", `hsl(${Math.round(h)} ${Math.round(s * 0.45)}% 11%)`);
-  root.setProperty("--np-cover", `hsl(${Math.round(h)} ${Math.round(s * 0.5)}% 26%)`);
-}
-
-function applyCoverAccent(track) {
-  const fallback = () => setAccentHue(coverHue(track.album || track.title || ""));
-  const img = $("art-img");
-  if (!track.artwork || !img) return fallback();
-  const sample = () => {
-    try {
-      const c = document.createElement("canvas");
-      c.width = c.height = 16;
-      const ctx = c.getContext("2d", { willReadFrequently: true });
-      ctx.drawImage(img, 0, 0, 16, 16);
-      const d = ctx.getImageData(0, 0, 16, 16).data;
-      let r = 0, g = 0, b = 0, n = 0;
-      for (let i = 0; i < d.length; i += 4) {
-        const [, sat, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
-        if (l < 0.08 || l > 0.92) continue; // ignore black/white borders
-        const w = 0.2 + sat;                   // colourful pixels count more
-        r += d[i] * w; g += d[i + 1] * w; b += d[i + 2] * w; n += w;
-      }
-      if (!n) return fallback();
-      const [h, sat] = rgbToHsl(r / n, g / n, b / n);
-      setAccentHue(h, sat);
-    } catch {
-      fallback();
-    }
-  };
-  if (img.complete && img.naturalWidth) sample();
-  else {
-    img.addEventListener("load", sample, { once: true });
-    img.addEventListener("error", fallback, { once: true });
-  }
-}
-
 function setNowTab(tab) {
   document.querySelectorAll(".np-tab").forEach((b) => {
     const on = b.dataset.npTab === tab;
@@ -1351,14 +1367,6 @@ function queueRowHTML(t, i, { why = false, now = false } = {}) {
   const art = trackArtURL(t);
   const letter = escapeHtml((t.title || t.artist || "?").slice(0, 1).toUpperCase());
   const reason = why ? whyLabel(t) : "";
-  const numId = Number(id);
-  const rated = trackRatings.get(numId);
-  const rate = id
-    ? `<span class="row-rate">
-        <span class="rate-btn like${favoriteIds.has(numId) ? " on" : ""}" data-rate="like" role="button" tabindex="0" aria-label="Нравится" title="Нравится">♥</span>
-        <span class="rate-btn dislike${rated === "dislike" ? " on" : ""}" data-rate="dislike" role="button" tabindex="0" aria-label="Не нравится" title="Не нравится">♥</span>
-      </span>`
-    : "";
   return `
     <span class="q-art" data-letter="${letter}">${
       art ? `<img src="${escapeHtml(art)}" alt="" width="96" height="96" loading="lazy" decoding="async" onerror="this.remove()">` : ""
@@ -1371,8 +1379,7 @@ function queueRowHTML(t, i, { why = false, now = false } = {}) {
       </span>
     </span>
     <span class="dur">${fmtTime(t.duration || 0)}</span>
-    <span class="pos">${now ? "▶" : i + 1}</span>
-    ${rate}`;
+    <span class="pos">${i + 1}</span>`;
 }
 
 function bindRowRate(btn, trackId) {
@@ -1429,7 +1436,9 @@ function renderQueue(queue) {
   queueKind = "queue";
   updateQueueOpenButton();
   $("playlist-label").textContent = "Дальше в радио";
-  setQueueHint("Нажми песню — сразу она");
+  const next = list[0];
+  setNextSource(next);
+  setQueueHint(next ? `Дальше: ${sourceLabel(next.source)}` : "Нажми песню — сразу она");
   $("queue-count").textContent = list.length ? `${list.length}` : "";
   list.forEach((q, i) => {
     const id = q.track_id || q.id;
@@ -1440,7 +1449,6 @@ function renderQueue(queue) {
     if (id) btn.dataset.trackId = String(id);
     btn.innerHTML = queueRowHTML(q, i, { why: true });
     bindTrackButton(btn, () => jumpTo(id, i).catch((e) => toast(e.message || String(e))));
-    bindRowRate(btn, id);
     li.appendChild(btn);
     ol.appendChild(li);
   });
@@ -1454,6 +1462,7 @@ function renderPlaylist(tracks, currentIndex) {
   queueKind = "playlist";
   updateQueueOpenButton();
   $("playlist-label").textContent = "В этом списке";
+  setNextSource(null);
   setQueueHint("Нажми песню — сразу она");
   $("queue-count").textContent = list.length ? `${list.length}` : "";
   list.forEach((t, i) => {
@@ -1467,7 +1476,6 @@ function renderPlaylist(tracks, currentIndex) {
     if (now) btn.classList.add("current");
     btn.innerHTML = queueRowHTML(t, i, { now });
     bindTrackButton(btn, () => jumpTo(id, t.position ?? i).catch((e) => toast(e.message || String(e))));
-    bindRowRate(btn, id);
     li.appendChild(btn);
     ol.appendChild(li);
   });
@@ -1501,7 +1509,6 @@ function openQueueModal() {
       closeQueueModal();
       jumpTo(id, t.position ?? i).catch((e) => toast(e.message || String(e)));
     });
-    bindRowRate(btn, id);
     li.appendChild(btn);
     list.appendChild(li);
   });
@@ -1520,7 +1527,7 @@ function highlightPlaylist(trackId) {
     const on = Number(btn.dataset.trackId) === trackId;
     btn.classList.toggle("current", on);
     const pos = btn.querySelector(".pos");
-    if (pos) pos.textContent = on ? "▶" : String(i + 1);
+    if (pos) pos.textContent = String(i + 1);
   });
 }
 
@@ -1531,9 +1538,10 @@ async function postEvent(type, extra = {}) {
   }
   const startedGen = playbackGen;
   const audio = $("audio");
+  const closing = type === "track_end" || type === "skip";
   const body = {
     type,
-    event_id: extra.event_id || randomId(),
+    event_id: extra.event_id || (closing ? closeEventId(extra.track_id ?? current?.id) : randomId()),
     track_id: current?.id,
     session_id: sessionId,
     impression_id: extra.impression_id || current?.impression_id,
@@ -1548,6 +1556,7 @@ async function postEvent(type, extra = {}) {
   if (data.session_id) setSession(data.session_id);
   if (data.maturity) renderMaturity(data.maturity);
   if (data.name) $("mode-label").textContent = data.name;
+  syncRadioChrome(data);
   const refreshList = type === "skip" || type === "track_end" || type === "like" || type === "dislike";
   if (refreshList) {
     if (Array.isArray(data.tracks)) {
@@ -1560,6 +1569,10 @@ async function postEvent(type, extra = {}) {
       $("playlist").hidden = true;
       $("queue").hidden = false;
     }
+  }
+  if (closing && data.ignored) {
+    const nextId = Number(data.next?.id || data.next_id || 0);
+    if (!nextId || nextId === Number(current?.id)) return data;
   }
   if (data.next) {
     if (startedGen !== playbackGen) return data;
@@ -1578,18 +1591,46 @@ async function postEvent(type, extra = {}) {
 }
 
 async function startRadio(seed) {
-  const body = seed ? { seed_track_id: seed } : {};
+  const body = {};
+  if (seed && typeof seed === "object") {
+    if (seed.track_id) body.seed_track_id = seed.track_id;
+    if (seed.artist) body.seed_artist = seed.artist;
+    if (seed.album) body.seed_album = seed.album;
+    if (seed.proximity) body.proximity = seed.proximity;
+    if (seed.session_id) body.session_id = seed.session_id;
+    if (seed.station) body.station = seed.station;
+  } else if (seed) {
+    body.seed_track_id = seed;
+  }
   const data = await api("/api/radio/start", { method: "POST", body: JSON.stringify(body) });
-  fixedMode = false;
-  playlist = [];
-  $("playlist").hidden = true;
-  $("queue").hidden = false;
-  setSession(data.session_id);
-  $("mode-label").textContent = "радио";
-  renderMaturity(data.maturity);
-  renderQueue(data.queue);
-  renderNow(data.current);
+  applyPlayPayload(data);
   setView("player");
+  return data;
+}
+
+async function tuneRadio(proximity) {
+  if (!sessionId || !radioAnchor?.kind) return;
+  return startRadio({ session_id: sessionId, proximity });
+}
+
+function syncRadioChrome(data) {
+  if (data && Object.prototype.hasOwnProperty.call(data, "anchor")) {
+    radioAnchor = data.anchor || null;
+  } else if (data && (data.fixed || (data.mode && data.mode !== "radio"))) {
+    radioAnchor = null;
+  }
+  const on = !!(radioAnchor && radioAnchor.kind) && !fixedMode;
+  const closer = $("btn-radio-closer");
+  const wider = $("btn-radio-wider");
+  if (closer) {
+    closer.hidden = !on;
+    closer.disabled = !on || radioAnchor?.proximity === "close";
+  }
+  if (wider) {
+    wider.hidden = !on;
+    wider.disabled = !on || radioAnchor?.proximity === "wide";
+  }
+  if (data?.mode === "radio" && data.name) $("mode-label").textContent = data.name;
 }
 
 async function playFixed(body) {
@@ -1671,7 +1712,7 @@ function coverStyle(m) {
 
 function metaLabel(m) {
   if (m.kind === "later") return m.tracks ? `${m.tracks} в очереди` : "пусто — добавь с плеера";
-  if (m.kind === "favorites") return m.tracks ? `${m.tracks} ♥` : "жми ♥ на треке";
+  if (m.kind === "favorites") return m.tracks ? `${m.tracks} в любимых` : "жми «любимое» на треке";
   if (!m.ready) return "нажми «Обновить миксы»";
   return `${m.tracks} треков`;
 }
@@ -1723,7 +1764,7 @@ function makeHeart(on, onClick) {
   const h = document.createElement("button");
   h.type = "button";
   h.className = "card-heart" + (on ? " on" : "");
-  h.textContent = "♥";
+  h.textContent = on ? "в любимых" : "любимое";
   h.title = on ? "Убрать из любимых" : "В любимые";
   h.onclick = (e) => {
     e.stopPropagation();
@@ -1783,7 +1824,7 @@ function renderEntityShelf(el, items, kind) {
         ${entityCoverHtml(item.artwork, item.title)}
         <strong>${escapeHtml(item.title)}</strong>
         <span>${escapeHtml(item.artist || "")}</span>
-        <div class="mix-meta">${fav ? "♥ " : ""}${
+        <div class="mix-meta">${fav ? "в любимых · " : ""}${
           item.explanation ? escapeHtml(item.explanation) : fmtTime(item.duration || 0)
         }</div>`;
       btn.appendChild(
@@ -1828,7 +1869,7 @@ async function loadHomeFavorites() {
   const songs = $("home-favorites");
   if (songs) {
     if (!data.tracks?.length) {
-      emptyShelfCard(songs, "Пока пусто", "Жми ♥ в плеере — песня появится здесь");
+      emptyShelfCard(songs, "Пока пусто", "Жми «любимое» в плеере — песня появится здесь");
     } else {
       const items = data.tracks.map((row) => {
         const t = row.track || row;
@@ -1855,7 +1896,7 @@ async function loadHomeFavorites() {
   const arts = $("home-fav-artists");
   if (arts) {
     if (!data.artists?.length) {
-      emptyShelfCard(arts, "Нет любимых артистов", "♥ на карточке артиста");
+      emptyShelfCard(arts, "Нет любимых артистов", "кнопка «любимое» на карточке");
     } else {
       renderEntityShelf(
         arts,
@@ -1872,7 +1913,7 @@ async function loadHomeFavorites() {
   const albs = $("home-fav-albums");
   if (albs) {
     if (!data.albums?.length) {
-      emptyShelfCard(albs, "Нет любимых альбомов", "♥ на карточке альбома");
+      emptyShelfCard(albs, "Нет любимых альбомов", "кнопка «любимое» на карточке");
     } else {
       renderEntityShelf(
         albs,
@@ -1960,6 +2001,7 @@ async function loadHomeCatalog() {
   renderEntityShelf($("home-albums"), albumsRes.albums || [], "album");
   loadGamesShelf().catch(console.error);
   loadHomeHero().catch(console.error);
+  loadOnThisDay().catch(console.error);
   renderEntityShelf($("home-tracks"), Array.isArray(tracks) ? tracks : [], "track");
   homeHydrated = true;
   wireAllShelves();
@@ -2098,7 +2140,7 @@ async function loadLibrary() {
   library = await api("/api/library");
   await Promise.all([loadFavorites(), loadArtistPhotos()]);
   const { artists, albums } = groupCatalog(library);
-  $("lib-count").textContent = `${library.length} треков · ${artists.length} артистов · ${albums.length} альбомов · ${favoriteIds.size} ♥`;
+  $("lib-count").textContent = `${library.length} треков · ${artists.length} артистов · ${albums.length} альбомов · ${favoriteIds.size} в любимых`;
   setLibTab(libTab);
 }
 
@@ -2127,7 +2169,7 @@ function renderLib(q) {
       return;
     }
     if (libTab === "favorites" && !source.length) {
-      ul.innerHTML = '<li class="sub" style="padding:.8rem 0">Избранное пусто — жми ♥ в плеере</li>';
+      ul.innerHTML = '<li class="sub" style="padding:.8rem 0">Избранное пусто — жми «любимое» в плеере</li>';
       return;
     }
     renderTrackRows(
@@ -2160,9 +2202,15 @@ function renderLib(q) {
           <span>${a.tracks} треков</span>
           <div class="mix-meta">
             открыть
+            <span class="tiny tile-pl" data-act="radio">радио</span>
             <span class="tiny tile-pl" data-act="playlist">в плейлист</span>
           </div>`;
         btn.onclick = (e) => {
+          if (e.target.closest("[data-act=radio]")) {
+            e.preventDefault();
+            startRadio({ artist: a.artist }).catch((err) => toast(err.message || String(err)));
+            return;
+          }
           if (e.target.closest("[data-act=playlist]")) {
             e.preventDefault();
             pickPlaylistForTracks(tracksOfArtist(a.artist).map((t) => t.id)).catch((err) =>
@@ -2198,9 +2246,17 @@ function renderLib(q) {
         <span>${escapeHtml(al.artistLabel || al.artist)}</span>
         <div class="mix-meta">
           ${al.tracks} треков
+          <span class="tiny tile-pl" data-act="radio">радио</span>
           <span class="tiny tile-pl" data-act="playlist">в плейлист</span>
         </div>`;
       btn.onclick = (e) => {
+        if (e.target.closest("[data-act=radio]")) {
+          e.preventDefault();
+          startRadio({ artist: al.artist, album: al.album }).catch((err) =>
+            toast(err.message || String(err))
+          );
+          return;
+        }
         if (e.target.closest("[data-act=playlist]")) {
           e.preventDefault();
           pickPlaylistForTracks(tracksOfAlbum(al.artist, al.album).map((t) => t.id)).catch((err) =>
@@ -2273,11 +2329,12 @@ function renderTrackRows(ul, tracks, { listName = "" } = {}) {
     li.className = "track-row";
     const isFav = favoriteIds.has(t.id);
     li.innerHTML = `
-      <button type="button" class="linkish">${isFav ? "♥ " : ""}${t.ready === false ? "… " : ""}${escapeHtml(t.artist)} — ${escapeHtml(t.title)}</button>
+      <button type="button" class="linkish">${t.ready === false ? "… " : ""}${escapeHtml(t.artist)} — ${escapeHtml(t.title)}</button>
+      <span class="listen-mark">${escapeHtml(listenMark(t))}</span>
       <span class="dur">${fmtTime(t.duration || 0)}</span>
       <span class="row-actions">
         <button type="button" class="tiny" data-act="track">Трек</button>
-        <button type="button" class="tiny" data-act="fav">${isFav ? "Убрать ♥" : "♥"}</button>
+        <button type="button" class="tiny" data-act="fav">${isFav ? "убрать" : "любимое"}</button>
         <button type="button" class="tiny" data-act="album">Альбом</button>
         <button type="button" class="tiny" data-act="artist">Артист</button>
         <button type="button" class="tiny" data-act="later">Потом</button>
@@ -2349,6 +2406,24 @@ function setQueueHint(text) {
   if (el) el.textContent = text;
 }
 
+function setNextSource(item) {
+  const el = $("next-source");
+  if (!el) return;
+  if (!item || fixedMode) {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  const label = sourceLabel(item.source);
+  if (!label || label === "—") {
+    el.hidden = true;
+    el.textContent = "";
+    return;
+  }
+  el.hidden = false;
+  el.textContent = "дальше · " + label;
+}
+
 function setNowSource(source) {
   const sourceEl = $("now-source");
   if (!sourceEl) return;
@@ -2408,14 +2483,11 @@ function splitListenAddr(addr) {
 
 async function loadSettings() {
   const box = $("settings-box");
-  if (!box) return;
+  if (!box || (multiUser && !account?.user?.roles?.includes("admin"))) return;
   try {
     settingsData = await api("/api/settings");
   } catch (e) {
-    box.innerHTML = `
-      <div class="panel-kicker">сервер</div>
-      <strong>Настройки</strong>
-      <p class="sub">${escapeHtml(e.message || String(e))}</p>`;
+    box.innerHTML = `<p class="profile-empty">${escapeHtml(e.message || String(e))}</p>`;
     return;
   }
   renderSettings();
@@ -2428,8 +2500,6 @@ function renderSettings() {
   const ips = s.local_ips || [];
   const phone = s.phone || {};
   box.innerHTML = `
-    <div class="panel-kicker">сервер</div>
-    <strong>Настройки</strong>
     <div class="settings-banner" id="settings-pending" ${s.restart_pending ? "" : "hidden"}>
       <span>Изменения сохранены и заработают после перезапуска сервера.</span>
       <button type="button" class="btn primary" id="settings-restart">Перезапустить сервер</button>
@@ -2456,7 +2526,7 @@ function renderSettings() {
           <li><b>Cloudflare Tunnel</b>: даёт домен с HTTPS даже без белого IP. Адрес — <code>https://твой-домен</code>.</li>
           <li><b>Белый IP</b>: на роутере пробрось TCP-порт ${saved.port} на этот компьютер. Адрес — <code>http://&lt;внешний IP&gt;:${saved.port}</code>; лучше поставить перед сервером Caddy с HTTPS.</li>
         </ul>
-        <p>${s.phone?.auth_enabled ? "Пароль включён — без него в интернет выходить нельзя." : "<b>Сейчас сервер без пароля — в интернет так выходить нельзя.</b> Задай MUSIK_PASSWORD в .env."}
+        <p>${multiUser ? "Вход в аккаунт включён; для multi-user нужен HTTPS." : s.phone?.auth_enabled ? "Пароль включён — без него в интернет выходить нельзя." : "<b>Сейчас сервер без пароля — в интернет так выходить нельзя.</b> Задай MUSIK_PASSWORD в .env."}
           Работаешь по HTTPS — добавь в .env <code>MUSIK_SECURE_COOKIE=1</code>.</p>
       </div>
     </div>
@@ -2471,7 +2541,7 @@ function renderSettings() {
       <p class="sub">После смены папки нужно пересканирование: треки из старой папки пропадут из библиотеки, история прослушиваний останется.</p>
     </div>
 
-    <div class="form-row">
+    <div class="profile-actions settings-save-row">
       <button type="button" class="btn primary" id="settings-save">Сохранить</button>
       <span class="sub" id="settings-hint">${escapeHtml(s.env_path || "")}</span>
     </div>
@@ -2497,12 +2567,14 @@ function renderSettings() {
                <button type="button" class="tiny" id="settings-token-show">показать</button>
                <button type="button" class="tiny" id="settings-token-copy">копировать</button>
              </div>`
-          : phone.auth_enabled
+          : multiUser
+            ? `<p class="sub">Создай персональный токен и QR в блоке «Устройства» выше. Он привязан к выбранному профилю.</p>`
+            : phone.auth_enabled
             ? `<p class="sub">API-токен не задан — в приложении входи по паролю.</p>`
             : `<p class="sub">Сервер работает без пароля: токен не нужен.</p>`
       }
-      <div class="settings-qr">
-        <h3>QR-код для приложения</h3>
+      <div class="settings-qr" ${multiUser ? "hidden" : ""}>
+        <h4>QR-код для приложения</h4>
         <div class="form-row">
           <select id="settings-qr-url"></select>
           <button type="button" class="btn" id="settings-qr-show">Показать QR</button>
@@ -2810,14 +2882,14 @@ async function restartServer() {
 }
 
 async function loadProfile() {
-  const [p, week, rec] = await Promise.all([
+  const [p, week, memory] = await Promise.all([
     api("/api/profile"),
     api("/api/metrics/weekly"),
-    api("/api/metrics/recommendations"),
+    api("/api/metrics/listening"),
   ]);
   renderMaturity(p.maturity);
   renderTasteCard(p);
-  renderMonitor(p, week, rec);
+  renderMonitor(week, memory);
   bindExploreBounds();
   loadShares().catch(console.error);
 }
@@ -2832,20 +2904,21 @@ function renderTasteCard(p) {
     `<span class="artist-chip">${escapeHtml(a.artist)}</span>`
   ).join("") || `<span class="profile-detail">Появятся после нескольких прослушиваний</span>`;
   $("profile-box").innerHTML = `
-    <div class="panel-kicker">вкус</div>
-    <div class="monitor-title">
-      <strong>${escapeHtml(status.title)}</strong>
-      <span class="chip ${p.maturity === "ready" ? "on" : ""}">${escapeHtml(status.chip)}</span>
-    </div>
-    <p class="profile-lead">${escapeHtml(status.lead)}</p>
+    <header class="panel-head">
+      <div class="panel-title-row">
+        <h3>${escapeHtml(status.title)}</h3>
+        <span class="chip ${p.maturity === "ready" ? "on" : ""}">${escapeHtml(status.chip)}</span>
+      </div>
+      <p>${escapeHtml(status.lead)}</p>
+    </header>
     <div class="taste-meter" aria-hidden="true"><i style="width:${progress}%"></i></div>
     <div class="stat-grid">
       <div class="stat"><b>${likes}</b><span>лайков</span></div>
       <div class="stat"><b>${skips}</b><span>скипов</span></div>
       <div class="stat"><b>${pct(p.explore_ratio)}</b><span>нового сейчас</span></div>
     </div>
-    <div class="explore-bounds">
-      <strong>Сколько нового в радио</strong>
+    <div class="profile-block explore-bounds">
+      <h4>Сколько нового в радио</h4>
       <p class="profile-detail">Знакомое — похожее на лайки. Новое — соседнее, забытое и случайное.</p>
       <label class="bound-row">
         <span class="bound-name">не меньше</span>
@@ -2857,11 +2930,13 @@ function renderTasteCard(p) {
         <input class="slider" id="explore-hi" type="range" min="0.1" max="0.8" step="0.05" value="${Number(p.explore_hi ?? 0.4)}">
         <span class="bound-val" id="explore-hi-val"></span>
       </label>
-      <div class="profile-detail" id="explore-bounds-label"></div>
-      <button type="button" class="btn" id="btn-explore-save">Сохранить</button>
+      <p class="profile-detail" id="explore-bounds-label"></p>
+      <div class="profile-actions">
+        <button type="button" class="btn" id="btn-explore-save">Сохранить</button>
+      </div>
     </div>
-    <div class="profile-artists">
-      <strong>Часто играет</strong>
+    <div class="profile-block profile-artists">
+      <h4>Часто играет</h4>
       <div class="artist-row">${artists}</div>
     </div>`;
 }
@@ -2887,51 +2962,132 @@ function tasteStatus(value) {
 }
 
 
-function renderMonitor(p, week, rec) {
-  const outcomes = rec.outcomes || week || {};
-  const overall = outcomes.overall || {};
-  const explore = rec.explore || p;
-  const policy = rec.last_policy || {};
-  const decision = policy.policy || {};
-  const sources = (outcomes.breakdowns || []).filter((row) => row.dimension === "source");
-  const sourceRows = sources.length
-    ? sources.map((row) => {
-        const finish = Math.round((row.finish_rate || 0) * 100);
-        const skip = Math.round((row.early_skip_rate || 0) * 100);
-        return `<div class="source-row">
-          <div class="source-head">
-            <span class="tag source-${escapeHtml(row.value)}">${escapeHtml(sourceLabel(row.value))}</span>
-            <span>${row.played} треков · ${finish}% дослушано</span>
-          </div>
-          <div class="bars" title="зелёный — дослушал, оранжевый — скипнул">
-            <i class="finish" style="width:${finish}%"></i>
-            <i class="skip" style="width:${skip}%"></i>
-          </div>
-        </div>`;
-      }).join("")
-    : `<p class="profile-detail">Запусти радио — здесь появится, какие треки заходят, а какие ты скипаешь.</p>`;
-  const novelty = decision.explore_share != null
-    ? `В последнем наборе нового было ${pct(decision.explore_share)}.`
-    : "После запуска радио здесь будет видно, сколько нового оно подмешало.";
-  const learning = explore.bandit_ready
-    ? "Радио уже само подкручивает новизну по твоим скипах и дослушиваниям."
-    : "Пока новизна в заданных тобой границах. Чем больше слушаешь, тем точнее подбор.";
-  $("monitor-box").innerHTML = `
-    <div class="panel-kicker">радио</div>
-    <div class="monitor-title"><strong>Как играет</strong></div>
+function fmtListen(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (h > 0) return `${h} ч ${m} мин`;
+  if (m > 0) return `${m} мин`;
+  return "0 мин";
+}
+
+const MONTHS = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября", "ноября", "декабря"];
+
+function monthName(month) {
+  return MONTHS[(Number(month) || 1) - 1] || "";
+}
+
+function memoryLabel(t) {
+  return t.artist ? `${t.artist} — ${t.title}` : t.title || "#" + t.track_id;
+}
+
+function memoryButton(t, list) {
+  return `<button type="button" class="collection-item" data-track="${t.track_id}" data-list="${list}">
+    <span>${escapeHtml(memoryLabel(t))}</span>
+    <span class="listen-mark">${t.plays || 0}</span>
+  </button>`;
+}
+
+function playMemoryList(tracks, startId, name) {
+  const ids = (tracks || []).map((t) => Number(t.track_id)).filter(Boolean);
+  if (!ids.length) return Promise.resolve();
+  return playFixed({ track_ids: ids, start_track_id: startId || ids[0], name });
+}
+
+async function loadOnThisDay() {
+  const shelf = $("on-this-day-shelf");
+  const list = $("on-this-day-list");
+  if (!shelf || !list) return;
+  const memory = await api("/api/metrics/listening");
+  const day = memory?.on_this_day || {};
+  const tracks = day.tracks || [];
+  if (!tracks.length) {
+    shelf.hidden = true;
+    list.innerHTML = "";
+    return;
+  }
+  shelf.hidden = false;
+  const hint = $("on-this-day-hint");
+  if (hint) hint.textContent = `${day.day} ${monthName(day.month)}, прошлые годы`;
+  list.innerHTML = tracks
+    .map(
+      (t) => `<li class="track-row">
+        <button type="button" class="linkish" data-track="${t.track_id}">${escapeHtml(memoryLabel(t))}</button>
+        <span class="listen-mark">${t.plays || 0}</span>
+      </li>`
+    )
+    .join("");
+  list.querySelectorAll("[data-track]").forEach((btn) => {
+    btn.onclick = () =>
+      playMemoryList(tracks, Number(btn.dataset.track), "В этот день").catch((e) => toast(e.message || String(e)));
+  });
+}
+
+function renderMonitor(week, memory) {
+  const box = $("monitor-box");
+  if (!box) return;
+  const listen = week?.listening || {};
+  const tracks = listen.top_tracks || [];
+  const artists = listen.top_artists || [];
+  const day = memory?.on_this_day || {};
+  const dayTracks = day.tracks || [];
+  const year = memory?.year || {};
+  const yearTracks = year.top_tracks || [];
+  const yearArtists = year.top_artists || [];
+  const trackRows = tracks.length
+    ? tracks.map((t) => memoryButton(t, "week")).join("")
+    : `<p class="profile-detail">За неделю ещё ничего не запускалось.</p>`;
+  const artistRows = artists.length
+    ? `<div class="artist-row">${artists
+        .map((a) => `<span class="artist-chip">${escapeHtml(a.artist)} · ${a.count || 0}</span>`)
+        .join("")}</div>`
+    : "";
+  const dayBlock = dayTracks.length
+    ? `<div class="profile-block">
+        <h4>В этот день</h4>
+        <p class="profile-detail">${day.day} ${escapeHtml(monthName(day.month))}, прошлые годы</p>
+        ${dayTracks.map((t) => memoryButton(t, "day")).join("")}
+      </div>`
+    : "";
+  const yearArtistRow = yearArtists.length
+    ? `<div class="artist-row">${yearArtists
+        .map((a) => `<span class="artist-chip">${escapeHtml(a.artist)} · ${a.count || 0}</span>`)
+        .join("")}</div>`
+    : "";
+  const yearBlock = `<div class="profile-block">
+      <h4>${year.year || ""} в музыке</h4>
+      <div class="stat-grid">
+        <div class="stat"><b>${fmtListen(year.listened_sec)}</b><span>время</span></div>
+        <div class="stat"><b>${pct(year.finish_rate)}</b><span>дослушано</span></div>
+        <div class="stat"><b>${year.plays || 0}</b><span>запусков</span></div>
+      </div>
+      ${yearTracks.length ? yearTracks.map((t) => memoryButton(t, "year")).join("") : `<p class="profile-detail">В этом году ещё ничего не запускалось.</p>`}
+      ${yearArtistRow}
+    </div>`;
+  box.innerHTML = `
+    <header class="panel-head">
+      <h3>За неделю</h3>
+      <p>Время, дослушивания и то, что звучало чаще. Это твои прослушивания, не служебные метрики подбора.</p>
+    </header>
     <div class="stat-grid">
-      <div class="stat"><b>${week.listens_7d || overall.played || 0}</b><span>за неделю</span></div>
-      <div class="stat"><b>${pct(overall.finish_rate || (week.completes_7d && week.listens_7d ? week.completes_7d / week.listens_7d : 0))}</b><span>дослушано</span></div>
-      <div class="stat"><b>${pct(week.skip_rate_7d || overall.early_skip_rate)}</b><span>скипов</span></div>
-      <div class="stat"><b>${week.unique_artists_7d || 0}</b><span>артистов</span></div>
+      <div class="stat"><b>${fmtListen(listen.listened_sec)}</b><span>время</span></div>
+      <div class="stat"><b>${pct(listen.finish_rate)}</b><span>дослушано</span></div>
+      <div class="stat"><b>${listen.plays || 0}</b><span>запусков</span></div>
     </div>
-    <div class="monitor-block">
-      <strong>Откуда берутся треки</strong>
-      <p class="profile-detail bar-legend"><span class="dot finish"></span> дослушал <span class="dot skip"></span> скипнул</p>
-      ${sourceRows}
+    <div class="profile-block">
+      <h4>Треки</h4>
+      ${trackRows}
     </div>
-    <p class="profile-lead">${novelty}</p>
-    <p class="profile-detail">${learning}</p>`;
+    ${artists.length ? `<div class="profile-block profile-artists"><h4>Артисты</h4>${artistRows}</div>` : ""}
+    ${dayBlock}
+    ${yearBlock}`;
+  box.querySelectorAll("[data-track]").forEach((btn) => {
+    btn.onclick = () => {
+      const id = Number(btn.dataset.track);
+      const play = btn.dataset.list === "day" ? playMemoryList(dayTracks, id, "В этот день") : playFixed({ track_id: id });
+      play.catch((e) => toast(e.message || String(e)));
+    };
+  });
 }
 
 function paintRange(input) {
@@ -3088,8 +3244,6 @@ async function skipTrack() {
   }
 }
 
-const VOLUME_ICON = `<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4.5 9.2h3.4L12.2 5v14l-4.3-4.2H4.5z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M16 9.2a4.2 4.2 0 0 1 0 5.6M18.2 7a7 7 0 0 1 0 10"/></svg>`;
-const MUTE_ICON = `<svg class="glyph" viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M4.5 9.2h3.4L12.2 5v14l-4.3-4.2H4.5z"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M16 10l4 4m0-4-4 4"/></svg>`;
 let volumeOn = 1;
 
 function savedVolume(key, fallback) {
@@ -3110,7 +3264,7 @@ function setVolume(level) {
   }
   const mute = $("btn-mute");
   if (mute) {
-    mute.innerHTML = value <= 0.001 ? MUTE_ICON : VOLUME_ICON;
+    mute.textContent = value <= 0.001 ? "тихо" : "звук";
     mute.title = value <= 0.001 ? "Включить звук" : "Выключить звук";
   }
   localStorage.setItem("musik_volume", String(value));
@@ -3413,6 +3567,7 @@ function wireAudio() {
     updatePositionState();
   });
   audio.addEventListener("play", () => {
+    audio.dataset.retryAutoplay = "true";
     setPlayIcon(true);
     updatePositionState();
     // Playing here takes the shared state over from any other device.
@@ -3420,6 +3575,7 @@ function wireAudio() {
     pushPlaybackState({ playing: true, claim: true });
   });
   audio.addEventListener("pause", () => {
+    if (!audio.error) audio.dataset.retryAutoplay = "false";
     if (seeking || audio.seeking) return;
     setPlayIcon(false);
     updatePositionState();
@@ -3439,7 +3595,27 @@ function wireAudio() {
     const id = Number(audio.dataset.trackId || 0);
     const gen = Number(audio.dataset.gen || 0);
     if (!id || gen !== playbackGen || id !== current?.id || !sessionId) return;
+    // A track cued paused (resume, another device playing) is not skipped.
+    if (!audio.dataset.autoplay && audio.paused) return;
     if (audio.error?.code === MediaError.MEDIA_ERR_ABORTED) return;
+    // Some browsers cannot decode ALAC or other valid library formats.
+    // Retry this impression once through the compatible stream before skipping.
+    if ((audio.error?.code === MediaError.MEDIA_ERR_DECODE || audio.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED)
+        && audio.dataset.compatibleRetry !== "true") {
+      audio.dataset.compatibleRetry = "true";
+      const position = Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+      const resume = audio.dataset.retryAutoplay === "true";
+      const url = new URL(`/api/stream/${id}`, location.origin);
+      url.searchParams.set("q", "mp3");
+      audio.src = url.href;
+      if (position > 0) audio.addEventListener("loadedmetadata", () => {
+        if (Number(audio.dataset.gen) !== gen || current?.id !== id) return;
+        audio.currentTime = position;
+        lastPos = position;
+      }, { once: true });
+      if (resume) audio.play().catch(() => setPlayIcon(false));
+      return;
+    }
     unplayableRun += 1;
     if (unplayableRun > 3) {
       toast("Не получается воспроизвести треки подряд");
@@ -4076,12 +4252,13 @@ async function loadContexts() {
   const data = await api("/api/contexts");
   const items = data.contexts || [];
   const kindLabel = { mood: "настроение", place: "место", activity: "занятие" };
-  box.innerHTML = `<div class="panel-kicker">сейчас</div>
-    <strong>Настроение</strong>
-    <p class="sub">Подсказка радио: ночь, дорога, уборка. Можно включить несколько сразу.</p>
-    <div class="form-row">
-      <input id="ctx-name" type="text" placeholder="Ночная дорога" />
-      <select id="ctx-kind">
+  box.innerHTML = `<header class="panel-head">
+      <h3>Настроение</h3>
+      <p>Подсказка радио: ночь, дорога, уборка. Можно включить несколько сразу.</p>
+    </header>
+    <div class="profile-compose">
+      <input id="ctx-name" type="text" placeholder="Ночная дорога" aria-label="Название настроения" />
+      <select id="ctx-kind" aria-label="Тип">
         <option value="mood">настроение</option>
         <option value="place">место</option>
         <option value="activity">занятие</option>
@@ -4091,12 +4268,12 @@ async function loadContexts() {
     <div id="ctx-list">${items.map((c) => `
       <div class="collection-item">
         <span>${escapeHtml(c.name)}<small> · ${escapeHtml(kindLabel[c.kind] || c.kind)}</small></span>
-        <span>
+        <span class="profile-row-actions">
           <button type="button" class="chip context-chip" data-ctx="${c.context_id}" data-on="1">в радио</button>
           <button type="button" class="chip" data-ctx="${c.context_id}" data-on="0">выкл</button>
           <button type="button" class="chip" data-archive-ctx="${c.context_id}">удалить</button>
         </span>
-      </div>`).join("") || "<p class='sub'>Пока пусто — добавь, если хочешь сменить настроение</p>"}</div>`;
+      </div>`).join("") || "<p class='profile-empty'>Пока пусто — добавь, если хочешь сменить настроение</p>"}</div>`;
   $("btn-ctx-create").onclick = async () => {
     await api("/api/contexts", {
       method: "POST",
@@ -4136,15 +4313,18 @@ async function loadRules() {
   const items = data.rules || [];
   const actionLabel = { block: "скрыто", downrank: "реже", cooldown: "пауза" };
   const targetLabel = { track: "трек", artist: "артист", album: "альбом", genre: "жанр", cluster: "похожее" };
-  box.innerHTML = `<div class="panel-kicker">фильтр</div>
-    <strong>Скрыто</strong>
-    <p class="sub">Не попадает в радио, миксы, сгенерированные плейлисты и рекомендации, пока запрет не кончится.</p>
-    <button type="button" class="btn" id="btn-rule-undo">Вернуть последнее</button>
+  box.innerHTML = `<header class="panel-head">
+      <h3>Скрыто</h3>
+      <p>Не попадает в радио, миксы и рекомендации, пока запрет не кончится.</p>
+    </header>
+    <div class="profile-actions">
+      <button type="button" class="btn" id="btn-rule-undo">Вернуть последнее</button>
+    </div>
     ${items.map((r) => `
       <div class="collection-item">
         <span>${escapeHtml(actionLabel[r.action] || r.action)} · ${escapeHtml(targetLabel[r.target_type] || r.target_type)} «${escapeHtml(r.target_key)}»</span>
         <button type="button" class="chip" data-archive-rule="${r.rule_id}">вернуть</button>
-      </div>`).join("") || "<p class='sub'>Ничего не скрыто</p>"}`;
+      </div>`).join("") || "<p class='profile-empty'>Ничего не скрыто</p>"}`;
   $("btn-rule-undo").onclick = async () => {
     await api("/api/rules/undo", { method: "POST", body: "{}" });
     loadRules();
@@ -4179,7 +4359,7 @@ async function loadPlaylists() {
       <div class="pl-meta">${p.track_count || 0} ${ruTracks(p.track_count || 0)} · ${playlistKindLabel(p)}</div>
       <div class="pl-card-actions">
         <button type="button" class="tiny" data-del-pl="${p.id}">убрать</button>
-        <button type="button" class="pl-card-play" data-play-pl="${p.id}" title="Играть">▶</button>
+        <button type="button" class="pl-card-play" data-play-pl="${p.id}" title="Играть">играть</button>
       </div>
     </article>`
     )
@@ -4485,6 +4665,53 @@ async function openPlaylist(id) {
   }
 }
 
+const SMART_PRESETS = {
+  often: {
+    name: "Часто слушаю",
+    rule: {
+      schema_version: 1,
+      limit: 100,
+      sort: "plays_desc",
+      all: [{ field: "plays", op: "gte", value: 3 }],
+    },
+  },
+  forgotten: {
+    name: "Забытое",
+    rule: {
+      schema_version: 1,
+      limit: 100,
+      sort: "last_played",
+      all: [
+        { field: "last_played", op: "older_than_days", value: 60 },
+        { field: "plays", op: "gte", value: 1 },
+      ],
+    },
+  },
+};
+
+async function openSmartPreset(key) {
+  const preset = SMART_PRESETS[key];
+  if (!preset) return;
+  await loadPlaylists();
+  const existing = (playlistCache || []).find((p) => p.type === "smart" && p.name === preset.name);
+  if (existing) {
+    await openPlaylist(existing.id);
+    return;
+  }
+  const pl = await api("/api/playlists", {
+    method: "POST",
+    body: JSON.stringify({
+      name: preset.name,
+      type: "smart",
+      kind: "user",
+      rule_json: JSON.stringify(preset.rule),
+    }),
+  });
+  toast(preset.name);
+  await loadPlaylists();
+  if (pl?.id) await openPlaylist(pl.id);
+}
+
 async function createEmptyPlaylist() {
   const name = ($("pl-name").value || "").trim();
   if (!name) return toast("Напиши название");
@@ -4525,6 +4752,102 @@ async function startFromLibrary() {
   }
 }
 
+const COVER_TINT_KEY = "musik_cover_tint";
+let coverAccentActive = false;
+let coverAccentSnapshot = "";
+
+function coverTintEnabled() {
+  return localStorage.getItem(COVER_TINT_KEY) === "1";
+}
+
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b);
+  let h = 0, sat = 0;
+  const l = (max + min) / 2;
+  if (max !== min) {
+    const d = max - min;
+    sat = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    h *= 60;
+  }
+  return [h, sat, l];
+}
+
+function clearCoverTint() {
+  const root = document.documentElement;
+  root.classList.remove("cover-tint");
+  root.style.removeProperty("--np-tint");
+  root.style.removeProperty("--np-cover");
+  if (!coverAccentActive) return;
+  if (coverAccentSnapshot) root.style.setProperty("--accent", coverAccentSnapshot);
+  else root.style.removeProperty("--accent");
+  coverAccentSnapshot = "";
+  coverAccentActive = false;
+}
+
+function setAccentHue(h, sat = 0.62) {
+  const root = document.documentElement;
+  if (!coverAccentActive) {
+    coverAccentSnapshot = root.style.getPropertyValue("--accent");
+    coverAccentActive = true;
+  }
+  const s = Math.round(Math.max(0.35, Math.min(0.75, sat)) * 100);
+  const hue = Math.round(h);
+  root.style.setProperty("--accent", `hsl(${hue} ${s}% 60%)`);
+  root.style.setProperty("--np-tint", `hsl(${hue} ${Math.round(s * 0.45)}% 11%)`);
+  root.style.setProperty("--np-cover", `hsl(${hue} ${Math.round(s * 0.5)}% 26%)`);
+  root.classList.add("cover-tint");
+}
+
+function applyCoverAccent(track) {
+  if (!coverTintEnabled() || !track) {
+    clearCoverTint();
+    return;
+  }
+  const fallback = () => setAccentHue(coverHue(track.album || track.title || ""));
+  const img = $("art-img");
+  if (!track.artwork || !img) return fallback();
+  const sample = () => {
+    if (!coverTintEnabled()) return clearCoverTint();
+    try {
+      const c = document.createElement("canvas");
+      c.width = c.height = 16;
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      ctx.drawImage(img, 0, 0, 16, 16);
+      const d = ctx.getImageData(0, 0, 16, 16).data;
+      let r = 0, g = 0, b = 0, n = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        const [, sat, l] = rgbToHsl(d[i], d[i + 1], d[i + 2]);
+        if (l < 0.08 || l > 0.92) continue;
+        const w = 0.2 + sat;
+        r += d[i] * w; g += d[i + 1] * w; b += d[i + 2] * w; n += w;
+      }
+      if (!n) return fallback();
+      const [h, sat] = rgbToHsl(r / n, g / n, b / n);
+      setAccentHue(h, sat);
+    } catch {
+      fallback();
+    }
+  };
+  if (img.complete && img.naturalWidth) sample();
+  else {
+    img.addEventListener("load", sample, { once: true });
+    img.addEventListener("error", fallback, { once: true });
+  }
+}
+
+function wireCoverTint() {
+  const input = $("cover-tint");
+  if (!input) return;
+  input.checked = coverTintEnabled();
+  input.onchange = () => {
+    localStorage.setItem(COVER_TINT_KEY, input.checked ? "1" : "0");
+    if (input.checked && current) applyCoverAccent(current);
+    else clearCoverTint();
+  };
+}
+
 const THEME_ACTIVE_KEY = "musik_theme";
 const THEME_CUSTOM_KEY = "musik_custom_themes";
 const THEME_TOKEN_KEYS = [
@@ -4560,8 +4883,8 @@ const FONT_PRESETS = {
 };
 const THEME_ID_RE = /^[a-z][a-z0-9-]{0,31}$/;
 let installedThemes = [
-  { id: "ember", name: "Ember", blurb: "Warm", swatch: ["#100c0a", "#e07a3a", "#3d8f7a"], color: "#1a120c", installed: true },
-  { id: "retro", name: "Retro", blurb: "Acid pixel", swatch: ["#080a0c", "#d6ff3f", "#ff4f9a"], color: "#080a0c", installed: true },
+  { id: "ember", name: "Ember", blurb: "Тёплая", swatch: ["#100c0a", "#e07a3a", "#3d8f7a"], color: "#1a120c", installed: true },
+  { id: "retro", name: "Retro", blurb: "Пиксели", swatch: ["#080a0c", "#d6ff3f", "#ff4f9a"], color: "#080a0c", installed: true },
 ];
 
 function hexLuma(hex) {
@@ -4653,7 +4976,7 @@ function tokensFromForm() {
 
 function ensureThemeStylesheet(id) {
   if (!THEME_ID_RE.test(id) || id === "ember") return;
-  const href = `/themes/${id}.css?v=retro3`;
+  const href = `/themes/${id}.css?v=retro5`;
   if ([...document.querySelectorAll('link[rel="stylesheet"]')].some((link) => link.getAttribute("href") === href)) return;
   const link = document.createElement("link");
   link.rel = "stylesheet";
@@ -4663,6 +4986,8 @@ function ensureThemeStylesheet(id) {
 
 function applyTheme(theme, { persist = true } = {}) {
   const root = document.documentElement;
+  coverAccentActive = false;
+  coverAccentSnapshot = "";
   THEME_TOKEN_KEYS.forEach((key) => root.style.removeProperty(key));
   root.classList.remove("theme-light");
   root.style.colorScheme = "";
@@ -4698,6 +5023,8 @@ function applyTheme(theme, { persist = true } = {}) {
   }
   renderThemeList();
   syncRetroField();
+  if (coverTintEnabled() && current) applyCoverAccent(current);
+  else clearCoverTint();
 }
 
 let retroField = null;
@@ -4817,7 +5144,7 @@ function renderThemeList() {
     ...installedThemes.map((theme) => ({ ...theme, builtin: true })),
     ...readCustomThemes().map((theme) => ({
       ...theme,
-      blurb: "Custom",
+      blurb: "Своя",
       swatch: [theme.tokens["--bg"], theme.tokens["--accent"], theme.tokens["--accent2"]],
       builtin: false,
     })),
@@ -4838,7 +5165,7 @@ function renderThemeList() {
       swatch.appendChild(bit);
     });
     const name = document.createElement("strong");
-    name.textContent = theme.name || "Theme";
+    name.textContent = theme.name || "Тема";
     const blurb = document.createElement("span");
     blurb.textContent = theme.blurb || "";
     btn.append(swatch, name, blurb);
@@ -4852,8 +5179,8 @@ function renderThemeList() {
       del.type = "button";
       del.className = "theme-delete";
       del.textContent = "×";
-      del.title = "Delete theme";
-      del.setAttribute("aria-label", `Delete theme ${theme.name || ""}`);
+      del.title = "Удалить тему";
+      del.setAttribute("aria-label", `Удалить тему ${theme.name || ""}`);
       del.onclick = () => deleteCustomTheme(theme.id);
       row.appendChild(del);
     }
@@ -4883,7 +5210,19 @@ function saveCustomTheme(event) {
   list.push(theme);
   localStorage.setItem(THEME_CUSTOM_KEY, JSON.stringify(list.slice(-12)));
   applyTheme(theme);
-  toast("Theme saved");
+  toast("Тема сохранена");
+}
+
+// The server picks the page by the musik_ui cookie (MUSIK_UI sets the
+// default); both pages share this script.
+function wireUiChoice() {
+  const select = $("ui-choice");
+  if (!select) return;
+  select.value = document.querySelector('link[href^="/redesign.css"]') ? "mozgolika" : "original";
+  select.onchange = () => {
+    document.cookie = `musik_ui=${select.value}; path=/; max-age=31536000; SameSite=Lax`;
+    location.reload();
+  };
 }
 
 function wireTheme() {
@@ -4904,6 +5243,8 @@ function wireTheme() {
 
 function wire() {
   wireTheme();
+  wireUiChoice();
+  wireCoverTint();
   wireMediaSession();
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
     b.onclick = () => {
@@ -4925,7 +5266,7 @@ function wire() {
       setLibTab(b.dataset.lib);
     };
   });
-  $("seg-playlists").onclick = () => setView("collections", "collection");
+  if ($("seg-playlists")) $("seg-playlists").onclick = () => setView("collections", "collection");
   $("lib-artist-back").onclick = () => {
     libArtist = null;
     setLibTab("artists");
@@ -4934,8 +5275,7 @@ function wire() {
     if (libArtist) playFixed({ artist: libArtist }).catch((e) => toast(e.message || String(e)));
   };
   $("lib-artist-radio").onclick = () => {
-    const seed = tracksOfArtist(libArtist)[0];
-    if (seed) startRadio(seed.id).catch((e) => toast(e.message || String(e)));
+    if (libArtist) startRadio({ artist: libArtist }).catch((e) => toast(e.message || String(e)));
   };
   $("lib-artist-playlist").onclick = () => {
     const ids = tracksOfArtist(libArtist).map((t) => t.id);
@@ -4947,6 +5287,15 @@ function wire() {
   };
   wireAllShelves();
   $("btn-radio").onclick = () => startRadio().catch((e) => toast(e.message || String(e)));
+  $("btn-radio-forgotten") &&
+    ($("btn-radio-forgotten").onclick = () =>
+      startRadio({ station: "forgotten" }).catch((e) =>
+        toast(e.message === "nothing forgotten yet" ? "Пока нечего вспоминать: нужно несколько дослушиваний и пауза в пару месяцев" : e.message || String(e))
+      ));
+  $("btn-radio-closer") &&
+    ($("btn-radio-closer").onclick = () => tuneRadio("closer").catch((e) => toast(e.message || String(e))));
+  $("btn-radio-wider") &&
+    ($("btn-radio-wider").onclick = () => tuneRadio("wider").catch((e) => toast(e.message || String(e))));
   $("btn-share-radio").onclick = () => createShareLink().catch((e) => toast(e.message || String(e)));
   $("btn-share-radio-profile").onclick = () => createShareLink().catch((e) => toast(e.message || String(e)));
   $("btn-refresh-mixes").onclick = () => refreshMixes();
@@ -5025,6 +5374,11 @@ function wire() {
         if (pl?.id) openPlaylist(pl.id);
       })
       .catch((e) => toast(e.message || String(e)));
+  $("btn-pl-often") &&
+    ($("btn-pl-often").onclick = () => openSmartPreset("often").catch((e) => toast(e.message || String(e))));
+  $("btn-pl-forgotten") &&
+    ($("btn-pl-forgotten").onclick = () =>
+      openSmartPreset("forgotten").catch((e) => toast(e.message || String(e))));
   $("btn-pl-from-later").onclick = () =>
     api("/api/playlists/from-later", { method: "POST", body: "{}" })
       .then(async (pl) => {
@@ -5070,13 +5424,13 @@ function wire() {
     e.target.value = "";
   };
   $("btn-dislike").onclick = () => postEvent("dislike").catch((e) => toast(e.message || String(e)));
-  $("btn-more").onclick = () => {
+  if ($("btn-more")) $("btn-more").onclick = () => {
     if (!current?.id) return toast("Сейчас ничего не играет");
     postEvent("like")
       .then(() => toast("Понял — больше такого"))
       .catch((e) => toast(e.message || String(e)));
   };
-  $("btn-notthis").onclick = async () => {
+  if ($("btn-notthis")) $("btn-notthis").onclick = async () => {
     if (!current?.id) return toast("Сейчас ничего не играет");
     try {
       await postEvent("dislike");
@@ -5086,8 +5440,8 @@ function wire() {
     }
   };
   document.querySelectorAll(".np-tab").forEach((b) => (b.onclick = () => setNowTab(b.dataset.npTab)));
-  $("btn-np-share").onclick = () => createShareLink().catch((e) => toast(e.message || String(e)));
-  $("btn-np-more").onclick = () => {
+  if ($("btn-np-share")) $("btn-np-share").onclick = () => createShareLink().catch((e) => toast(e.message || String(e)));
+  if ($("btn-np-more")) $("btn-np-more").onclick = () => {
     const extra = document.querySelector("#view-player .fav-extra");
     const open = !extra.classList.contains("open");
     extra.classList.toggle("open", open);
@@ -5181,10 +5535,10 @@ function reloadProfile() {
   sessionStorage.removeItem("musik_session");
   location.reload();
 }
-$("profile-switch").onchange = async (event) => {
+document.querySelectorAll("[data-profile-switch]").forEach((select) => select.onchange = async (event) => {
   try { await api(`/api/profiles/${encodeURIComponent(event.target.value)}/activate`, { method: "POST", body: "{}" }); reloadProfile(); }
   catch (error) { toast(error.message); await ensureAuth(); }
-};
+});
 $("profile-create-form").onsubmit = async (event) => {
   event.preventDefault();
   try { await api("/api/profiles", { method: "POST", body: JSON.stringify({ name: $("profile-new-name").value }) }); $("profile-new-name").value = ""; await ensureAuth(); toast("Профиль создан"); }

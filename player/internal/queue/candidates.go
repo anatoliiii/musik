@@ -46,18 +46,20 @@ type CandidateSims struct {
 }
 
 type CandidateOpts struct {
-	Taste     []float32
-	Current   []float32
-	Session   []float32
-	Daypart   []float32
-	Mood      []float32
-	Place     []float32
-	Activity  []float32
-	Centroids [][]float32
-	Exclude   map[int64]bool
-	Rules     *rules.Evaluator
-	Now       time.Time
-	Pool      int
+	Taste       []float32
+	Current     []float32
+	Session     []float32
+	Daypart     []float32
+	Mood        []float32
+	Place       []float32
+	Activity    []float32
+	Centroids   [][]float32
+	Exclude     map[int64]bool
+	Rules       *rules.Evaluator
+	Now         time.Time
+	Pool        int
+	Transitions map[int64]float64
+	Negative    func([]float32) float64
 }
 
 func CollectCandidates(idx *index.Index, currentID int64, opts CandidateOpts) []Candidate {
@@ -89,6 +91,8 @@ func CollectCandidates(idx *index.Index, currentID int64, opts CandidateOpts) []
 		}
 		add("centroid", centroid)
 	}
+	far := farCentroid(opts.Centroids, opts.Taste)
+	add("far", far)
 	if len(queries) == 0 {
 		queries = append(queries, idx.Centroid())
 		kind = append(kind, "taste")
@@ -105,58 +109,74 @@ func CollectCandidates(idx *index.Index, currentID int64, opts CandidateOpts) []
 		byKind[name] = fused[i]
 	}
 
-	pool := opts.Pool
-	if pool <= 0 {
-		pool = 200
-	}
-	type scored struct {
-		row int
-		sim float32
-	}
-	best := make([]scored, n)
-	for row := 0; row < n; row++ {
-		var maxSim float32 = -2
-		for _, sims := range fused {
-			if sims[row] > maxSim {
-				maxSim = sims[row]
-			}
-		}
-		best[row] = scored{row, maxSim}
-	}
-	sort.Slice(best, func(i, j int) bool { return best[i].sim > best[j].sim })
-	if pool > len(best) {
-		pool = len(best)
-	}
-
 	md5Cur := ""
+	var currentMeta *index.Meta
 	if r, ok := idx.RowOf(currentID); ok {
-		md5Cur = idx.MetaAt(r).FileMD5
+		meta := idx.MetaAt(r)
+		md5Cur = meta.FileMD5
+		currentMeta = &meta
 	}
-	out := make([]Candidate, 0, pool)
-	for _, item := range best[:pool] {
-		meta := idx.MetaAt(item.row)
+	allow := func(row int) bool {
+		meta := idx.MetaAt(row)
 		if meta.ID == currentID || opts.Exclude[meta.ID] {
-			continue
+			return false
 		}
 		if md5Cur != "" && meta.FileMD5 == md5Cur {
-			continue
+			return false
 		}
 		if opts.Rules != nil && opts.Rules.HardBlocked(meta.ID) {
-			continue
+			return false
 		}
+		return true
+	}
+
+	pool := opts.Pool
+	if pool <= 0 {
+		pool = ActiveSpec.Retrieval.SourcePool
+	}
+	tasteSim := byKind["taste"]
+	currentSim := byKind["current"]
+	exploitScore := make([]float32, n)
+	for row := 0; row < n; row++ {
+		exploitScore[row] = simAt(tasteSim, row)
+		if c := maxAt(centroidSims, row); c > exploitScore[row] {
+			exploitScore[row] = c
+		}
+	}
+	seen := map[int]bool{}
+	rows := make([]int, 0, pool*6)
+	addRows := func(picked []int) {
+		for _, row := range picked {
+			if seen[row] {
+				continue
+			}
+			seen[row] = true
+			rows = append(rows, row)
+		}
+	}
+	addRows(topK(exploitScore, pool, allow))
+	addRows(transitionRows(idx, currentMeta, currentSim, opts.Transitions, pool, allow))
+	addRows(resurfaceRows(idx, opts.Now, pool, allow))
+	addRows(newInLibraryRows(idx, opts.Now, pool, allow))
+	addRows(adjacentRows(tasteSim, pool, allow))
+	addRows(wildcardRows(idx, tasteSim, byKind["far"], opts.Negative, pool, allow))
+
+	out := make([]Candidate, 0, len(rows))
+	for _, row := range rows {
+		meta := idx.MetaAt(row)
 		sims := CandidateSims{
-			Taste:       simAt(byKind["taste"], item.row),
-			Current:     simAt(byKind["current"], item.row),
-			Session:     simAt(byKind["session"], item.row),
-			Daypart:     simAt(byKind["daypart"], item.row),
-			Mood:        simAt(byKind["mood"], item.row),
-			Place:       simAt(byKind["place"], item.row),
-			Activity:    simAt(byKind["activity"], item.row),
-			CentroidMax: maxAt(centroidSims, item.row),
+			Taste:       simAt(tasteSim, row),
+			Current:     simAt(currentSim, row),
+			Session:     simAt(byKind["session"], row),
+			Daypart:     simAt(byKind["daypart"], row),
+			Mood:        simAt(byKind["mood"], row),
+			Place:       simAt(byKind["place"], row),
+			Activity:    simAt(byKind["activity"], row),
+			CentroidMax: maxAt(centroidSims, row),
 		}
 		sources := labelSources(meta, sims, opts.Now)
 		out = append(out, Candidate{
-			Row: item.row, TrackID: meta.ID, Sources: sources,
+			Row: row, TrackID: meta.ID, Sources: sources,
 			Primary: primarySource(sources), Sims: sims,
 		})
 	}
@@ -164,27 +184,252 @@ func CollectCandidates(idx *index.Index, currentID int64, opts CandidateOpts) []
 }
 
 func labelSources(meta index.Meta, sims CandidateSims, now time.Time) []string {
+	exploit := float32(ActiveSpec.Thresholds.ExploitTaste)
+	centroid := float32(ActiveSpec.Thresholds.ExploitCentroid)
+	transition := float32(ActiveSpec.Thresholds.TransitionCurrent)
+	adjacent := float32(ActiveSpec.Thresholds.AdjacentTaste)
 	var out []string
-	if sims.Taste >= 0.45 || sims.CentroidMax >= 0.5 {
+	if sims.Taste >= exploit || sims.CentroidMax >= centroid {
 		out = append(out, SourceExploit)
 	}
-	if sims.Current >= 0.55 {
+	if sims.Current >= transition {
 		out = append(out, SourceTransition)
 	}
-	if sims.Taste >= 0.15 && sims.Taste < 0.45 {
+	if sims.Taste >= adjacent && sims.Taste < exploit {
 		out = append(out, SourceExploreAdjacent)
 	}
-	if !meta.LastPlayedAt.IsZero() && now.Sub(meta.LastPlayedAt) >= 14*24*time.Hour && meta.Finishes > 0 {
+	if resurfaceEligible(meta, now) {
 		out = append(out, SourceResurface)
 	}
-	if !meta.CreatedAt.IsZero() && now.Sub(meta.CreatedAt) <= 30*24*time.Hour && meta.Plays < 2 {
+	if newInLibraryEligible(meta, now) {
 		out = append(out, SourceNewInLibrary)
 	}
-	if sims.Taste < 0.15 {
+	if sims.Taste < adjacent {
 		out = append(out, SourceWildcard)
 	}
 	if len(out) == 0 {
 		out = append(out, SourceWildcard)
+	}
+	return out
+}
+
+func resurfaceEligible(meta index.Meta, now time.Time) bool {
+	if meta.Finishes < ActiveSpec.Resurface.MinFinishes || meta.LastFinishedAt.IsZero() {
+		return false
+	}
+	return now.Sub(meta.LastFinishedAt).Hours() >= ActiveSpec.Resurface.MinHours
+}
+
+func newInLibraryEligible(meta index.Meta, now time.Time) bool {
+	if meta.CreatedAt.IsZero() || meta.Plays >= ActiveSpec.NewInLibrary.MaxPlays {
+		return false
+	}
+	return now.Sub(meta.CreatedAt).Hours() <= ActiveSpec.NewInLibrary.MaxAgeHours
+}
+
+func transitionRows(idx *index.Index, current *index.Meta, currentSim []float32, edges map[int64]float64, pool int, allow func(int) bool) []int {
+	rows := topK(currentSim, pool, allow)
+	seen := map[int]bool{}
+	for _, row := range rows {
+		seen[row] = true
+	}
+	if current != nil {
+		window := make([]float32, idx.Size())
+		for row := 0; row < idx.Size(); row++ {
+			if !allow(row) || seen[row] {
+				window[row] = -2
+				continue
+			}
+			meta := idx.MetaAt(row)
+			bpm, missing := bpmDistance(current, meta)
+			key := keyCompat(current, meta)
+			if (missing == 0 && bpm <= ActiveSpec.Retrieval.BPMWindow) || key >= ActiveSpec.Retrieval.KeyMin {
+				window[row] = simAt(currentSim, row)
+				continue
+			}
+			window[row] = -2
+		}
+		for _, row := range topK(window, pool, func(row int) bool { return window[row] > -1.5 }) {
+			if !seen[row] {
+				seen[row] = true
+				rows = append(rows, row)
+			}
+		}
+	}
+	type edge struct {
+		row int
+		w   float64
+	}
+	ranked := make([]edge, 0, len(edges))
+	for id, w := range edges {
+		if w <= 0 {
+			continue
+		}
+		row, ok := idx.RowOf(id)
+		if !ok || !allow(row) || seen[row] {
+			continue
+		}
+		ranked = append(ranked, edge{row, w})
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].w == ranked[j].w {
+			return ranked[i].row < ranked[j].row
+		}
+		return ranked[i].w > ranked[j].w
+	})
+	if len(ranked) > pool {
+		ranked = ranked[:pool]
+	}
+	for _, item := range ranked {
+		rows = append(rows, item.row)
+	}
+	return rows
+}
+
+func resurfaceRows(idx *index.Index, now time.Time, pool int, allow func(int) bool) []int {
+	type hit struct {
+		row, finishes int
+		last          time.Time
+	}
+	hits := make([]hit, 0)
+	for row := 0; row < idx.Size(); row++ {
+		if !allow(row) {
+			continue
+		}
+		meta := idx.MetaAt(row)
+		if !resurfaceEligible(meta, now) {
+			continue
+		}
+		hits = append(hits, hit{row: row, finishes: meta.Finishes, last: meta.LastFinishedAt})
+	}
+	sort.Slice(hits, func(a, b int) bool {
+		if hits[a].finishes != hits[b].finishes {
+			return hits[a].finishes > hits[b].finishes
+		}
+		if !hits[a].last.Equal(hits[b].last) {
+			return hits[a].last.Before(hits[b].last)
+		}
+		return hits[a].row < hits[b].row
+	})
+	if len(hits) > pool {
+		hits = hits[:pool]
+	}
+	rows := make([]int, len(hits))
+	for i, h := range hits {
+		rows[i] = h.row
+	}
+	return rows
+}
+
+func newInLibraryRows(idx *index.Index, now time.Time, pool int, allow func(int) bool) []int {
+	type hit struct {
+		row     int
+		created time.Time
+	}
+	hits := make([]hit, 0)
+	for row := 0; row < idx.Size(); row++ {
+		if !allow(row) {
+			continue
+		}
+		meta := idx.MetaAt(row)
+		if !newInLibraryEligible(meta, now) {
+			continue
+		}
+		hits = append(hits, hit{row: row, created: meta.CreatedAt})
+	}
+	sort.Slice(hits, func(a, b int) bool {
+		if !hits[a].created.Equal(hits[b].created) {
+			return hits[a].created.After(hits[b].created)
+		}
+		return hits[a].row < hits[b].row
+	})
+	if len(hits) > pool {
+		hits = hits[:pool]
+	}
+	rows := make([]int, len(hits))
+	for i, h := range hits {
+		rows[i] = h.row
+	}
+	return rows
+}
+
+func adjacentRows(taste []float32, pool int, allow func(int) bool) []int {
+	lo := float32(ActiveSpec.Thresholds.AdjacentTaste)
+	hi := float32(ActiveSpec.Thresholds.ExploitTaste)
+	score := make([]float32, len(taste))
+	for row, sim := range taste {
+		if allow(row) && sim >= lo && sim < hi {
+			score[row] = sim
+			continue
+		}
+		score[row] = -2
+	}
+	return topK(score, pool, func(row int) bool { return score[row] > -1.5 })
+}
+
+func wildcardRows(idx *index.Index, taste, far []float32, negative func([]float32) float64, pool int, allow func(int) bool) []int {
+	limit := float32(ActiveSpec.Thresholds.AdjacentTaste)
+	clearance := ActiveSpec.Retrieval.NegativeClearance
+	score := make([]float32, idx.Size())
+	for row := 0; row < idx.Size(); row++ {
+		score[row] = -2
+		if !allow(row) || simAt(taste, row) >= limit {
+			continue
+		}
+		if negative != nil && negative(idx.Vector(row)) >= clearance {
+			continue
+		}
+		score[row] = simAt(far, row) - simAt(taste, row)
+	}
+	return topK(score, pool, func(row int) bool { return score[row] > -1.5 })
+}
+
+func farCentroid(centroids [][]float32, taste []float32) []float32 {
+	if len(centroids) == 0 {
+		return nil
+	}
+	bestI := len(centroids) - 1
+	best := float32(2)
+	for i, centroid := range centroids {
+		sim := float32(0)
+		if len(taste) > 0 && len(taste) == len(centroid) {
+			sim = dot32(centroid, taste)
+		}
+		if sim < best {
+			best = sim
+			bestI = i
+		}
+	}
+	return centroids[bestI]
+}
+
+func topK(score []float32, k int, allow func(int) bool) []int {
+	if k < 1 {
+		return nil
+	}
+	type pair struct {
+		row int
+		sim float32
+	}
+	all := make([]pair, 0, len(score))
+	for row, sim := range score {
+		if allow != nil && !allow(row) {
+			continue
+		}
+		all = append(all, pair{row, sim})
+	}
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].sim == all[j].sim {
+			return all[i].row < all[j].row
+		}
+		return all[i].sim > all[j].sim
+	})
+	if k > len(all) {
+		k = len(all)
+	}
+	out := make([]int, k)
+	for i := 0; i < k; i++ {
+		out[i] = all[i].row
 	}
 	return out
 }

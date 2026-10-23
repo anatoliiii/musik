@@ -2,10 +2,12 @@ package playback
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/torwin-job/musik/player/internal/config"
 	"github.com/torwin-job/musik/player/internal/db"
@@ -98,7 +100,7 @@ func TestJumpPrefersTrackIDAndRadioQueue(t *testing.T) {
 		t.Fatalf("playlist jump current/pos=%d/%d", session.Current, session.DailyPos)
 	}
 
-	radio := engine.StartRadio(nil)
+	radio := engine.Start("radio", nil, nil)
 	radio.Lock()
 	radio.Current = 11
 	radio.Queue = []queue.Item{
@@ -162,6 +164,36 @@ func TestBackRestoresRadioTrackAndFixedPosition(t *testing.T) {
 	}
 }
 
+func TestResolvePlayIDsSentinels(t *testing.T) {
+	engine := testEngine(t)
+	_, _, err := engine.ResolvePlayIDs(PlaySpec{TrackIDs: []int64{999}})
+	if !errors.Is(err, ErrNoTracks) {
+		t.Fatalf("empty ids: %v", err)
+	}
+	_, _, err = engine.ResolvePlayIDs(PlaySpec{Artist: "Nobody"})
+	if !errors.Is(err, ErrNothingFound) {
+		t.Fatalf("artist: %v", err)
+	}
+	_, _, err = engine.ResolvePlayIDs(PlaySpec{TrackID: 999})
+	if !errors.Is(err, ErrTrackNotFound) {
+		t.Fatalf("track: %v", err)
+	}
+	_, _, err = engine.ResolvePlayIDs(PlaySpec{})
+	if !errors.Is(err, ErrPlaySpec) {
+		t.Fatalf("spec: %v", err)
+	}
+	sess := engine.StartFixed([]int64{11, 22}, "playlist", "List", "user", 0, 0)
+	sess.Lock()
+	defer sess.Unlock()
+	missing := 5
+	if err := engine.Jump(sess, &missing, 0); !errors.Is(err, ErrTrackNotInPlaylist) {
+		t.Fatalf("jump: %v", err)
+	}
+	if err := engine.Back(sess); !errors.Is(err, ErrNoPrevious) {
+		t.Fatalf("back: %v", err)
+	}
+}
+
 func TestResolvePlayIDsByArtist(t *testing.T) {
 	engine := testEngine(t)
 	ids, name, err := engine.ResolvePlayIDs(PlaySpec{Artist: "Artist"})
@@ -190,6 +222,99 @@ func TestStartShareInitializesSession(t *testing.T) {
 	}
 	if len(session.Queue) == 0 {
 		t.Fatal("share queue was not initialized")
+	}
+}
+
+func TestPickStartRelaxesFullExclude(t *testing.T) {
+	engine := testEngine(t)
+	session := engine.NewSession("radio")
+	session.Lock()
+	defer session.Unlock()
+	for _, id := range []int64{11, 22, 33} {
+		session.Exclude[id] = true
+	}
+
+	got := engine.PickStart(session, nil)
+
+	if got != 11 && got != 22 && got != 33 {
+		t.Fatalf("PickStart=%d, want a catalog track", got)
+	}
+	if session.Exclude[got] {
+		t.Fatalf("PickStart returned excluded track %d", got)
+	}
+}
+
+func TestAdvanceRelaxesFullExclude(t *testing.T) {
+	engine := testEngine(t)
+	session := engine.NewSession("radio")
+	session.Lock()
+	defer session.Unlock()
+	session.Current = 11
+	session.Queue = nil
+	for _, id := range []int64{11, 22, 33} {
+		session.Exclude[id] = true
+	}
+
+	next := engine.Advance(session)
+
+	if next != 11 && next != 22 && next != 33 {
+		t.Fatalf("Advance=%d, want a catalog track", next)
+	}
+	for _, id := range []int64{11, 22, 33} {
+		if id != next && session.Exclude[id] {
+			t.Fatalf("track %d stayed excluded after relax", id)
+		}
+	}
+}
+
+func TestStartShareIsNotAnOwnerSession(t *testing.T) {
+	engine := testEngine(t)
+	owner := engine.NewSession("radio")
+	share := engine.StartShare()
+
+	if engine.SessionCount() != 1 {
+		t.Fatalf("session count=%d, want 1 owner", engine.SessionCount())
+	}
+	if engine.Get(share.ID) != nil {
+		t.Fatal("share session was registered")
+	}
+	if _, ok, err := engine.Store.LoadPlaySession(share.ID); err != nil || ok {
+		t.Fatalf("share persisted ok=%v err=%v", ok, err)
+	}
+	if engine.Get(owner.ID) == nil {
+		t.Fatal("owner session missing")
+	}
+}
+
+func TestShareRowsDoNotEvictOwnerSessions(t *testing.T) {
+	engine := testEngine(t)
+	owner := engine.NewSession("radio")
+	ownerUpdated := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339Nano)
+	if err := engine.Store.UpsertPlaySession(db.PlaySessionRow{
+		ID: owner.ID, Mode: "radio", UpdatedAt: ownerUpdated,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	shareUpdated := time.Now().UTC().Format(time.RFC3339Nano)
+	for i := 0; i < 70; i++ {
+		if err := engine.Store.UpsertPlaySession(db.PlaySessionRow{
+			ID: fmt.Sprintf("share-%d", i), Mode: "share", UpdatedAt: shareUpdated,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_ = engine.NewSession("radio")
+
+	if engine.Get(owner.ID) == nil {
+		t.Fatal("share rows evicted the owner session")
+	}
+	n, err := engine.Store.CountPlaySessions()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Fatalf("owner sessions=%d, want 2", n)
 	}
 }
 
@@ -265,7 +390,7 @@ func insertPlaybackTracks(t *testing.T, engine *Engine) {
 func TestRadioStartAssignsImpressionAndIdempotentLifecycle(t *testing.T) {
 	engine := testEngine(t)
 	insertPlaybackTracks(t, engine)
-	session := engine.StartRadio(nil)
+	session := engine.Start("radio", nil, nil)
 	session.Lock()
 	defer session.Unlock()
 	if session.CurrentItem.ImpressionID == "" || session.CurrentItem.Source == "" {
@@ -328,16 +453,26 @@ func TestRadioStartAssignsImpressionAndIdempotentLifecycle(t *testing.T) {
 	}
 
 	dur, listened := 180.0, 170.0
+	endedTrack := session.Current
 	end := Event{
-		Type: "track_end", EventID: "end-1", TrackID: session.Current,
+		Type: "track_end", EventID: "end-1", TrackID: endedTrack,
 		ImpressionID: session.CurrentItem.ImpressionID,
 		DurationSec:  &dur, ListenedSec: &listened, Reason: "completed",
 	}
-	if result := engine.ApplyEvent(session, end); !result.OK || result.Ignored {
-		t.Fatalf("end=%+v", result)
+	first := engine.ApplyEvent(session, end)
+	if !first.OK || first.Ignored || first.NextID == 0 || first.NextID == endedTrack {
+		t.Fatalf("end=%+v", first)
 	}
-	if result := engine.ApplyEvent(session, end); !result.Ignored {
-		t.Fatalf("retry end should be ignored: %+v", result)
+	advanced := session.Current
+	retry = engine.ApplyEvent(session, end)
+	if !retry.Ignored || retry.NextID != advanced || session.Current != advanced {
+		t.Fatalf("retry end should stay on %d: %+v current=%d", advanced, retry, session.Current)
+	}
+	second := end
+	second.EventID = "end-2"
+	closed := engine.ApplyEvent(session, second)
+	if !closed.Ignored || closed.IgnoreReason != "already_closed" || closed.NextID != advanced || session.Current != advanced {
+		t.Fatalf("second close should stay on %d: %+v current=%d", advanced, closed, session.Current)
 	}
 	centroids, err := engine.Store.LoadTasteCentroids(taste.CentroidAlgorithmVersion)
 	if err != nil || len(centroids) != 1 {
@@ -349,7 +484,7 @@ func TestManualSeedIsNotAlgorithmicSource(t *testing.T) {
 	engine := testEngine(t)
 	insertPlaybackTracks(t, engine)
 	seed := int64(11)
-	session := engine.StartRadio(&seed)
+	session := engine.Start("radio", &seed, nil)
 	session.Lock()
 	defer session.Unlock()
 	if session.CurrentItem.Source != "manual" {
@@ -406,7 +541,7 @@ func TestSharePlaybackDoesNotWriteOwnerData(t *testing.T) {
 func TestDislikeAndEarlySkipStayOffPositiveTaste(t *testing.T) {
 	engine := testEngine(t)
 	insertPlaybackTracks(t, engine)
-	session := engine.StartRadio(nil)
+	session := engine.Start("radio", nil, nil)
 	session.Lock()
 	defer session.Unlock()
 	engine.Taste.UpdateEMA([]float32{1, 0}, 1, 0.5)
@@ -436,6 +571,66 @@ func TestDislikeAndEarlySkipStayOffPositiveTaste(t *testing.T) {
 	if len(session.TasteState.Negative) == 0 {
 		t.Fatal("early skip should stay on session negatives")
 	}
+}
+
+func TestRebuildTasteCentroidsDeletesStaleRows(t *testing.T) {
+	engine := testEngine(t)
+	version := taste.CentroidAlgorithmVersion
+	seed := func() {
+		t.Helper()
+		if err := engine.Store.ReplaceTasteCentroids(version, []db.TasteCentroidRow{{
+			Index: 0, Vector: index.Float32Bytes([]float32{1, 0}),
+			EmbeddingDim: 2, Mass: 1, SampleCount: 4, AlgorithmVersion: version,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertGone := func() {
+		t.Helper()
+		rows, err := engine.Store.LoadTasteCentroids(version)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(rows) != 0 {
+			t.Fatalf("centroids=%d, want none", len(rows))
+		}
+	}
+
+	t.Run("no positive samples", func(t *testing.T) {
+		seed()
+		engine.rebuildTasteCentroids()
+		assertGone()
+	})
+
+	t.Run("samples missing from the index", func(t *testing.T) {
+		seed()
+		if _, err := engine.Store.DB.Exec(
+			`INSERT INTO tracks(id, path, title, artist, duration, created_at, updated_at) VALUES (99, '/gone.flac', 'Gone', 'Artist', 180, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+		); err != nil {
+			t.Fatal(err)
+		}
+		requestID := db.NewID()
+		if _, err := engine.Store.DB.Exec(`
+INSERT INTO recommendation_requests(
+  request_id, session_id, reason, policy_version, candidate_count, latency_ms, created_at, profile_id
+) VALUES (?, 's-centroid', 'refill', 'test', 1, 1, '2026-10-19T00:00:00Z', ?)`,
+			requestID, engine.Store.ProfileID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engine.Store.DB.Exec(`
+INSERT INTO recommendation_impressions(
+  session_id, track_id, position, score, cosine_taste, cosine_current,
+  explore, new_boost, maturity, mode, shown_at, impression_id, request_id,
+  source, queued_at, played_at, closed_at, outcome, listened_ratio, legacy, profile_id
+) VALUES (
+  's-centroid', 99, 0, 0, 0, 0, 0, 0, 'ready', 'radio', '2026-10-19T00:00:00Z', ?, ?,
+  'exploit', '2026-10-19T00:00:00Z', '2026-10-19T00:00:00Z', '2026-10-19T00:00:00Z', 'finished', 0.9, 0, ?
+)`, db.NewID(), requestID, engine.Store.ProfileID); err != nil {
+			t.Fatal(err)
+		}
+		engine.rebuildTasteCentroids()
+		assertGone()
+	})
 }
 
 func TestNewSessionIDUniqueWithinOneClockTick(t *testing.T) {

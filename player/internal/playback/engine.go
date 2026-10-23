@@ -13,18 +13,19 @@ import (
 )
 
 type Engine struct {
-	Cfg        config.Config
-	Store      *db.Store
-	Idx        *index.Index
-	Taste      *taste.Profile
-	TasteState *taste.State
-	Builder    *queue.Builder
-	Ranker     queue.Model
+	Cfg             config.Config
+	Store           *db.Store
+	Idx             *index.Index
+	Taste           *taste.Profile
+	TasteState      *taste.State
+	Builder         *queue.Builder
+	Ranker          queue.Model
+	TransitionModel queue.TransitionModel
 
 	Enqueue func(func())
 	Flush   func()
 	Observe func(string, time.Duration)
-	Warm    func(*Session)
+	Warm    func([]int64)
 
 	sessionsMu  sync.RWMutex
 	sessions    map[string]*Session
@@ -35,7 +36,9 @@ type Engine struct {
 func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile, builder *queue.Builder) *Engine {
 	engine := &Engine{
 		Cfg: cfg, Store: store, Idx: idx, Taste: tp, TasteState: taste.NewState(tp), Builder: builder,
-		Ranker: queue.LoadRuntimeModel(cfg.RankerPath), sessions: map[string]*Session{},
+		Ranker:          queue.LoadRuntimeModel(cfg.RankerPath),
+		TransitionModel: queue.LoadRuntimeTransition(queue.TransitionPath(cfg.RankerPath)),
+		sessions:        map[string]*Session{},
 	}
 	if rows, err := store.LoadTasteStates(); err == nil {
 		for _, row := range rows {
@@ -79,9 +82,42 @@ func (e *Engine) observe(op string, d time.Duration) {
 }
 
 func (e *Engine) warm(sess *Session) {
-	if e.Warm != nil {
-		e.Warm(sess)
+	if e.Warm == nil {
+		return
 	}
+	ids := warmTrackIDs(sess)
+	if len(ids) == 0 {
+		return
+	}
+	e.Warm(ids)
+}
+
+func warmTrackIDs(sess *Session) []int64 {
+	if sess == nil {
+		return nil
+	}
+	seen := map[int64]bool{}
+	var ids []int64
+	add := func(id int64) {
+		if id == 0 || seen[id] {
+			return
+		}
+		seen[id] = true
+		ids = append(ids, id)
+	}
+	add(sess.Current)
+	for i, item := range sess.Queue {
+		if i >= 6 {
+			break
+		}
+		add(item.TrackID)
+	}
+	if len(sess.DailyIDs) > 0 {
+		for i := sess.DailyPos; i < len(sess.DailyIDs) && len(ids) < 7; i++ {
+			add(sess.DailyIDs[i])
+		}
+	}
+	return ids
 }
 
 func (e *Engine) Maturity() string {
@@ -115,6 +151,15 @@ func (e *Engine) ReloadTransitions() {
 
 func (e *Engine) ReloadRanker() {
 	e.Ranker = queue.LoadRuntimeModel(e.Cfg.RankerPath)
+	e.TransitionModel = queue.LoadRuntimeTransition(queue.TransitionPath(e.Cfg.RankerPath))
+}
+
+func (e *Engine) learnedTransition() *queue.TransitionModel {
+	if !e.TransitionModel.Ready() {
+		return nil
+	}
+	model := e.TransitionModel
+	return &model
 }
 
 func (e *Engine) radioPrefs() db.RadioPrefs {

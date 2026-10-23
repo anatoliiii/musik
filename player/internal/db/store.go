@@ -22,8 +22,8 @@ type Store struct {
 	ReadOnly  bool
 }
 
-const SupportedSchemaVersion = 11
-const SupportedSchemaRevision = "musik_11"
+const SupportedSchemaVersion = 14
+const SupportedSchemaRevision = "musik_14"
 
 func mondayZeroWeekday(day time.Weekday) int { return (int(day) + 6) % 7 }
 
@@ -48,19 +48,12 @@ type TrackRow struct {
 	// EmbeddingStamp is features.computed_at: it changes whenever the
 	// embedding is rewritten, so a reload can keep unchanged vectors.
 	EmbeddingStamp string
-	Shown          int
-	SkipEarly      int
-	Completed      int
 	Year           int
 	BPM            float64
 	LUFS           float64
 	HasBPM         bool
 	HasLUFS        bool
 	KeyName        string
-	Plays          int
-	Finishes       int
-	EarlySkips     int
-	LastPlayedAt   string
 }
 
 // OpenDatabase opens the configured backend and validates that `musik db
@@ -97,7 +90,7 @@ func openPool(databaseURL, sqlitePath string) (Dialect, *sql.DB, error) {
 		}
 		// _txlock=immediate: write transactions take the write lock at BEGIN,
 		// so read-then-write repository methods cannot interleave.
-		dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}).String() +
+		dsn := sqliteFileURL(filepath.ToSlash(absolute)) +
 			"?_pragma=foreign_keys(1)&_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_txlock=immediate"
 		pool, err := sql.Open("sqlite", dsn)
 		return SQLite, pool, err
@@ -108,6 +101,16 @@ func openPool(databaseURL, sqlitePath string) (Dialect, *sql.DB, error) {
 	}
 	pool, err := sql.Open("pgx", databaseURL)
 	return Postgres, pool, err
+}
+
+// sqliteFileURL turns an absolute slash path into a file: URI. A Windows path
+// ("C:/data/musik.db") needs a leading slash, or "C:" becomes the URI authority
+// and SQLite refuses it: file:///C:/data/musik.db, like file:///data/musik.db.
+func sqliteFileURL(slashPath string) string {
+	if !strings.HasPrefix(slashPath, "/") {
+		slashPath = "/" + slashPath
+	}
+	return (&url.URL{Scheme: "file", Path: slashPath}).String()
 }
 
 func newStore(dialect Dialect, pool *sql.DB) (*Store, error) {

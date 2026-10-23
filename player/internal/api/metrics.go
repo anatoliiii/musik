@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/torwin-job/musik/player/internal/db"
 )
@@ -13,6 +14,15 @@ func (s *Server) handleWeeklyMetrics(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, m)
+}
+
+func (s *Server) handleListeningMemory(w http.ResponseWriter, _ *http.Request) {
+	mem, err := s.Store.ListeningMemory(time.Now().UTC())
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
+	writeJSON(w, mem)
 }
 
 func (s *Server) handleRecommendationMetrics(w http.ResponseWriter, _ *http.Request) {

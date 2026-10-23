@@ -24,6 +24,7 @@ type Catalog struct {
 	artistRows   map[string][]int
 	albumRows    map[string][]int
 	artistAlbums map[string][]int
+	ruleIDs      map[string][]int64
 	artists      []GroupCentroid
 	albums       []GroupCentroid
 	// stamps[row] identifies the stored embedding (features.computed_at and
@@ -54,6 +55,7 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 		artistRows:   make(map[string][]int),
 		albumRows:    make(map[string][]int),
 		artistAlbums: make(map[string][]int),
+		ruleIDs:      make(map[string][]int64),
 		stamps:       make([]string, n),
 	}
 	if n == 0 {
@@ -115,6 +117,14 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 		if albumKey != "" {
 			c.albumRows[albumKey] = append(c.albumRows[albumKey], i)
 		}
+		addRuleTarget(c, "track", TrackKey(r.ID), r.ID)
+		addRuleTarget(c, "artist", ArtistKey(r.Artist), r.ID)
+		addRuleTarget(c, "album", AlbumKey(r.Artist, r.Album), r.ID)
+		addRuleTarget(c, "cluster", ClusterKey(r.ClusterID), r.ID)
+		if r.FileMD5 != "" {
+			addRuleTarget(c, "song", r.FileMD5, r.ID)
+		}
+		addRuleTarget(c, "song", SongKey(r.Artist, r.Title), r.ID)
 	}
 	c.artists = buildGroupCentroids(c.matrix, dim, c.artistRows, func(key string) (string, string) {
 		return artistNames[key], ""
@@ -124,6 +134,14 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 		return names[0], names[1]
 	})
 	return c, nil
+}
+
+func addRuleTarget(c *Catalog, targetType, targetKey string, id int64) {
+	if targetKey == "" {
+		return
+	}
+	key := targetType + "\x00" + targetKey
+	c.ruleIDs[key] = append(c.ruleIDs[key], id)
 }
 
 func rowDim(r db.TrackRow) int {
@@ -245,22 +263,54 @@ func (s *CatalogSource) Current() (*Catalog, error) {
 	return s.refreshLocked()
 }
 
+func (c *Catalog) Size() int {
+	if c == nil {
+		return 0
+	}
+	return c.n
+}
+
+func (c *Catalog) Dim() int {
+	if c == nil {
+		return 0
+	}
+	return c.d
+}
+
+// Track returns catalog metadata for id. A catalog has no play counters;
+// those live on the profile index that attaches to it.
+func (c *Catalog) Track(id int64) (Meta, bool) {
+	if c == nil {
+		return Meta{}, false
+	}
+	row, ok := c.idRow[id]
+	if !ok {
+		return Meta{}, false
+	}
+	return c.meta[row], true
+}
+
 // Stats holds one profile's counters for a track.
 type Stats struct {
-	Shown        int
-	SkipEarly    int
-	Completed    int
-	Plays        int
-	Finishes     int
-	EarlySkips   int
-	LastPlayedAt time.Time
+	Shown          int
+	SkipEarly      int
+	Completed      int
+	Plays          int
+	Finishes       int
+	Partial        int
+	EarlySkips     int
+	Likes          int
+	Dislikes       int
+	LastPlayedAt   time.Time
+	LastFinishedAt time.Time
 }
 
 func statsOf(r db.TrackStats) Stats {
 	return Stats{
 		Shown: r.Shown, SkipEarly: r.SkipEarly, Completed: r.Completed,
-		Plays: r.Plays, Finishes: r.Finishes, EarlySkips: r.EarlySkips,
-		LastPlayedAt: parseTime(r.LastPlayedAt),
+		Plays: r.Plays, Finishes: r.Finishes, Partial: r.Partial, EarlySkips: r.EarlySkips,
+		Likes: r.Likes, Dislikes: r.Dislikes,
+		LastPlayedAt: parseTime(r.LastPlayedAt), LastFinishedAt: parseTime(r.LastFinishedAt),
 	}
 }
 

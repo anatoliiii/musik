@@ -23,26 +23,30 @@ type Meta struct {
 	// Artists holds the collaborator segments from the database (row.artists).
 	Artists []string
 	// AlbumArtist is the album-level credit; empty when the tags have none.
-	AlbumArtist  string
-	Album        string
-	Duration     float64
-	FileMD5      string
-	CreatedAt    time.Time
-	ArtworkPath  string
-	ClusterID    int
-	Shown        int
-	SkipEarly    int
-	Completed    int
-	Year         int
-	BPM          float64
-	LUFS         float64
-	HasBPM       bool
-	HasLUFS      bool
-	KeyName      string
-	Plays        int
-	Finishes     int
-	EarlySkips   int
-	LastPlayedAt time.Time
+	AlbumArtist    string
+	Album          string
+	Duration       float64
+	FileMD5        string
+	CreatedAt      time.Time
+	ArtworkPath    string
+	ClusterID      int
+	Shown          int
+	SkipEarly      int
+	Completed      int
+	Year           int
+	BPM            float64
+	LUFS           float64
+	HasBPM         bool
+	HasLUFS        bool
+	KeyName        string
+	Plays          int
+	Finishes       int
+	Partial        int
+	EarlySkips     int
+	Likes          int
+	Dislikes       int
+	LastPlayedAt   time.Time
+	LastFinishedAt time.Time
 }
 
 type Index struct {
@@ -55,12 +59,14 @@ type Index struct {
 	N      int
 	D      int
 	idRow  map[int64]int
-	// Clone lookups rebuilt on Load — excludeTrack uses these, not a full scan.
+	// Clone and rule-target lookups are built with the catalog. exclude uses
+	// them instead of scanning every track.
 	md5ToIDs     map[string][]int64
 	songKeyToIDs map[string][]int64
 	artistRows   map[string][]int
 	albumRows    map[string][]int
 	artistAlbums map[string][]int
+	ruleIDs      map[string][]int64
 	artists      []GroupCentroid
 	albums       []GroupCentroid
 	cfg          config.Config
@@ -102,22 +108,15 @@ func SongKey(artist, title string) string {
 	return a + "|" + t
 }
 
-// Load builds a private catalog from rows that carry embeddings and the
-// counters of one profile. Servers share a catalog through Attach instead.
+// Load builds a private catalog from rows that carry embeddings.
+// Profile counters stay zero; Attach sets them. Servers share a catalog
+// through Attach instead.
 func (idx *Index) Load(rows []db.TrackRow) error {
 	cat, err := BuildCatalog(rows)
 	if err != nil {
 		return err
 	}
-	stats := make(map[int64]db.TrackStats, len(rows))
-	for _, r := range rows {
-		stats[r.ID] = db.TrackStats{
-			Shown: r.Shown, SkipEarly: r.SkipEarly, Completed: r.Completed,
-			Plays: r.Plays, Finishes: r.Finishes, EarlySkips: r.EarlySkips,
-			LastPlayedAt: r.LastPlayedAt,
-		}
-	}
-	idx.Attach(cat, stats)
+	idx.Attach(cat, nil)
 	return nil
 }
 
@@ -140,6 +139,7 @@ func (idx *Index) Attach(cat *Catalog, stats map[int64]db.TrackStats) {
 	idx.artistRows = cat.artistRows
 	idx.albumRows = cat.albumRows
 	idx.artistAlbums = cat.artistAlbums
+	idx.ruleIDs = cat.ruleIDs
 	idx.artists = cat.artists
 	idx.albums = cat.albums
 	idx.stats = perRow
@@ -179,6 +179,18 @@ func (idx *Index) CloneIDs(trackID int64) []int64 {
 		add(idx.songKeyToIDs[key])
 	}
 	return out
+}
+
+// IDsForTarget returns catalog track ids that carry this radio-rule key.
+// The map is built with the catalog, so a block does not walk every track.
+func (idx *Index) IDsForTarget(targetType, targetKey string) []int64 {
+	if idx == nil || targetType == "" || targetKey == "" {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	ids := idx.ruleIDs[targetType+"\x00"+targetKey]
+	return append([]int64(nil), ids...)
 }
 
 func (idx *Index) Size() int {
@@ -510,6 +522,83 @@ func (idx *Index) Dot(row int, vec []float32) float32 {
 	return s
 }
 
+// ForgottenRows returns tracks this profile finished often and last finished
+// strictly before olderThan, most-finished and then oldest first.
+// A later play that was not a finish does not reset the clock.
+func (idx *Index) ForgottenRows(minFinishes int, olderThan time.Time) []int {
+	if idx == nil || minFinishes < 1 {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	type hit struct {
+		row, finishes int
+		last          time.Time
+	}
+	hits := make([]hit, 0)
+	for i := 0; i < idx.N; i++ {
+		st := idx.statsLocked(i)
+		if st.Finishes < minFinishes || st.LastFinishedAt.IsZero() || !st.LastFinishedAt.Before(olderThan) {
+			continue
+		}
+		hits = append(hits, hit{row: i, finishes: st.Finishes, last: st.LastFinishedAt})
+	}
+	sort.Slice(hits, func(a, b int) bool {
+		if hits[a].finishes != hits[b].finishes {
+			return hits[a].finishes > hits[b].finishes
+		}
+		if !hits[a].last.Equal(hits[b].last) {
+			return hits[a].last.Before(hits[b].last)
+		}
+		return hits[a].row < hits[b].row
+	})
+	rows := make([]int, len(hits))
+	for i, h := range hits {
+		rows[i] = h.row
+	}
+	return rows
+}
+
+// LikedRows returns up to limit tracks with at least one like, skipping ids
+// in skip. Highest likes come first; equal likes break toward the smaller id.
+func (idx *Index) LikedRows(limit int, skip map[int64]bool) []int {
+	if idx == nil || limit < 1 {
+		return nil
+	}
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	type hit struct {
+		row, likes int
+		id         int64
+	}
+	hits := make([]hit, 0)
+	for i := 0; i < idx.N; i++ {
+		id := idx.Meta[i].ID
+		if skip[id] {
+			continue
+		}
+		likes := idx.statsLocked(i).Likes
+		if likes <= 0 {
+			continue
+		}
+		hits = append(hits, hit{row: i, likes: likes, id: id})
+	}
+	sort.Slice(hits, func(a, b int) bool {
+		if hits[a].likes != hits[b].likes {
+			return hits[a].likes > hits[b].likes
+		}
+		return hits[a].id < hits[b].id
+	})
+	if len(hits) > limit {
+		hits = hits[:limit]
+	}
+	rows := make([]int, len(hits))
+	for i, h := range hits {
+		rows[i] = h.row
+	}
+	return rows
+}
+
 func (idx *Index) MetaAt(row int) Meta {
 	idx.mu.RLock()
 	defer idx.mu.RUnlock()
@@ -519,7 +608,9 @@ func (idx *Index) MetaAt(row int) Meta {
 	m := idx.Meta[row]
 	st := idx.statsLocked(row)
 	m.Shown, m.SkipEarly, m.Completed = st.Shown, st.SkipEarly, st.Completed
-	m.Plays, m.Finishes, m.EarlySkips, m.LastPlayedAt = st.Plays, st.Finishes, st.EarlySkips, st.LastPlayedAt
+	m.Plays, m.Finishes, m.Partial, m.EarlySkips = st.Plays, st.Finishes, st.Partial, st.EarlySkips
+	m.Likes, m.Dislikes = st.Likes, st.Dislikes
+	m.LastPlayedAt, m.LastFinishedAt = st.LastPlayedAt, st.LastFinishedAt
 	return m
 }
 

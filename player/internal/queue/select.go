@@ -12,23 +12,11 @@ type Quota struct {
 	Max int
 }
 
-var DefaultQuotas = map[string]Quota{
-	SourceExploit:         {Min: 2, Max: 4},
-	SourceTransition:      {Min: 0, Max: 2},
-	SourceExploreAdjacent: {Min: 1, Max: 2},
-	SourceResurface:       {Min: 0, Max: 1},
-	SourceNewInLibrary:    {Min: 0, Max: 1},
-	SourceWildcard:        {Min: 0, Max: 1},
-}
-
-var DiscoverQuotas = map[string]Quota{
-	SourceExploit:         {Min: 1, Max: 2},
-	SourceTransition:      {Min: 0, Max: 1},
-	SourceExploreAdjacent: {Min: 1, Max: 2},
-	SourceResurface:       {Min: 0, Max: 1},
-	SourceNewInLibrary:    {Min: 1, Max: 2},
-	SourceWildcard:        {Min: 1, Max: 2},
-}
+// DefaultQuotas and DiscoverQuotas are filled from ranker_spec.json.
+var (
+	DefaultQuotas  map[string]Quota
+	DiscoverQuotas map[string]Quota
+)
 
 type ScoredCandidate struct {
 	Candidate
@@ -94,7 +82,7 @@ func Select(cands []ScoredCandidate, opts SelectOpts) []ScoredCandidate {
 		opts.ArtistLimit = 2
 	}
 	if opts.MMRLambda <= 0 {
-		opts.MMRLambda = 0.7
+		opts.MMRLambda = ActiveSpec.MMRLambda
 	}
 	quotas := ScaleQuotas(opts.Size, opts.Quotas)
 	used := map[int]bool{}
@@ -144,27 +132,34 @@ func Select(cands []ScoredCandidate, opts SelectOpts) []ScoredCandidate {
 		}
 	}
 
-	bySource := map[string][]ScoredCandidate{}
+	byLabel := map[string][]ScoredCandidate{}
 	for _, c := range cands {
-		bySource[c.Primary] = append(bySource[c.Primary], c)
+		for _, src := range labelsOf(c) {
+			byLabel[src] = append(byLabel[src], c)
+		}
 	}
-	for src := range bySource {
-		sortByScore(bySource[src])
+	for src := range byLabel {
+		sortByScore(byLabel[src])
 	}
 
 	selected := make([]ScoredCandidate, 0, opts.Size)
 	counts := map[string]int{}
-	for _, src := range sourcePriority {
+	// Scarcer arms claim their minimum first. A forgotten hit that is also
+	// close to taste can close resurface instead of disappearing into exploit.
+	for i := len(sourcePriority) - 1; i >= 0; i-- {
+		src := sourcePriority[i]
 		want := quotas[src].Min
-		for _, c := range bySource[src] {
+		for _, c := range byLabel[src] {
 			if len(selected) >= opts.Size || counts[src] >= want {
 				break
 			}
 			if !canTake(c) {
 				continue
 			}
-			selected = append(selected, c)
-			mark(c)
+			taken := c
+			taken.Primary = src
+			selected = append(selected, taken)
+			mark(taken)
 			counts[src]++
 		}
 	}
@@ -175,20 +170,27 @@ func Select(cands []ScoredCandidate, opts SelectOpts) []ScoredCandidate {
 		if !ok {
 			break
 		}
-		if counts[next.Primary] >= quotas[next.Primary].Max && hasOpenQuota(remaining, counts, quotas, used) {
-			// skip this source if another source still has room
-			used[next.Row] = true
-			remaining = remainingCandidates(cands, used)
-			continue
-		}
 		if !canTake(next) {
 			used[next.Row] = true
 			remaining = remainingCandidates(cands, used)
 			continue
 		}
+		slot, open := quotaSlot(next, counts, quotas)
+		if !open && quotaRoomLeft(remaining, counts, quotas, used) {
+			used[next.Row] = true
+			remaining = remainingCandidates(cands, used)
+			continue
+		}
+		if slot == "" {
+			slot = next.Primary
+			if slot == "" {
+				slot = SourceWildcard
+			}
+		}
+		next.Primary = slot
 		selected = append(selected, next)
 		mark(next)
-		counts[next.Primary]++
+		counts[slot]++
 		remaining = remainingCandidates(cands, used)
 	}
 
@@ -209,7 +211,7 @@ func Select(cands []ScoredCandidate, opts SelectOpts) []ScoredCandidate {
 
 func MMRSelect(cands []ScoredCandidate, idx *index.Index, size int, lambda float64, forbidden map[int]bool) []ScoredCandidate {
 	if lambda <= 0 {
-		lambda = 0.7
+		lambda = ActiveSpec.MMRLambda
 	}
 	selected := make([]ScoredCandidate, 0, size)
 	remaining := make([]ScoredCandidate, 0, len(cands))
@@ -238,7 +240,7 @@ func MMRSelect(cands []ScoredCandidate, idx *index.Index, size int, lambda float
 			if idx != nil {
 				artist = strings.ToLower(idx.MetaAt(c.Row).Artist)
 			}
-			score := lambda*rel - (1-lambda)*div - 0.15*float64(artistCount[artist])
+			score := lambda*rel - (1-lambda)*div - ActiveSpec.ArtistPenalty*float64(artistCount[artist])
 			if score > bestScore {
 				bestScore = score
 				bestI = i
@@ -275,12 +277,53 @@ func remainingCandidates(cands []ScoredCandidate, used map[int]bool) []ScoredCan
 	return out
 }
 
-func hasOpenQuota(remaining []ScoredCandidate, counts map[string]int, quotas map[string]Quota, used map[int]bool) bool {
+func labelsOf(c ScoredCandidate) []string {
+	if len(c.Sources) > 0 {
+		return c.Sources
+	}
+	if c.Primary != "" {
+		return []string{c.Primary}
+	}
+	return []string{SourceWildcard}
+}
+
+func hasLabel(c ScoredCandidate, src string) bool {
+	for _, label := range labelsOf(c) {
+		if label == src {
+			return true
+		}
+	}
+	return false
+}
+
+// quotaSlot is the arm this track should occupy. Unmet minimums may use any
+// label, so a forgotten hit can close resurface before exploit takes it.
+// Once minimums are met, only an explore label can overflow a full primary:
+// transition stays on its own primary and does not consume the exploit pool.
+func quotaSlot(c ScoredCandidate, counts map[string]int, quotas map[string]Quota) (string, bool) {
+	for i := len(sourcePriority) - 1; i >= 0; i-- {
+		src := sourcePriority[i]
+		if hasLabel(c, src) && counts[src] < quotas[src].Min {
+			return src, true
+		}
+	}
+	if c.Primary != "" && hasLabel(c, c.Primary) && counts[c.Primary] < quotas[c.Primary].Max {
+		return c.Primary, true
+	}
+	for _, src := range ExploreSources() {
+		if src != c.Primary && hasLabel(c, src) && counts[src] < quotas[src].Max {
+			return src, true
+		}
+	}
+	return "", false
+}
+
+func quotaRoomLeft(remaining []ScoredCandidate, counts map[string]int, quotas map[string]Quota, used map[int]bool) bool {
 	for _, c := range remaining {
 		if used[c.Row] {
 			continue
 		}
-		if counts[c.Primary] < quotas[c.Primary].Max {
+		if _, open := quotaSlot(c, counts, quotas); open {
 			return true
 		}
 	}

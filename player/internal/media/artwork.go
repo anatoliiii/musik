@@ -32,12 +32,12 @@ func (s *Service) ServeArtwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	row, ok := s.idx.RowOf(id)
+	file, ok := s.files(id)
 	if !ok {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
-	path := s.idx.MetaAt(row).ArtworkPath
+	path := file.Artwork
 	if path == "" {
 		http.Error(w, "no artwork", http.StatusNotFound)
 		return

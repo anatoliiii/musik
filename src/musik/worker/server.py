@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from musik.config import get_settings
 from musik.db import ensure_db
 from musik.db.migrations import LATEST_SCHEMA_VERSION
-from musik.jobs.queue import enqueue_job, enqueue_job_once, get_job, list_recent
+from musik.jobs.queue import enqueue_job, enqueue_job_once, get_job, list_recent, recover_stale_running
 from musik.jobs.runner import run_pending
 
 log = logging.getLogger(__name__)
@@ -157,6 +157,7 @@ class WorkerHandler(BaseHTTPRequestHandler):
 def _poll_loop(poll_sec: float) -> None:
     while not _poll_stop.is_set():
         try:
+            recover_stale_running()
             enqueue_nightly_mixes_if_due()
             run_pending(max_jobs=1)
         except Exception:
@@ -198,6 +199,7 @@ def parse_addr(addr: str) -> tuple[str, int]:
 def serve(*, addr: str | None = None, poll: bool = True) -> None:
     """Start the worker HTTP server (blocking)."""
     ensure_db()
+    recover_stale_running()
     settings = get_settings()
     host, port = parse_addr(addr or settings.worker_addr)
     if poll:

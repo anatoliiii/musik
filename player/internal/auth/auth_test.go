@@ -64,7 +64,7 @@ func TestMiddlewareBlocksAPIWithoutAuth(t *testing.T) {
 		w.WriteHeader(200)
 		_, _ = w.Write([]byte("ok"))
 	})
-	h := gate.Middleware(next)
+	h := gate.Middleware(next, func(r *http.Request) bool { return r.URL.Path == "/api/health" })
 
 	req := httptest.NewRequest("GET", "/api/library", nil)
 	rec := httptest.NewRecorder()

@@ -139,7 +139,7 @@ func TestRepositorySmoke(t *testing.T) {
 		pl, err := store.CreateUserPlaylist(UserPlaylist{Name: "Smoke", Type: "manual"})
 		must(err)
 		must(store.UpdateUserPlaylist(UserPlaylist{ID: pl.ID, Name: "Smoke 2", CoverTrackID: 1}))
-		must(store.ReplacePlaylistItems(pl.ID, []UserPlaylistItem{
+		must(store.ReplacePlaylistItems(ctx, pl.ID, []UserPlaylistItem{
 			{TrackID: 1},
 			{UnresolvedArtist: "ARTIST", UnresolvedTitle: "title"},
 			{UnresolvedPath: "/elsewhere/T-3.FLAC"},
@@ -199,18 +199,20 @@ func TestCatalogRowsEmbeddingsAndProfileStats(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := "2026-02-01T00:00:00Z"
+	finished := "2025-11-01T00:00:00Z"
 	if _, err := store.DB.Exec(`INSERT INTO rec_stats(profile_id, track_id, shown, skipped_early, completed, updated_at) VALUES (?, 1, 4, 1, 2, ?)`, store.ProfileID, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB.Exec(`INSERT INTO track_stats(profile_id, track_id, plays, finishes, early_skips, last_played_at, updated_at) VALUES (?, 1, 5, 3, 1, ?, ?), (?, 2, 9, 0, 0, ?, ?)`,
-		store.ProfileID, now, now, other.ID, now, now); err != nil {
+	if _, err := store.DB.Exec(`INSERT INTO track_stats(profile_id, track_id, plays, finishes, partial, early_skips, likes, dislikes, last_played_at, last_finished_at, updated_at) VALUES (?, 1, 5, 3, 2, 1, 4, 1, ?, ?, ?), (?, 2, 9, 0, 0, 0, 0, 0, ?, '', ?)`,
+		store.ProfileID, now, finished, now, other.ID, now, now); err != nil {
 		t.Fatal(err)
 	}
 	stats, err := store.LoadTrackStats()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := stats[1]; got.Shown != 4 || got.SkipEarly != 1 || got.Completed != 2 || got.Plays != 5 || got.Finishes != 3 || got.LastPlayedAt != now {
+	got := stats[1]
+	if got.Shown != 4 || got.SkipEarly != 1 || got.Completed != 2 || got.Plays != 5 || got.Finishes != 3 || got.Partial != 2 || got.Likes != 4 || got.Dislikes != 1 || got.LastPlayedAt != now || got.LastFinishedAt != finished {
 		t.Fatalf("stats[1]=%+v", got)
 	}
 	if _, leaked := stats[2]; leaked {

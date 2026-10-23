@@ -44,6 +44,61 @@ func (d Dialect) DateUTC(column string) string {
 	return "date(" + column + ")"
 }
 
+// MonthDayUTC is the MM-DD slice of an ISO-8601 timestamp stored as text.
+// Listening history is written in UTC, so the slice matches the calendar day
+// without parsing the timezone suffix.
+func (d Dialect) MonthDayUTC(column string) string {
+	if d == Postgres {
+		return "substring(" + column + " from 6 for 5)"
+	}
+	return "substr(" + column + ", 6, 5)"
+}
+
+// YearUTC is the four-digit year of an ISO-8601 timestamp stored as text.
+func (d Dialect) YearUTC(column string) string {
+	if d == Postgres {
+		return "substring(" + column + " from 1 for 4)"
+	}
+	return "substr(" + column + ", 1, 4)"
+}
+
+// Real coerces a bound JSON number to floating point. Integer and real
+// columns then compare the same way on both engines.
+func (d Dialect) Real() string {
+	if d == Postgres {
+		return "CAST(? AS DOUBLE PRECISION)"
+	}
+	return "CAST(? AS REAL)"
+}
+
+// NotAfter matches an RFC3339Nano text timestamp at or before a bound value.
+// Both engines store these timestamps as text.
+func (d Dialect) NotAfter(column string) string {
+	return column + " IS NOT NULL AND " + column + " <= ?"
+}
+
+// NotBefore matches an RFC3339Nano text timestamp at or after a bound value.
+func (d Dialect) NotBefore(column string) string {
+	return column + " IS NOT NULL AND " + column + " >= ?"
+}
+
+// NullsFirst sorts a text timestamp with missing values before the rest.
+func (d Dialect) NullsFirst(column string) string {
+	return column + " IS NULL DESC, " + column
+}
+
+// GenreNames lists a track's genres in one scalar subquery.
+func (d Dialect) GenreNames(trackIDExpr string) string {
+	if d == Postgres {
+		return `(SELECT string_agg(g.name, ' · ' ORDER BY g.name)
+FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
+WHERE tg.track_id = ` + trackIDExpr + `)`
+	}
+	return `(SELECT group_concat(name, ' · ') FROM (
+SELECT g.name AS name FROM track_genres tg JOIN genres g ON g.id = tg.genre_id
+WHERE tg.track_id = ` + trackIDExpr + ` ORDER BY g.name))`
+}
+
 // DB is the shared connection pool. Queries use '?' placeholders, which are
 // rebound for the selected driver; the SQL text is otherwise sent unchanged.
 type DB struct {
@@ -83,6 +138,29 @@ func (d *DB) Get(ctx context.Context, dest any, query string, args ...any) error
 // Select scans all rows into dest (a slice of structs or scalars).
 func (d *DB) Select(ctx context.Context, dest any, query string, args ...any) error {
 	return d.x.SelectContext(ctx, dest, d.x.Rebind(query), args...)
+}
+
+// sqlQuery is the subset of *DB and *Tx used by a write that must run either
+// on its own or inside a transaction.
+type sqlQuery interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+// queryCtx runs sqlQuery helpers on ctx. Tx.Exec and Tx.QueryRow always pass
+// Background, so InTx(ctx) alone leaves the statements inside the transaction
+// detached from the request.
+type queryCtx struct {
+	ctx context.Context
+	tx  *Tx
+}
+
+func (q queryCtx) Exec(query string, args ...any) (sql.Result, error) {
+	return q.tx.ExecContext(q.ctx, query, args...)
+}
+
+func (q queryCtx) QueryRow(query string, args ...any) *sql.Row {
+	return q.tx.QueryRowContext(q.ctx, query, args...)
 }
 
 func (d *DB) Begin() (*Tx, error) { return d.BeginTx(context.Background(), nil) }

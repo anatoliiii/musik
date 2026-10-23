@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 )
 
@@ -71,10 +72,167 @@ type Metrics struct {
 	ExploreCompRate float64 `json:"explore_complete_rate"`
 	ExploitCompRate float64 `json:"exploit_complete_rate"`
 	UniqueArtists7d int     `json:"unique_artists_7d"`
+
+	// Listening is the human week: time, finish share, and what was played.
+	// Recommendation breakdowns stay on this struct for the service endpoint.
+	Listening WeeklyListening `json:"listening"`
+}
+
+// WeeklyListening is counted from listening_history, not from recommendation impressions.
+type WeeklyListening struct {
+	ListenedSec int           `json:"listened_sec"`
+	Plays       int           `json:"plays"`
+	Finishes    int           `json:"finishes"`
+	FinishRate  float64       `json:"finish_rate"`
+	TopTracks   []ListenHit   `json:"top_tracks"`
+	TopArtists  []ArtistCount `json:"top_artists"`
+}
+
+// ListenHit is one track in a listening top.
+type ListenHit struct {
+	TrackID int64  `json:"track_id"`
+	Title   string `json:"title"`
+	Artist  string `json:"artist"`
+	Plays   int    `json:"plays"`
+}
+
+// OnThisDay is what this profile started on the same calendar day in earlier years.
+type OnThisDay struct {
+	Month  int         `json:"month"`
+	Day    int         `json:"day"`
+	Tracks []ListenHit `json:"tracks"`
+}
+
+// YearInMusic is a short summary of the current calendar year from listening_history.
+type YearInMusic struct {
+	Year int `json:"year"`
+	WeeklyListening
+}
+
+// ListeningMemory is the human history next to the weekly screen:
+// this calendar day in past years, and the year so far.
+type ListeningMemory struct {
+	OnThisDay OnThisDay   `json:"on_this_day"`
+	Year      YearInMusic `json:"year"`
 }
 
 func (s *Store) WeeklyMetrics() (Metrics, error) {
-	return s.OutcomeMetrics(7)
+	metrics, err := s.OutcomeMetrics(7)
+	if err != nil {
+		return metrics, err
+	}
+	metrics.Listening, err = s.weeklyListening(7)
+	return metrics, err
+}
+
+// ListeningMemory reads on-this-day and the current year from listening_history.
+// now selects the calendar day and year; pass UTC to match stored timestamps.
+func (s *Store) ListeningMemory(now time.Time) (ListeningMemory, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	now = now.UTC()
+	var mem ListeningMemory
+	mem.OnThisDay.Month = int(now.Month())
+	mem.OnThisDay.Day = now.Day()
+	mem.OnThisDay.Tracks = []ListenHit{}
+	mem.Year.Year = now.Year()
+	var err error
+	mem.OnThisDay.Tracks, err = s.onThisDay(now)
+	if err != nil {
+		return mem, err
+	}
+	if mem.OnThisDay.Tracks == nil {
+		mem.OnThisDay.Tracks = []ListenHit{}
+	}
+	yearStart := time.Date(now.Year(), 1, 1, 0, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	mem.Year.WeeklyListening, err = s.listeningSince(yearStart, 5)
+	return mem, err
+}
+
+func (s *Store) onThisDay(now time.Time) ([]ListenHit, error) {
+	monthDay := fmt.Sprintf("%02d-%02d", int(now.Month()), now.Day())
+	hits, err := QueryAll(s.DB, func(rows *sql.Rows, hit *ListenHit) error {
+		return rows.Scan(&hit.TrackID, &hit.Title, &hit.Artist, &hit.Plays)
+	}, `
+SELECT h.track_id, COALESCE(t.title,''), COALESCE(t.artist,''), COUNT(*)
+FROM listening_history h
+JOIN tracks t ON t.id = h.track_id
+WHERE h.profile_id = ? AND h.action = 'track_start'
+  AND `+s.Dialect.MonthDayUTC("h.ts")+` = ?
+  AND `+s.Dialect.YearUTC("h.ts")+` < ?
+GROUP BY h.track_id, t.title, t.artist
+ORDER BY COUNT(*) DESC, h.track_id
+LIMIT 12`, s.ProfileID, monthDay, strconv.Itoa(now.Year()))
+	if hits == nil {
+		hits = []ListenHit{}
+	}
+	return hits, err
+}
+
+func (s *Store) weeklyListening(days int) (WeeklyListening, error) {
+	if days < 1 {
+		days = 7
+	}
+	cutoff := time.Now().UTC().AddDate(0, 0, -days).Format("2006-01-02T15:04:05")
+	return s.listeningSince(cutoff, 8)
+}
+
+func (s *Store) listeningSince(cutoff string, limit int) (WeeklyListening, error) {
+	var out WeeklyListening
+	out.TopTracks = []ListenHit{}
+	out.TopArtists = []ArtistCount{}
+	if limit < 1 {
+		limit = 8
+	}
+	var listened float64
+	err := s.DB.QueryRow(`
+SELECT COALESCE(SUM(CASE WHEN action IN ('track_end','skip') THEN listened_sec END), 0),
+       COUNT(CASE WHEN action = 'track_start' THEN 1 END),
+       COUNT(CASE WHEN action = 'track_end' AND (
+         reason = 'completed' OR (duration_sec > 0 AND listened_sec >= duration_sec * 0.8)
+       ) THEN 1 END)
+FROM listening_history
+WHERE profile_id = ? AND ts >= ?`, s.ProfileID, cutoff).Scan(&listened, &out.Plays, &out.Finishes)
+	if err != nil {
+		return out, err
+	}
+	if listened > 0 {
+		out.ListenedSec = int(listened + 0.5)
+	}
+	if out.Plays > 0 {
+		out.FinishRate = float64(out.Finishes) / float64(out.Plays)
+	}
+	out.TopTracks, err = QueryAll(s.DB, func(rows *sql.Rows, hit *ListenHit) error {
+		return rows.Scan(&hit.TrackID, &hit.Title, &hit.Artist, &hit.Plays)
+	}, `
+SELECT h.track_id, COALESCE(t.title,''), COALESCE(t.artist,''), COUNT(*)
+FROM listening_history h
+JOIN tracks t ON t.id = h.track_id
+WHERE h.profile_id = ? AND h.action = 'track_start' AND h.ts >= ?
+GROUP BY h.track_id, t.title, t.artist
+ORDER BY COUNT(*) DESC, h.track_id
+LIMIT ?`, s.ProfileID, cutoff, limit)
+	if err != nil {
+		return out, err
+	}
+	if out.TopTracks == nil {
+		out.TopTracks = []ListenHit{}
+	}
+	out.TopArtists, err = QueryAll(s.DB, func(rows *sql.Rows, artist *ArtistCount) error {
+		return rows.Scan(&artist.Artist, &artist.Count)
+	}, `
+SELECT COALESCE(NULLIF(t.artist,''), '—'), COUNT(*)
+FROM listening_history h
+JOIN tracks t ON t.id = h.track_id
+WHERE h.profile_id = ? AND h.action = 'track_start' AND h.ts >= ?
+GROUP BY 1
+ORDER BY COUNT(*) DESC, 1
+LIMIT ?`, s.ProfileID, cutoff, limit)
+	if out.TopArtists == nil {
+		out.TopArtists = []ArtistCount{}
+	}
+	return out, err
 }
 
 func (s *Store) OutcomeMetrics(days int) (Metrics, error) {

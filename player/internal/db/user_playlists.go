@@ -1,12 +1,18 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// ErrPlaylistNotFound is returned when a write addresses a playlist outside
+// this profile, or one that does not exist.
+var ErrPlaylistNotFound = errors.New("playlist not found")
 
 type UserPlaylist struct {
 	ID              int64              `json:"id"`
@@ -63,7 +69,7 @@ func validItemSource(v string) bool {
 	}
 }
 
-func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
+func prepareUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 	pl.Name = strings.TrimSpace(pl.Name)
 	if pl.Name == "" {
 		return pl, fmt.Errorf("name required")
@@ -85,6 +91,14 @@ func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	pl.CreatedAt, pl.UpdatedAt = now, now
+	return pl, nil
+}
+
+type ctxRowQuery interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+func insertUserPlaylist(ctx context.Context, q ctxRowQuery, profileID string, pl *UserPlaylist) error {
 	dup := 0
 	if pl.AllowDuplicates {
 		dup = 1
@@ -93,15 +107,39 @@ func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
 	if pl.RuleJSON != "" {
 		ruleVer = pl.RuleSchema
 	}
-	err := s.DB.QueryRow(`
+	return q.QueryRowContext(ctx, `
 INSERT INTO playlists(
   profile_id, kind, name, created_at, type, description, updated_at,
   cover_track_id, cover_artwork, sort_mode, rule_schema_version, rule_json, allow_duplicates
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 RETURNING id`,
-		s.ProfileID, pl.Kind, pl.Name, pl.CreatedAt, pl.Type, nullStr(pl.Description), pl.UpdatedAt,
+		profileID, pl.Kind, pl.Name, pl.CreatedAt, pl.Type, nullStr(pl.Description), pl.UpdatedAt,
 		nullInt64(pl.CoverTrackID), nullStr(pl.CoverArtwork), pl.SortMode, ruleVer, nullStr(pl.RuleJSON), dup,
 	).Scan(&pl.ID)
+}
+
+func (s *Store) CreateUserPlaylist(pl UserPlaylist) (UserPlaylist, error) {
+	pl, err := prepareUserPlaylist(pl)
+	if err != nil {
+		return pl, err
+	}
+	err = insertUserPlaylist(context.Background(), s.DB, s.ProfileID, &pl)
+	return pl, err
+}
+
+// CreateUserPlaylistWithItems inserts the playlist and its tracks in one
+// transaction. A failure leaves neither the row nor the items.
+func (s *Store) CreateUserPlaylistWithItems(ctx context.Context, pl UserPlaylist, items []UserPlaylistItem) (UserPlaylist, error) {
+	pl, err := prepareUserPlaylist(pl)
+	if err != nil {
+		return pl, err
+	}
+	err = s.DB.InTx(ctx, func(tx *Tx) error {
+		if err := insertUserPlaylist(ctx, tx, s.ProfileID, &pl); err != nil {
+			return err
+		}
+		return replacePlaylistItemsTx(ctx, tx, s.ProfileID, pl.ID, items)
+	})
 	return pl, err
 }
 
@@ -141,6 +179,53 @@ WHERE profile_id = ? AND id = ?`,
 	return err
 }
 
+// UpdateUserPlaylistWithItems saves playlist fields and replaces its tracks
+// in one transaction.
+func (s *Store) UpdateUserPlaylistWithItems(ctx context.Context, pl UserPlaylist, items []UserPlaylistItem) error {
+	if pl.ID == 0 {
+		return fmt.Errorf("playlist id required")
+	}
+	return s.DB.InTx(ctx, func(tx *Tx) error {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		dup := 0
+		if pl.AllowDuplicates {
+			dup = 1
+		}
+		var ruleJSON sql.NullString
+		var ruleVer sql.NullInt64
+		if pl.RuleJSON != "" {
+			ruleJSON = sql.NullString{String: pl.RuleJSON, Valid: true}
+			if pl.RuleSchema == 0 {
+				pl.RuleSchema = 1
+			}
+			ruleVer = sql.NullInt64{Int64: int64(pl.RuleSchema), Valid: true}
+		}
+		res, err := tx.ExecContext(ctx, `
+UPDATE playlists SET
+  name = COALESCE(NULLIF(?, ''), name),
+  description = COALESCE(?, description),
+  cover_track_id = CASE WHEN ? > 0 THEN ? ELSE cover_track_id END,
+  cover_artwork = COALESCE(NULLIF(?, ''), cover_artwork),
+  sort_mode = COALESCE(NULLIF(?, ''), sort_mode),
+  allow_duplicates = ?,
+  rule_schema_version = CASE WHEN ? THEN ? ELSE rule_schema_version END,
+  rule_json = CASE WHEN ? THEN ? ELSE rule_json END,
+  updated_at = ?
+WHERE profile_id = ? AND id = ?`,
+			pl.Name, nullStr(pl.Description), pl.CoverTrackID, pl.CoverTrackID,
+			pl.CoverArtwork, pl.SortMode, dup,
+			ruleJSON.Valid, ruleVer, ruleJSON.Valid, ruleJSON, now, s.ProfileID, pl.ID)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		if n == 0 {
+			return ErrPlaylistNotFound
+		}
+		return replacePlaylistItemsTx(ctx, tx, s.ProfileID, pl.ID, items)
+	})
+}
+
 func (s *Store) ArchiveUserPlaylist(id int64) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	_, err := s.DB.Exec(`UPDATE playlists SET archived_at = ?, updated_at = ? WHERE profile_id = ? AND id = ?`, now, now, s.ProfileID, id)
@@ -175,26 +260,34 @@ FROM playlists WHERE profile_id = ? AND id = ?`, s.ProfileID, id))
 
 func (s *Store) ListUserPlaylists(types []string, includeArchived bool) ([]UserPlaylist, error) {
 	q := `
-SELECT id, kind, COALESCE(type,'generated'), name, COALESCE(description,''), created_at,
-       COALESCE(updated_at,''), COALESCE(cover_track_id,0), COALESCE(cover_artwork,''),
-       COALESCE(sort_mode,'manual'), COALESCE(archived_at,''),
-       COALESCE(rule_schema_version,0), COALESCE(rule_json,''), COALESCE(allow_duplicates,0)
-FROM playlists WHERE profile_id = ?`
-	args := []any{s.ProfileID}
+SELECT p.id, p.kind, COALESCE(p.type,'generated'), p.name, COALESCE(p.description,''), p.created_at,
+       COALESCE(p.updated_at,''), COALESCE(p.cover_track_id,0), COALESCE(p.cover_artwork,''),
+       COALESCE(p.sort_mode,'manual'), COALESCE(p.archived_at,''),
+       COALESCE(p.rule_schema_version,0), COALESCE(p.rule_json,''), COALESCE(p.allow_duplicates,0),
+       COALESCE(c.n, 0)
+FROM playlists p
+LEFT JOIN (
+  SELECT playlist_id, COUNT(*) AS n
+  FROM playlist_tracks
+  WHERE profile_id = ?
+  GROUP BY playlist_id
+) c ON c.playlist_id = p.id
+WHERE p.profile_id = ?`
+	args := []any{s.ProfileID, s.ProfileID}
 	if len(types) > 0 {
 		placeholders := make([]string, len(types))
 		for i, t := range types {
 			placeholders[i] = "?"
 			args = append(args, t)
 		}
-		q += ` AND type IN (` + strings.Join(placeholders, ",") + `)`
+		q += ` AND p.type IN (` + strings.Join(placeholders, ",") + `)`
 	} else {
-		q += ` AND (type IN ('manual','smart') OR kind = 'user')`
+		q += ` AND (p.type IN ('manual','smart') OR p.kind = 'user')`
 	}
 	if !includeArchived {
-		q += ` AND archived_at IS NULL`
+		q += ` AND p.archived_at IS NULL`
 	}
-	q += ` ORDER BY updated_at DESC, id DESC`
+	q += ` ORDER BY p.updated_at DESC, p.id DESC`
 	rows, err := s.DB.Query(q, args...)
 	if err != nil {
 		return nil, err
@@ -202,7 +295,7 @@ FROM playlists WHERE profile_id = ?`
 	defer rows.Close()
 	var out []UserPlaylist
 	for rows.Next() {
-		pl, err := s.scanUserPlaylist(rows)
+		pl, err := scanListedPlaylist(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -210,18 +303,40 @@ FROM playlists WHERE profile_id = ?`
 			out = append(out, *pl)
 		}
 	}
-	if err := rows.Err(); err != nil {
+	return out, rows.Err()
+}
+
+// ListPlaylistTrackIDs reads track ids of every given playlist in one query.
+// Unresolved rows come back as 0. Block and cooldown are not a SQL predicate:
+// the caller applies HardBlocked in memory, the same way a per-playlist read did.
+func (s *Store) ListPlaylistTrackIDs(ctx context.Context, playlistIDs []int64) (map[int64][]int64, error) {
+	if len(playlistIDs) == 0 {
+		return nil, nil
+	}
+	args := make([]any, 0, len(playlistIDs)+1)
+	args = append(args, s.ProfileID)
+	placeholders := make([]string, len(playlistIDs))
+	for i, id := range playlistIDs {
+		placeholders[i] = "?"
+		args = append(args, id)
+	}
+	rows, err := s.DB.QueryContext(ctx, `
+SELECT playlist_id, COALESCE(track_id, 0)
+FROM playlist_tracks
+WHERE profile_id = ? AND playlist_id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
 		return nil, err
 	}
-	rows.Close()
-	for i := range out {
-		if err := s.DB.QueryRow(
-			`SELECT COUNT(*) FROM playlist_tracks WHERE profile_id = ? AND playlist_id = ?`, s.ProfileID, out[i].ID,
-		).Scan(&out[i].TrackCount); err != nil {
+	defer rows.Close()
+	out := make(map[int64][]int64)
+	for rows.Next() {
+		var playlistID, trackID int64
+		if err := rows.Scan(&playlistID, &trackID); err != nil {
 			return nil, err
 		}
+		out[playlistID] = append(out[playlistID], trackID)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) ListPlaylistItems(playlistID int64) ([]UserPlaylistItem, error) {
@@ -305,6 +420,89 @@ INSERT INTO playlist_tracks(
 	return item, tx.Commit()
 }
 
+// PlaylistAddResult is how many tracks a batch append kept or skipped.
+type PlaylistAddResult struct {
+	Added   int
+	Skipped int
+	Last    UserPlaylistItem
+}
+
+// AddPlaylistItems appends every item in one transaction. Tracks already in
+// the playlist are skipped when duplicates are disallowed. Any other error
+// rolls the whole batch back.
+func (s *Store) AddPlaylistItems(ctx context.Context, playlistID int64, items []UserPlaylistItem) (PlaylistAddResult, error) {
+	var result PlaylistAddResult
+	err := s.DB.InTx(ctx, func(tx *Tx) error {
+		var allowDup int
+		err := tx.QueryRowContext(ctx, `SELECT COALESCE(allow_duplicates,0) FROM playlists WHERE profile_id = ? AND id = ?`+tx.Dialect.LockForUpdate(),
+			s.ProfileID, playlistID).Scan(&allowDup)
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrPlaylistNotFound
+		}
+		if err != nil {
+			return err
+		}
+		var pos int
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(position),-1)+1 FROM playlist_tracks WHERE profile_id = ? AND playlist_id = ?`,
+			s.ProfileID, playlistID).Scan(&pos); err != nil {
+			return err
+		}
+		kept := make([]UserPlaylistItem, 0, len(items))
+		seen := map[int64]bool{}
+		skipped := 0
+		for _, item := range items {
+			if item.Source == "" {
+				item.Source = "manual"
+			}
+			if !validItemSource(item.Source) {
+				return fmt.Errorf("invalid item source")
+			}
+			if allowDup == 0 && item.TrackID != 0 {
+				if seen[item.TrackID] {
+					skipped++
+					continue
+				}
+				var n int
+				if err := tx.QueryRowContext(ctx,
+					`SELECT COUNT(*) FROM playlist_tracks WHERE profile_id = ? AND playlist_id = ? AND track_id = ?`,
+					s.ProfileID, playlistID, item.TrackID,
+				).Scan(&n); err != nil {
+					return err
+				}
+				if n > 0 {
+					skipped++
+					continue
+				}
+				seen[item.TrackID] = true
+			}
+			if item.ItemID == "" {
+				item.ItemID = NewID()
+			}
+			kept = append(kept, item)
+		}
+		result.Skipped = skipped
+		if len(kept) == 0 {
+			return nil
+		}
+		if err := insertPlaylistItemRows(ctx, tx, s.ProfileID, playlistID, kept, pos); err != nil {
+			return err
+		}
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if _, err = tx.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE profile_id = ? AND id = ?`, now, s.ProfileID, playlistID); err != nil {
+			return err
+		}
+		last := kept[len(kept)-1]
+		last.Position = pos + len(kept) - 1
+		result.Added = len(kept)
+		result.Last = last
+		return nil
+	})
+	if err != nil {
+		return PlaylistAddResult{}, err
+	}
+	return result, nil
+}
+
 func (s *Store) RemovePlaylistItem(playlistID int64, itemID string) error {
 	tx, err := s.DB.Begin()
 	if err != nil {
@@ -362,15 +560,25 @@ func (s *Store) ReorderPlaylistItems(playlistID int64, itemIDs []string) error {
 	return tx.Commit()
 }
 
-func (s *Store) ReplacePlaylistItems(playlistID int64, items []UserPlaylistItem) error {
-	tx, err := s.DB.Begin()
-	if err != nil {
+func (s *Store) ReplacePlaylistItems(ctx context.Context, playlistID int64, items []UserPlaylistItem) error {
+	return s.DB.InTx(ctx, func(tx *Tx) error {
+		return replacePlaylistItemsTx(ctx, tx, s.ProfileID, playlistID, items)
+	})
+}
+
+func replacePlaylistItemsTx(ctx context.Context, tx *Tx, profileID string, playlistID int64, items []UserPlaylistItem) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM playlist_tracks WHERE profile_id = ? AND playlist_id = ?`, profileID, playlistID); err != nil {
 		return err
 	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM playlist_tracks WHERE profile_id = ? AND playlist_id = ?`, s.ProfileID, playlistID); err != nil {
+	if err := insertPlaylistItemRows(ctx, tx, profileID, playlistID, items, 0); err != nil {
 		return err
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := tx.ExecContext(ctx, `UPDATE playlists SET updated_at = ? WHERE profile_id = ? AND id = ?`, now, profileID, playlistID)
+	return err
+}
+
+func insertPlaylistItemRows(ctx context.Context, tx *Tx, profileID string, playlistID int64, items []UserPlaylistItem, start int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for i, item := range items {
 		if item.ItemID == "" {
@@ -379,24 +587,24 @@ func (s *Store) ReplacePlaylistItems(playlistID int64, items []UserPlaylistItem)
 		if item.Source == "" {
 			item.Source = "rule"
 		}
+		if !validItemSource(item.Source) {
+			return fmt.Errorf("invalid item source")
+		}
 		if item.AddedAt == "" {
 			item.AddedAt = now
 		}
-		if _, err := tx.Exec(`
+		if _, err := tx.ExecContext(ctx, `
 INSERT INTO playlist_tracks(
   item_id, playlist_id, position, track_id, unresolved_artist, unresolved_title,
   unresolved_path, added_at, source, note, explanation, profile_id
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-			item.ItemID, playlistID, i, nullInt64(item.TrackID),
+			item.ItemID, playlistID, start+i, nullInt64(item.TrackID),
 			nullStr(item.UnresolvedArtist), nullStr(item.UnresolvedTitle), nullStr(item.UnresolvedPath),
-			item.AddedAt, item.Source, nullStr(item.Note), nullStr(item.Explanation), s.ProfileID); err != nil {
+			item.AddedAt, item.Source, nullStr(item.Note), nullStr(item.Explanation), profileID); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.Exec(`UPDATE playlists SET updated_at = ? WHERE profile_id = ? AND id = ?`, now, s.ProfileID, playlistID); err != nil {
-		return err
-	}
-	return tx.Commit()
+	return nil
 }
 
 func (s *Store) DuplicateUserPlaylist(id int64) (*UserPlaylist, error) {
@@ -404,29 +612,35 @@ func (s *Store) DuplicateUserPlaylist(id int64) (*UserPlaylist, error) {
 	if err != nil || src == nil {
 		return src, err
 	}
-	copy := *src
-	copy.ID = 0
-	copy.Name = src.Name + " (копия)"
-	copy.Kind = "user"
-	if copy.Type == "generated" {
-		copy.Type = "manual"
+	dup := *src
+	dup.ID = 0
+	dup.Name = src.Name + " (копия)"
+	dup.Kind = "user"
+	if dup.Type == "generated" {
+		dup.Type = "manual"
 	}
-	created, err := s.CreateUserPlaylist(copy)
+	prepared, err := prepareUserPlaylist(dup)
 	if err != nil {
 		return nil, err
 	}
 	items := make([]UserPlaylistItem, 0, len(src.Tracks))
 	for _, item := range src.Tracks {
 		item.ItemID = ""
-		if item.Source == "rule" && copy.Type == "manual" {
+		if item.Source == "rule" && prepared.Type == "manual" {
 			item.Source = "manual"
 		}
 		items = append(items, item)
 	}
-	if err := s.ReplacePlaylistItems(created.ID, items); err != nil {
+	err = s.DB.InTx(context.Background(), func(tx *Tx) error {
+		if err := insertUserPlaylist(context.Background(), tx, s.ProfileID, &prepared); err != nil {
+			return err
+		}
+		return replacePlaylistItemsTx(context.Background(), tx, s.ProfileID, prepared.ID, items)
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.GetUserPlaylist(created.ID)
+	return s.GetUserPlaylist(prepared.ID)
 }
 
 // MatchTrack finds an active catalog track for an imported or unresolved
@@ -489,11 +703,30 @@ func (s *Store) scanUserPlaylist(row playlistScanner) (*UserPlaylist, error) {
 		}
 		return nil, err
 	}
+	finishUserPlaylist(&pl, dup)
+	return &pl, nil
+}
+
+func scanListedPlaylist(row playlistScanner) (*UserPlaylist, error) {
+	var pl UserPlaylist
+	var dup int
+	if err := row.Scan(&pl.ID, &pl.Kind, &pl.Type, &pl.Name, &pl.Description, &pl.CreatedAt,
+		&pl.UpdatedAt, &pl.CoverTrackID, &pl.CoverArtwork, &pl.SortMode, &pl.ArchivedAt,
+		&pl.RuleSchema, &pl.RuleJSON, &dup, &pl.TrackCount); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	finishUserPlaylist(&pl, dup)
+	return &pl, nil
+}
+
+func finishUserPlaylist(pl *UserPlaylist, dup int) {
 	pl.AllowDuplicates = dup == 1
 	if pl.Kind == "user" && (pl.Type == "" || pl.Type == "generated") {
 		pl.Type = "manual"
 	}
-	return &pl, nil
 }
 
 func compactPlaylistPositions(tx *Tx, profileID string, playlistID int64) error {

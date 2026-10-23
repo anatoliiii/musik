@@ -108,3 +108,97 @@ func TestTrackPassport(t *testing.T) {
 		t.Fatalf("passport = %+v", *p)
 	}
 }
+
+func TestTrackPassportIncludesListening(t *testing.T) {
+	server := openTestServer(t)
+	if _, err := server.Store.DB.Exec(`DELETE FROM tracks`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO tracks(id, path, title, artist, album, year, duration, created_at, updated_at)
+		 VALUES (1, '/tmp/one.flac', 'One', 'Artist A', 'Album A', 1998, 180, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(`INSERT INTO genres(name) VALUES ('electronic'), ('trip-hop')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO track_genres(track_id, genre_id) SELECT 1, id FROM genres`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO track_stats(profile_id, track_id, plays, finishes, early_skips, last_played_at, updated_at)
+		 VALUES (?, 1, 6, 4, 1, '2026-10-01T12:00:00Z', '2026-10-01T12:00:00Z')`,
+		server.Store.ProfileID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO track_preferences(profile_id, track_id, rating, updated_at) VALUES (?, 1, 'like', '2026-10-01T12:00:00Z')`,
+		server.Store.ProfileID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(server, jsonReq("GET", "/api/tracks/1", ""))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Passport struct {
+			Year         int      `json:"year"`
+			Duration     float64  `json:"duration"`
+			Genres       []string `json:"genres"`
+			Plays        int      `json:"plays"`
+			Finishes     int      `json:"finishes"`
+			EarlySkips   int      `json:"early_skips"`
+			LastPlayedAt string   `json:"last_played_at"`
+			Rating       string   `json:"rating"`
+		} `json:"passport"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	p := got.Passport
+	if p.Year != 1998 || p.Duration != 180 || p.Plays != 6 || p.Finishes != 4 || p.EarlySkips != 1 ||
+		p.LastPlayedAt == "" || p.Rating != "like" || len(p.Genres) != 2 || p.Genres[0] != "electronic" {
+		t.Fatalf("passport = %+v", p)
+	}
+}
+
+func TestLibraryRowShowsPlays(t *testing.T) {
+	server := openTestServer(t)
+	if _, err := server.Store.DB.Exec(`DELETE FROM tracks`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO tracks(id, path, title, artist, album, duration, created_at, updated_at)
+		 VALUES (1, '/tmp/one.flac', 'One', 'Artist', 'Album', 180, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Store.DB.Exec(
+		`INSERT INTO track_stats(profile_id, track_id, plays, early_skips, last_played_at, updated_at)
+		 VALUES (?, 1, 4, 3, '2026-09-01T00:00:00Z', '2026-09-01T00:00:00Z')`,
+		server.Store.ProfileID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	rec := serve(server, jsonReq("GET", "/api/library", ""))
+	if rec.Code != 200 {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var rows []struct {
+		ID           int64  `json:"id"`
+		Plays        int    `json:"plays"`
+		EarlySkips   int    `json:"early_skips"`
+		LastPlayedAt string `json:"last_played_at"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Plays != 4 || rows[0].EarlySkips != 3 || rows[0].LastPlayedAt == "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

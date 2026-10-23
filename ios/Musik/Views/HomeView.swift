@@ -131,7 +131,7 @@ struct HomeView: View {
     @ViewBuilder
     private var discoveryShelves: some View {
         if let recTracks = recs.tracks, !recTracks.isEmpty {
-            Shelf(title: "Похожее на любимое", subtitle: "по звучанию (CLAP)") {
+            Shelf(title: "Похожее на любимое", subtitle: recs.explanation ?? "по звучанию и лайкам") {
                 ForEach(recTracks) { t in
                     TrackCard(track: t) {
                         player.play(["track_ids": recTracks.map(\.id), "start_track_id": t.id,

@@ -4,18 +4,20 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strconv"
 
 	"github.com/torwin-job/musik/player/internal/db"
+	"github.com/torwin-job/musik/player/internal/playback"
 )
 
 func (s *Server) handleLibraryRescan(w http.ResponseWriter, _ *http.Request) {
 	s.ensureWorkerBeforeEnqueue()
-	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": "full_rescan"})
+	rescanPayload := map[string]any{"mixes": playback.GeneratedMixContract()}
+	rescanBody, _ := json.Marshal(rescanPayload)
+	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": "full_rescan", "payload": rescanPayload})
 	if err != nil {
-		id, e2 := s.Store.EnqueueJob("full_rescan", "")
+		id, e2 := s.Store.EnqueueJob("full_rescan", string(rescanBody))
 		if e2 != nil {
 			writeErr(w, 503, "enqueue_failed", "worker unreachable and local enqueue failed: "+err.Error())
 			return
@@ -44,7 +46,16 @@ func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.ensureWorkerBeforeEnqueue()
-	payload := map[string]any{"profile_id": s.Store.ProfileID}
+	// Admin routes run on the installation server. The mix still belongs to
+	// the caller's profile; single-user has no principal and uses the install id.
+	profileID := s.Store.ProfileID
+	if p := caller(r); p != nil && p.Profile.ID != "" {
+		profileID = p.Profile.ID
+	}
+	payload := map[string]any{"profile_id": profileID}
+	if kind == "mix_pack" || kind == "full_rescan" {
+		payload["mixes"] = playback.GeneratedMixContract()
+	}
 	body, _ := json.Marshal(payload)
 	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": kind, "payload": payload})
 	if err != nil {
@@ -59,7 +70,8 @@ func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if code >= 400 {
-		log.Printf("worker enqueue %s status %d", kind, code)
+		writeErr(w, code, "worker_error", "worker error")
+		return
 	}
 	writeJSON(w, out)
 }

@@ -56,6 +56,8 @@ func (b *Builder) RandomFloat64() float64 {
 }
 
 // PickRandom returns a random track id not in exclude.
+// It returns 0 when the catalog is empty or every track is excluded.
+// Callers stop playback or explicitly relax the exclude; this function does not.
 func (b *Builder) PickRandom(exclude map[int64]bool) int64 {
 	n := b.Idx.Size()
 	if n == 0 {
@@ -69,7 +71,7 @@ func (b *Builder) PickRandom(exclude map[int64]bool) int64 {
 		}
 	}
 	if len(allowed) == 0 {
-		return b.Idx.MetaAt(0).ID
+		return 0
 	}
 	return allowed[b.newRNG().Intn(len(allowed))]
 }

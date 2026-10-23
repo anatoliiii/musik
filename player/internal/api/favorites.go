@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/torwin-job/musik/player/internal/db"
 )
 
 type favReq struct {
@@ -182,86 +184,72 @@ func (s *Server) handleFavoritesToggle(w http.ResponseWriter, r *http.Request) {
 	if typ == "" {
 		typ = "track"
 	}
-	var favorited bool
 	switch typ {
 	case "track", "song":
 		if req.TrackID == 0 {
 			writeErr(w, 400, "track_id_required", "track_id required")
 			return
 		}
-		if s.Store.FavoritesHas(req.TrackID) {
-			_ = s.Store.FavoritesRemove(req.TrackID)
-			favorited = false
-		} else {
-			if err := s.Store.FavoritesAdd(req.TrackID); err != nil {
-				writeErr(w, 500, "db", err.Error())
-				return
-			}
-			favorited = true
-		}
-		writeJSON(w, map[string]any{
-			"ok": true, "type": "track", "favorited": favorited, "track_id": req.TrackID,
-			"count":  s.Store.FavoritesCount(),
-			"counts": s.favCounts(),
-		})
+		typ = "track"
 	case "artist":
-		artist := strings.TrimSpace(req.Artist)
-		if artist == "" && req.TrackID != 0 {
+		req.Artist = strings.TrimSpace(req.Artist)
+		if req.Artist == "" && req.TrackID != 0 {
 			if tj, ok := s.trackJSON(req.TrackID).(map[string]any); ok {
-				artist, _ = tj["artist"].(string)
+				req.Artist, _ = tj["artist"].(string)
 			}
 		}
-		if artist == "" {
+		if req.Artist == "" {
 			writeErr(w, 400, "artist_required", "artist required")
 			return
 		}
-		if s.Store.FavArtistHas(artist) {
-			_ = s.Store.FavArtistRemove(artist)
-			favorited = false
-		} else {
-			if err := s.Store.FavArtistAdd(artist); err != nil {
-				writeErr(w, 500, "db", err.Error())
-				return
-			}
-			favorited = true
-		}
-		writeJSON(w, map[string]any{
-			"ok": true, "type": "artist", "favorited": favorited, "artist": artist,
-			"counts": s.favCounts(),
-		})
 	case "album":
-		artist := strings.TrimSpace(req.Artist)
-		album := strings.TrimSpace(req.Album)
-		if (artist == "" || album == "") && req.TrackID != 0 {
+		req.Artist = strings.TrimSpace(req.Artist)
+		req.Album = strings.TrimSpace(req.Album)
+		if (req.Artist == "" || req.Album == "") && req.TrackID != 0 {
 			if tj, ok := s.trackJSON(req.TrackID).(map[string]any); ok {
-				if artist == "" {
-					artist, _ = tj["artist"].(string)
+				if req.Artist == "" {
+					req.Artist, _ = tj["artist"].(string)
 				}
-				if album == "" {
-					album, _ = tj["album"].(string)
+				if req.Album == "" {
+					req.Album, _ = tj["album"].(string)
 				}
 			}
 		}
-		if album == "" {
+		if req.Album == "" {
 			writeErr(w, 400, "album_required", "album required")
 			return
 		}
-		if s.Store.FavAlbumHas(artist, album) {
-			_ = s.Store.FavAlbumRemove(artist, album)
-			favorited = false
-		} else {
-			if err := s.Store.FavAlbumAdd(artist, album); err != nil {
-				writeErr(w, 500, "db", err.Error())
-				return
-			}
-			favorited = true
-		}
-		writeJSON(w, map[string]any{
-			"ok": true, "type": "album", "favorited": favorited, "artist": artist, "album": album,
-			"counts": s.favCounts(),
-		})
 	default:
 		writeErr(w, 400, "invalid_type", "type must be track|artist|album")
+		return
+	}
+	out, err := s.Store.ToggleFavorite(r.Context(), typ, req.TrackID, req.Artist, req.Album)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
+	writeJSON(w, favoriteToggleJSON(out))
+}
+
+func favoriteToggleJSON(out db.FavoriteToggle) map[string]any {
+	counts := map[string]int{
+		"tracks": out.Tracks, "artists": out.Artists, "albums": out.Albums,
+	}
+	switch out.Type {
+	case "artist":
+		return map[string]any{
+			"ok": true, "type": "artist", "favorited": out.Favorited, "artist": out.Artist, "counts": counts,
+		}
+	case "album":
+		return map[string]any{
+			"ok": true, "type": "album", "favorited": out.Favorited,
+			"artist": out.Artist, "album": out.Album, "counts": counts,
+		}
+	default:
+		return map[string]any{
+			"ok": true, "type": "track", "favorited": out.Favorited, "track_id": out.TrackID,
+			"count": out.Tracks, "counts": counts,
+		}
 	}
 }
 

@@ -1,0 +1,90 @@
+{
+  "schema_version": 3,
+  "feature_order": [
+    "sim_taste",
+    "sim_current",
+    "sim_session",
+    "sim_daypart",
+    "sim_mood",
+    "sim_place",
+    "sim_activity",
+    "sim_centroid_max",
+    "transition_weight",
+    "transition_score",
+    "bpm_distance",
+    "bpm_missing",
+    "lufs_diff",
+    "lufs_missing",
+    "key_compat",
+    "energy_diff",
+    "artist_repeat",
+    "album_repeat",
+    "new_boost",
+    "plays_log",
+    "early_skip_rate",
+    "hours_since_played",
+    "never_played",
+    "negative_penalty",
+    "likes_log",
+    "dislikes_log",
+    "finish_rate",
+    "partial_rate",
+    "impression_fatigue",
+    "hours_since_finished",
+    "duration_min",
+    "queue_position"
+  ],
+  "thresholds": {
+    "exploit_taste": 0.45,
+    "exploit_centroid": 0.5,
+    "transition_current": 0.55,
+    "adjacent_taste": 0.15
+  },
+  "resurface": {
+    "min_finishes": 1,
+    "min_hours": 336
+  },
+  "new_in_library": {
+    "max_age_hours": 720,
+    "max_plays": 2
+  },
+  "quotas": {
+    "exploit": {"min": 2, "max": 4},
+    "transition": {"min": 0, "max": 2},
+    "explore_adjacent": {"min": 1, "max": 2},
+    "resurface": {"min": 1, "max": 1},
+    "new_in_library": {"min": 0, "max": 1},
+    "wildcard": {"min": 0, "max": 1}
+  },
+  "discover_quotas": {
+    "exploit": {"min": 1, "max": 2},
+    "transition": {"min": 0, "max": 1},
+    "explore_adjacent": {"min": 1, "max": 2},
+    "resurface": {"min": 0, "max": 1},
+    "new_in_library": {"min": 1, "max": 2},
+    "wildcard": {"min": 1, "max": 2}
+  },
+  "mmr_lambda": 0.7,
+  "artist_penalty": 0.15,
+  "retrieval": {
+    "source_pool": 48,
+    "bpm_window": 0.06,
+    "key_min": 0.7,
+    "negative_clearance": 0.15,
+    "centroid_mix": 0.75,
+    "cluster_skip_series": 3
+  },
+  "new_boost": {
+    "days": 14,
+    "beta": 0.25,
+    "tau_days": 14,
+    "gamma": 5,
+    "skip_early_cap": 3
+  },
+  "transition_profiles": {
+    "smooth": {"clap": 0.4, "outcome": 0.25, "bpm": 0.15, "lufs": 0.1, "key": 0.15, "energy": 0.05, "repeat": 0.25, "similarity": 0.2},
+    "diverse": {"clap": 0.25, "outcome": 0.15, "bpm": 0.05, "lufs": 0.05, "key": 0.05, "energy": 0.05, "repeat": 0.35, "similarity": 0.45},
+    "energetic": {"clap": 0.25, "outcome": 0.2, "bpm": 0.1, "lufs": 0.1, "key": 0.1, "energy": 0.45, "repeat": 0.2, "similarity": 0.15},
+    "calm": {"clap": 0.3, "outcome": 0.2, "bpm": 0.15, "lufs": 0.2, "key": 0.15, "energy": -0.35, "repeat": 0.2, "similarity": 0.2}
+  }
+}

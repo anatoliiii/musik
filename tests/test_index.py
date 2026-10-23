@@ -5,6 +5,7 @@ import numpy as np
 from musik.db import ensure_db, save_embedding, upsert_track
 from musik.index.brute import EmbeddingIndex, load_index
 from musik.index.clusters import _kmeans
+from musik.listen.history import bump_rec_stats
 
 
 def test_neighbors_self_excluded(tmp_path, monkeypatch, test_database):
@@ -52,8 +53,13 @@ def test_neighbors_self_excluded(tmp_path, monkeypatch, test_database):
         save_embedding(tid, vec)
         ids.append(tid)
 
+    bump_rec_stats(ids[0], shown=5, completed=1)
     idx = load_index()
     assert idx.size == 3
+    loaded = next(item for item in idx.meta if item["id"] == ids[0])
+    assert loaded["shown"] == 5
+    assert loaded["completed"] == 1
+    assert loaded["plays"] == 0
     nb = idx.neighbors(ids[0], k=2)
     assert nb[0].track_id == ids[1]
     assert nb[0].cosine > nb[1].cosine

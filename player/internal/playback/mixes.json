@@ -1,0 +1,15 @@
+[
+  {"kind": "for_you", "title": "Для вас", "subtitle": "Персональный микс под вкус", "source": "generated"},
+  {"kind": "daily", "title": "На сегодня", "subtitle": "Свежий микс на день", "source": "generated"},
+  {"kind": "favorites", "title": "Избранное", "subtitle": "Треки с сердечком", "source": "favorites"},
+  {"kind": "later", "title": "Потом", "subtitle": "Отложенные треки", "source": "later"},
+  {"kind": "new_releases", "title": "Новинки", "subtitle": "Недавно в библиотеке", "source": "generated"},
+  {"kind": "weekly", "title": "Недельный микс", "subtitle": "Разнообразие по кластерам", "source": "generated"},
+  {"kind": "weekday_mon", "title": "Понедельник", "subtitle": "Микс дня недели", "source": "generated", "weekday": 0},
+  {"kind": "weekday_tue", "title": "Вторник", "subtitle": "Микс дня недели", "source": "generated", "weekday": 1},
+  {"kind": "weekday_wed", "title": "Среда", "subtitle": "Микс дня недели", "source": "generated", "weekday": 2},
+  {"kind": "weekday_thu", "title": "Четверг", "subtitle": "Микс дня недели", "source": "generated", "weekday": 3},
+  {"kind": "weekday_fri", "title": "Пятница", "subtitle": "Микс дня недели", "source": "generated", "weekday": 4},
+  {"kind": "weekday_sat", "title": "Суббота", "subtitle": "Микс дня недели", "source": "generated", "weekday": 5},
+  {"kind": "weekday_sun", "title": "Воскресенье", "subtitle": "Микс дня недели", "source": "generated", "weekday": 6}
+]

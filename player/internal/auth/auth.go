@@ -156,13 +156,15 @@ func (g *Gate) Authorized(r *http.Request) bool {
 	return g.validCookie(r) || g.validBearer(r)
 }
 
-func (g *Gate) Middleware(next http.Handler) http.Handler {
+// Middleware applies the single-user gate. open reports routes that need no
+// session; the caller supplies it from the route table.
+func (g *Gate) Middleware(next http.Handler, open func(*http.Request) bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodOptions {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !g.Cfg.Enabled() || publicPath(r) {
+		if !g.Cfg.Enabled() || (open != nil && open(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -186,28 +188,6 @@ func (g *Gate) Middleware(next http.Handler) http.Handler {
 	})
 }
 
-func publicPath(r *http.Request) bool {
-	p := r.URL.Path
-	if r.Method == http.MethodPost && (p == "/api/auth/login" || p == "/api/auth/token") {
-		return true
-	}
-	// Worker reload callback: handler still enforces loopback or Bearer.
-	if r.Method == http.MethodPost && p == "/api/reload" {
-		return true
-	}
-	if r.Method == http.MethodGet {
-		switch p {
-		case "/api/health", "/api/openapi.json", "/api/auth/me", "/api/themes", "/manifest.webmanifest":
-			return true
-		}
-		// Share radio stream: token in path is the credential.
-		if strings.HasPrefix(p, "/listen/") {
-			return true
-		}
-	}
-	return false
-}
-
 func isStaticAsset(p string) bool {
 	return p == "/app.js" || p == "/style.css" || p == "/fonts.css" || p == "/favicon.ico" ||
 		strings.HasPrefix(p, "/fonts/") ||
@@ -217,8 +197,7 @@ func isStaticAsset(p string) bool {
 }
 
 func isProtectedMedia(p string) bool {
-	return strings.HasPrefix(p, "/api/stream/") || strings.HasPrefix(p, "/api/artwork/") ||
-		strings.HasPrefix(p, "/api/")
+	return strings.HasPrefix(p, "/api/")
 }
 
 func wantsJSON(r *http.Request) bool {

@@ -1,42 +1,29 @@
-"""Add user-owned device tokens and the administrator invariant lock row."""
+"""Recognize the deployed home PostgreSQL v8 identity/profile contract.
+
+This compatibility anchor is an Alembic revision, not upstream SQLite schema
+version 8. Fresh databases arrive here after the current baseline; deployed
+home databases start here and gain their missing catalog objects in v12.
+"""
 from alembic import op
-from sqlalchemy import Column, ForeignKey, String, inspect, text
-
-from musik.db.migrations import migrate_connection
-
+from sqlalchemy import inspect
 
 revision = "musik_8"
-down_revision = "musik_7"
+down_revision = "musik_5"
 branch_labels = None
 depends_on = None
 
 
 def upgrade() -> None:
     connection = op.get_bind()
+    inspector = inspect(connection)
+    required = {"users", "profiles", "user_roles", "installation_state", "external_identities", "device_tokens"}
+    missing = required - set(inspector.get_table_names())
+    if missing:
+        raise RuntimeError(f"home v8 identity contract is incomplete: {', '.join(sorted(missing))}")
     if connection.dialect.name == "sqlite":
-        migrate_connection(connection.connection.driver_connection)
-        return
-
-    tables = set(inspect(connection).get_table_names())
-    if "device_tokens" not in tables:
-        op.create_table(
-            "device_tokens",
-            Column("id", String(64), primary_key=True),
-            Column("secret_hash", String(64), nullable=False, unique=True),
-            Column("user_id", String(64), ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
-            Column("profile_id", String(64), ForeignKey("profiles.id"), nullable=False),
-            Column("name", String(128), nullable=False),
-            Column("created_at", String, nullable=False),
-            Column("last_used_at", String),
-            Column("expires_at", String, nullable=False),
-            Column("revoked_at", String),
-        )
-    indexes = {index["name"] for index in inspect(connection).get_indexes("device_tokens")}
-    if "idx_device_tokens_user" not in indexes:
-        op.create_index("idx_device_tokens_user", "device_tokens", ["user_id", "revoked_at", "expires_at"])
-    connection.execute(
-        text("INSERT INTO installation_state(key,value) VALUES ('active_admin_guard','1') ON CONFLICT(key) DO NOTHING")
-    )
+        version = connection.exec_driver_sql("PRAGMA user_version").scalar_one()
+        if version < 12:
+            raise RuntimeError("legacy home SQLite needs an explicit history conversion before upgrade")
 
 
 def downgrade() -> None:

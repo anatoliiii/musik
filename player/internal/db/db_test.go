@@ -345,11 +345,15 @@ func TestRecommendationImpressionsJoinOutcomes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	requestID := NewID()
 	impressions := []RecommendationImpression{
-		{SessionID: "s1", TrackID: 1, Position: 0, Explore: true, Score: 0.2},
-		{SessionID: "s1", TrackID: 2, Position: 1, Explore: false, Score: 0.8},
+		{ImpressionID: NewID(), RequestID: requestID, SessionID: "s1", TrackID: 1, Position: 0, Explore: true, Score: 0.2, Source: "explore"},
+		{ImpressionID: NewID(), RequestID: requestID, SessionID: "s1", TrackID: 2, Position: 1, Explore: false, Score: 0.8, Source: "exploit"},
 	}
-	if err := store.InsertRecommendationImpressions(impressions); err != nil {
+	if err := store.CreateRecommendationRequest(RecommendationRequest{
+		RequestID: requestID, SessionID: "s1", Reason: "radio_start",
+		PolicyVersion: "test", CandidateCount: len(impressions),
+	}, impressions, nil); err != nil {
 		t.Fatal(err)
 	}
 	duration := 100.0
@@ -435,7 +439,7 @@ func TestLifecycleEventsAreIdempotent(t *testing.T) {
 		t.Fatalf("end result=%+v err=%v", result, err)
 	}
 	end.EventID = "end-second-client-id"
-	if result, err := store.ApplyLifecycleEvent(end); err != nil || result.LifecycleChanged {
+	if result, err := store.ApplyLifecycleEvent(end); err != nil || result.LifecycleChanged || !result.Inserted || !result.AlreadyClosed {
 		t.Fatalf("second close result=%+v err=%v", result, err)
 	}
 	var plays, finishes int
@@ -798,7 +802,7 @@ func TestLatestPoliciesAndTrainingRuns(t *testing.T) {
 	}}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at,profile_id) VALUES ('ranker-v2','ranker',1,'/test/ranker.json','hash','active',?,?)`, daysAgo(0), store.ProfileID); err != nil {
+	if _, err := store.DB.Exec(`INSERT INTO model_versions(model_version,model_type,feature_schema_version,artifact_path,artifact_hash,status,created_at,profile_id) VALUES ('default-v3','ranker',3,'/test/ranker.json','hash','active',?,?)`, daysAgo(0), store.ProfileID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.DB.Exec(`
@@ -806,7 +810,7 @@ INSERT INTO training_runs(
   run_id, model_version, model_type, feature_schema_version, train_from, train_until,
   positive_count, negative_count, metrics_schema_version, metrics_json, status, created_at, profile_id
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		NewID(), "ranker-v2", "linear", 1, "2026-01-01", "2026-02-01",
+		NewID(), "default-v3", "linear", 3, "2026-01-01", "2026-02-01",
 		12, 8, 1, `{"auc":0.71}`, "completed", daysAgo(0), store.ProfileID,
 	); err != nil {
 		t.Fatal(err)
@@ -824,6 +828,40 @@ INSERT INTO training_runs(
 	}
 	if runs[0].Metrics["auc"] != 0.71 {
 		t.Fatalf("metrics=%v", runs[0].Metrics)
+	}
+}
+
+func TestReplaceTasteCentroidsEmptyDeletesThatVersion(t *testing.T) {
+	store, _ := openTestStore(t)
+	current := TasteCentroidRow{
+		Index: 0, Vector: []byte{1, 2, 3, 4}, EmbeddingDim: 1,
+		Mass: 1, SampleCount: 2, AlgorithmVersion: "weighted-spherical-kmeans-v1",
+	}
+	other := current
+	other.AlgorithmVersion = "other"
+	if err := store.ReplaceTasteCentroids(current.AlgorithmVersion, []TasteCentroidRow{current}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ReplaceTasteCentroids(other.AlgorithmVersion, []TasteCentroidRow{other}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.ReplaceTasteCentroids(current.AlgorithmVersion, nil); err != nil {
+		t.Fatal(err)
+	}
+	left, err := store.LoadTasteCentroids(current.AlgorithmVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("centroids=%d, want the empty replace to delete this version", len(left))
+	}
+	kept, err := store.LoadTasteCentroids(other.AlgorithmVersion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != 1 || kept[0].AlgorithmVersion != "other" {
+		t.Fatalf("other version=%v", kept)
 	}
 }
 

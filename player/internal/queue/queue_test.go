@@ -104,6 +104,17 @@ func TestPickRandomSkipsExcluded(t *testing.T) {
 	}
 }
 
+func TestPickRandomFullExcludeReturnsZero(t *testing.T) {
+	b := testBuilder(t)
+	exclude := map[int64]bool{}
+	for id := int64(1); id <= 12; id++ {
+		exclude[id] = true
+	}
+	if got := b.PickRandom(exclude); got != 0 {
+		t.Fatalf("PickRandom=%d, want 0 when every track is excluded", got)
+	}
+}
+
 func TestRandomFloat64IsBounded(t *testing.T) {
 	b := testBuilder(t)
 	for i := 0; i < 20; i++ {

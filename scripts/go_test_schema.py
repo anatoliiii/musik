@@ -42,7 +42,7 @@ def generate() -> str:
             lines = list(conn.iterdump())
         finally:
             conn.close()
-    dump = "\n".join(lines)
+    dump = "\n".join(line.rstrip() for line in "\n".join(lines).splitlines())
     dump = dump.replace(owner, OWNER_ID).replace(profile, PROFILE_ID)
     dump = re.sub(r"'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:\+00:00|Z)'", f"'{CREATED_AT}'", dump)
     return (

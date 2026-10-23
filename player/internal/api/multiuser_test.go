@@ -28,7 +28,7 @@ func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 	defer store.Close()
 	cfg := config.Config{DBPath: path, MultiUser: true, PublicBaseURL: "https://musik.test", QueueSize: 6}
 	server := New(cfg, store, index.New(cfg), taste.New(), nil)
-	server.multi = &multiUserState{profiles: make(map[string]*Server)}
+	server.multi = &multiUserState{profiles: make(map[string]*profileState)}
 	ctx := context.Background()
 	userA, profileA, err := store.CreateUserWithDefaultProfile(ctx, "A")
 	if err != nil {
@@ -147,6 +147,14 @@ func TestMultiUserHTTPIsolationAndCSRF(t *testing.T) {
 		t.Fatal("deleted profile left a dangling session")
 	}
 	check(call("PATCH", "/api/admin/users/"+userA, `{"admin":false}`, tokenA, csrfA, "https://musik.test"), 409)
+	// An alias is rejected by default, then accepted only when explicitly configured.
+	check(call("PATCH", "/api/profiles/"+profileA.ID, `{"name":"Home"}`, tokenA, csrfA, "https://home.test"), 403)
+	server.Cfg.AuthAllowedOrigins = []string{"https://home.test"}
+	check(call("PATCH", "/api/profiles/"+profileA.ID, `{"name":"Home"}`, tokenA, csrfA, "https://home.test"), 200)
+	check(call("PATCH", "/api/profiles/"+profileA.ID, `{"name":"No CSRF"}`, tokenA, "", "https://home.test"), 403)
+	check(call("PATCH", "/api/profiles/"+profileA.ID, `{"name":"Wrong CSRF"}`, tokenA, csrfB, "https://home.test"), 403)
+	check(call("PATCH", "/api/profiles/"+profileA.ID, `{"name":"Foreign"}`, tokenA, csrfA, "https://evil.test"), 403)
+
 	check(call("POST", "/api/auth/logout", "{}", tokenA, csrfA, ""), 200)
 	check(call("GET", "/api/favorites", "", tokenA, "", ""), 401)
 }
@@ -245,5 +253,96 @@ func TestSingleUserPasswordReturnsAPITokenToPhones(t *testing.T) {
 	}
 	if rec := call(`{"password":"owner-secret"}`); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"api-token-value"`) {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMultiUserRootSkipsPlaybackStack(t *testing.T) {
+	cfg := config.Config{MultiUser: true, PublicBaseURL: "https://musik.test"}
+	server := New(cfg, &db.Store{}, index.New(cfg), taste.New(), nil)
+	if server.Play != nil || server.Idx != nil || server.Taste != nil {
+		t.Fatal("multi-user root started the installation playback stack")
+	}
+	if server.Media == nil || server.Auth == nil || server.App == nil || server.App.Catalog == nil {
+		t.Fatal("routes server is missing auth, media, or the shared catalog")
+	}
+}
+
+func TestInactiveProfilesAreEvicted(t *testing.T) {
+	prevIdle, prevMax := profileIdleAfter, profileCacheMax
+	profileIdleAfter = time.Minute
+	profileCacheMax = 2
+	t.Cleanup(func() {
+		profileIdleAfter = prevIdle
+		profileCacheMax = prevMax
+	})
+	server := &Server{multi: &multiUserState{profiles: map[string]*profileState{}}}
+	idle := &profileState{}
+	idle.used.Store(time.Now().Add(-time.Hour).UnixNano())
+	busy := &profileState{}
+	busy.used.Store(time.Now().Add(-time.Hour).UnixNano())
+	busy.refs.Store(1)
+	fresh := &profileState{}
+	fresh.used.Store(time.Now().UnixNano())
+	server.multi.profiles["idle"] = idle
+	server.multi.profiles["busy"] = busy
+	server.multi.profiles["fresh"] = fresh
+	server.sweepProfiles()
+	if _, ok := server.multi.profiles["idle"]; ok {
+		t.Fatal("idle profile stayed cached")
+	}
+	if server.multi.profiles["busy"] != busy || server.multi.profiles["fresh"] != fresh {
+		t.Fatal("in-use or fresh profile was evicted")
+	}
+
+	older := &profileState{}
+	older.used.Store(time.Now().Add(-time.Second).UnixNano())
+	newest := &profileState{}
+	newest.used.Store(time.Now().UnixNano())
+	server.multi.profiles = map[string]*profileState{"older": older, "fresh": fresh, "newest": newest}
+	server.sweepProfiles()
+	if _, ok := server.multi.profiles["older"]; ok || len(server.multi.profiles) != 2 {
+		t.Fatalf("cache = %#v", server.multi.profiles)
+	}
+}
+
+func TestExplicitBrowserOriginAliases(t *testing.T) {
+	aliases := []string{"https://home.test", "https://vpn.test:8443", "http://insecure.test", "https://bad.test/path", "https://user@bad.test", "https://query.test?", "https://fragment.test#", "https://*.wildcard.test", "https://:8443"}
+	server := &Server{Cfg: config.Config{PublicBaseURL: "https://public.test/", AuthAllowedOrigins: aliases}}
+	for _, origin := range []string{"https://public.test", "https://home.test", "https://vpn.test:8443"} {
+		if !server.allowedBrowserOrigin(origin) {
+			t.Errorf("trusted origin rejected: %s", origin)
+		}
+	}
+	for _, origin := range []string{"https://evil.test", "null", "https://home.test.evil", "http://home.test", "https://home.test/", "https://home.test/path", "https://vpn.test", "https://vpn.test:9443", "http://insecure.test", "https://bad.test/path", "https://user@bad.test", "https://query.test?", "https://fragment.test#", "https://*.wildcard.test", "https://:8443"} {
+		if server.allowedBrowserOrigin(origin) {
+			t.Errorf("untrusted or invalid origin admitted: %s", origin)
+		}
+	}
+}
+
+func TestAuthenticationOriginAliases(t *testing.T) {
+	server := &Server{Cfg: config.Config{MultiUser: true, PublicBaseURL: "https://public.test", AuthAllowedOrigins: []string{"https://home.test"}}}
+	// Test the guard without invoking credential handlers or requiring a database.
+	handler := server.multiUserMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	for _, path := range []string{"/api/auth/login", "/api/auth/register", "/api/auth/token"} {
+		for _, tc := range []struct {
+			origin string
+			want   int
+		}{
+			{"https://public.test", 204}, {"https://home.test", 204}, {"", 204},
+			{"https://evil.test", 403}, {"null", 403}, {"http://home.test", 403},
+		} {
+			t.Run(path+"/"+tc.origin, func(t *testing.T) {
+				req := httptest.NewRequest(http.MethodPost, "https://home.test"+path, strings.NewReader("{}"))
+				req.Header.Set("Origin", tc.origin)
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, req)
+				if rec.Code != tc.want {
+					t.Fatalf("status=%d want=%d", rec.Code, tc.want)
+				}
+			})
+		}
 	}
 }

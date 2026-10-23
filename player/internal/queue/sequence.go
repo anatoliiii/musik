@@ -28,16 +28,11 @@ type TransitionWeights struct {
 }
 
 func WeightsForProfile(profile TransitionProfile) TransitionWeights {
-	switch profile {
-	case ProfileDiverse:
-		return TransitionWeights{CLAP: 0.25, Outcome: 0.15, BPM: 0.05, LUFS: 0.05, Key: 0.05, Energy: 0.05, Repeat: 0.35, Similarity: 0.45}
-	case ProfileEnergetic:
-		return TransitionWeights{CLAP: 0.25, Outcome: 0.2, BPM: 0.1, LUFS: 0.1, Key: 0.1, Energy: 0.45, Repeat: 0.2, Similarity: 0.15}
-	case ProfileCalm:
-		return TransitionWeights{CLAP: 0.3, Outcome: 0.2, BPM: 0.15, LUFS: 0.2, Key: 0.15, Energy: -0.35, Repeat: 0.2, Similarity: 0.2}
-	default:
-		return TransitionWeights{CLAP: 0.4, Outcome: 0.25, BPM: 0.15, LUFS: 0.1, Key: 0.15, Energy: 0.05, Repeat: 0.25, Similarity: 0.2}
+	raw, ok := ActiveSpec.Profiles[string(profile)]
+	if !ok {
+		raw = ActiveSpec.Profiles[string(ProfileSmooth)]
 	}
+	return raw.weights()
 }
 
 type TransitionInputs struct {
@@ -46,6 +41,7 @@ type TransitionInputs struct {
 	CLAP          float64
 	OutcomeWeight float64
 	Manual        bool
+	Learned       *TransitionModel
 }
 
 func PairwiseScore(in TransitionInputs, profile TransitionProfile) (float64, map[string]float64) {
@@ -55,10 +51,10 @@ func PairwiseScore(in TransitionInputs, profile TransitionProfile) (float64, map
 	key := keyCompat(&in.From, in.To)
 	energy := energyDiff(&in.From, in.To)
 	repeat := 0.0
-	if strings.EqualFold(in.From.Artist, in.To.Artist) && in.From.Artist != "" {
+	if sameArtist(in.From, in.To) {
 		repeat += 1
 	}
-	if strings.EqualFold(in.From.Album, in.To.Album) && in.From.Album != "" {
+	if sameAlbum(in.From, in.To) {
 		repeat += 0.5
 	}
 	outcome := in.OutcomeWeight
@@ -69,9 +65,39 @@ func PairwiseScore(in TransitionInputs, profile TransitionProfile) (float64, map
 		"clap": in.CLAP, "outcome": outcome, "bpm": bpm, "lufs": lufs,
 		"key": key, "energy": energy, "repeat": repeat,
 	}
+	if score, ok := scoreLearnedTransition(in.Learned, features); ok {
+		return score, features
+	}
 	score := w.CLAP*in.CLAP + w.Outcome*outcome + w.Key*key + w.Energy*energy -
 		w.BPM*bpm - w.LUFS*lufs - w.Repeat*repeat
 	return score, features
+}
+
+func sameArtist(from, to index.Meta) bool {
+	return from.Artist != "" && strings.EqualFold(from.Artist, to.Artist)
+}
+
+func sameAlbum(from, to index.Meta) bool {
+	return from.Album != "" && strings.EqualFold(from.Album, to.Album)
+}
+
+// TransitionFeatures is the current→candidate step that beam already scores.
+// Artist and album repeats are 1 when that credit matches. Score is PairwiseScore.
+// A missing current track leaves all three at zero.
+func TransitionFeatures(from *index.Meta, to index.Meta, clap, outcome float64, profile TransitionProfile, learned *TransitionModel) (artist, album, score float64) {
+	if from == nil || from.ID == 0 {
+		return 0, 0, 0
+	}
+	if sameArtist(*from, to) {
+		artist = 1
+	}
+	if sameAlbum(*from, to) {
+		album = 1
+	}
+	score, _ = PairwiseScore(TransitionInputs{
+		From: *from, To: to, CLAP: clap, OutcomeWeight: outcome, Learned: learned,
+	}, profile)
+	return artist, album, score
 }
 
 type SequenceChoice struct {
@@ -102,6 +128,7 @@ func BeamSequence(
 	profile TransitionProfile,
 	transitions map[int64]float64,
 	lambda float64,
+	learned *TransitionModel,
 ) SequenceChoice {
 	if size < 1 {
 		size = 6
@@ -146,7 +173,7 @@ func BeamSequence(
 					}
 				}
 				pair, feats := PairwiseScore(TransitionInputs{
-					From: from, To: to, CLAP: clap, OutcomeWeight: transitions[to.ID],
+					From: from, To: to, CLAP: clap, OutcomeWeight: transitions[to.ID], Learned: learned,
 				}, profile)
 				rep := float64(seenArtist[strings.ToLower(to.Artist)])
 				simPen := 0.0

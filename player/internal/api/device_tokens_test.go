@@ -98,7 +98,7 @@ func TestMultiUserDeviceTokensPreserveLegacyBearerContractAndScope(t *testing.T)
 		WorkerAutostart: false,
 	}
 	server := New(cfg, store, index.New(cfg), taste.New(), nil)
-	server.multi = &multiUserState{profiles: make(map[string]*Server)}
+	server.multi = &multiUserState{profiles: make(map[string]*profileState)}
 	handler := server.Handler()
 	call := func(method, path, body, cookie, csrf, bearer string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, "https://musik.test"+path, strings.NewReader(body))

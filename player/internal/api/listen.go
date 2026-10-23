@@ -6,7 +6,6 @@ import (
 	"os"
 	"os/exec"
 	"strings"
-	"sync/atomic"
 
 	"github.com/torwin-job/musik/player/internal/media"
 )
@@ -46,12 +45,12 @@ func (s *Server) handleListenShare(w http.ResponseWriter, r *http.Request) {
 	if max < 1 {
 		max = 4
 	}
-	if int(atomic.LoadInt32(&s.shareListeners)) >= max {
+	if int(s.listeners.Load()) >= max {
 		writeErr(w, 503, "busy", "too many share listeners")
 		return
 	}
-	atomic.AddInt32(&s.shareListeners, 1)
-	defer atomic.AddInt32(&s.shareListeners, -1)
+	s.listeners.Add(1)
+	defer s.listeners.Add(-1)
 	_ = s.Store.TouchRadioShareListen(token)
 
 	w.Header().Set("Content-Type", "audio/mpeg")
@@ -68,6 +67,7 @@ func (s *Server) handleListenShare(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
+	// Memory only: a listener must not create a play_session of the owner.
 	sess := s.Play.StartShare()
 
 	ctx := r.Context()

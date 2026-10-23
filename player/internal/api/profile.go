@@ -9,18 +9,15 @@ import (
 func (s *Server) handleProfile(w http.ResponseWriter, _ *http.Request) {
 	pos, neg := s.Taste.Counts()
 	if dbPos, dbNeg, err := s.Store.ListenSignalCounts(); err == nil {
-		// keep RAM counters at least as high as DB (reload may lag)
 		if dbPos > pos {
 			pos = dbPos
 		}
 		if dbNeg > neg {
 			neg = dbNeg
 		}
-		s.Taste.SetCounts(pos, neg)
 	}
-	mat := s.Taste.Maturity(s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt)
-	explore := s.Taste.EffectiveExplore(s.Cfg.ExploreRatio, s.Cfg.DiscoverExploreRatio,
-		s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt)
+	mat := taste.MaturityOf(pos, s.Cfg.ProfileFormingAt, s.Cfg.ProfileReadyAt)
+	explore := taste.ExploreFor(mat, s.Cfg.ExploreRatio, s.Cfg.DiscoverExploreRatio)
 	artists, _ := s.Store.TopArtists(5)
 	clusters, _ := s.Store.TopClusters(5)
 	confidence := float64(pos) / float64(s.Cfg.ProfileReadyAt)

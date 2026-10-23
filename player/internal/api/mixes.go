@@ -9,56 +9,36 @@ import (
 	"github.com/torwin-job/musik/player/internal/rules"
 )
 
-// Mix shelf definition (VK-style).
-var mixShelf = []struct {
-	Kind     string
-	Title    string
-	Subtitle string
-}{
-	{"for_you", "Для вас", "Персональный микс под вкус"},
-	{"daily", "На сегодня", "Свежий микс на день"},
-	{"favorites", "Избранное", "Треки с сердечком"},
-	{"later", "Потом", "Отложенные треки"},
-	{"new_releases", "Новинки", "Недавно в библиотеке"},
-	{"weekly", "Недельный микс", "Разнообразие по кластерам"},
-	{"weekday_mon", "Понедельник", "Микс дня недели"},
-	{"weekday_tue", "Вторник", "Микс дня недели"},
-	{"weekday_wed", "Среда", "Микс дня недели"},
-	{"weekday_thu", "Четверг", "Микс дня недели"},
-	{"weekday_fri", "Пятница", "Микс дня недели"},
-	{"weekday_sat", "Суббота", "Микс дня недели"},
-	{"weekday_sun", "Воскресенье", "Микс дня недели"},
-}
-
 func (s *Server) handleMixes(w http.ResponseWriter, _ *http.Request) {
 	today := playback.TodayWeekdayKind()
 	blocks := s.globalBlocks()
-	out := make([]map[string]any, 0, len(mixShelf))
-	for _, m := range mixShelf {
+	out := make([]map[string]any, 0, len(playback.Mixes))
+	for _, m := range playback.Mixes {
 		card := map[string]any{
 			"kind": m.Kind, "title": m.Title, "subtitle": m.Subtitle,
 			"highlight": m.Kind == "for_you" || m.Kind == "daily" || m.Kind == today,
 			"today":     m.Kind == today,
 		}
-		if m.Kind == "later" {
+		switch m.Source {
+		case playback.MixSourceLater:
 			tracks, _ := s.Store.LaterList()
 			card["tracks"] = len(tracks)
 			card["ready"] = len(tracks) > 0
 			card["playlist_id"] = nil
-			card["special"] = "later"
+			card["special"] = playback.MixSourceLater
 			if len(tracks) > 0 {
 				card["cover_track_id"] = tracks[0].TrackID
 			}
-		} else if m.Kind == "favorites" {
+		case playback.MixSourceFavorites:
 			tracks, _ := s.Store.FavoritesList()
 			card["tracks"] = len(tracks)
 			card["ready"] = len(tracks) > 0
 			card["playlist_id"] = nil
-			card["special"] = "favorites"
+			card["special"] = playback.MixSourceFavorites
 			if len(tracks) > 0 {
 				card["cover_track_id"] = tracks[0].TrackID
 			}
-		} else {
+		default:
 			id, name, n, coverID, createdAt, err := s.mixMeta(m.Kind, blocks)
 			if err != nil {
 				writeErr(w, 500, "db", err.Error())
@@ -111,8 +91,12 @@ func (s *Server) handleMixPlay(w http.ResponseWriter, r *http.Request) {
 	var ids []int64
 	var name string
 	mode := "playlist"
+	source := ""
+	if mix, ok := playback.MixByKind(kind); ok {
+		source = mix.Source
+	}
 
-	if kind == "later" {
+	if source == playback.MixSourceLater {
 		tracks, err := s.Store.LaterList()
 		if err != nil {
 			writeErr(w, 500, "db", err.Error())
@@ -127,7 +111,7 @@ func (s *Server) handleMixPlay(w http.ResponseWriter, r *http.Request) {
 		}
 		name = "Потом"
 		mode = "later"
-	} else if kind == "favorites" {
+	} else if source == playback.MixSourceFavorites {
 		tracks, err := s.Store.FavoritesList()
 		if err != nil {
 			writeErr(w, 500, "db", err.Error())

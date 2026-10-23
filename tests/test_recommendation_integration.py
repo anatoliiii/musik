@@ -172,11 +172,9 @@ def test_mix_pack_has_distinct_shelf_openings_without_weekday_history(
     )
 
     kinds = [
-        "for_you",
-        "daily",
-        "new_releases",
-        "weekly",
-        *(key for key, _title, _weekday in mixes.WEEKDAY_KEYS),
+        str(item["kind"])
+        for item in mixes.load_mix_contract()
+        if item.get("source") == "generated"
     ]
     openings: dict[str, set[int]] = {}
     full: dict[str, set[int]] = {}

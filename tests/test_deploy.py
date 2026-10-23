@@ -19,15 +19,15 @@ def test_upgrade_requires_stopped_writers_and_backs_up_old_schema(tmp_path):
     with sqlite3.connect(path) as conn:
         conn.execute("DROP TABLE device_tokens")
         conn.execute("DELETE FROM installation_state WHERE key='active_admin_guard'")
-        conn.execute("UPDATE alembic_version SET version_num='musik_7'")
-        conn.execute("PRAGMA user_version=7")
+        conn.execute("UPDATE alembic_version SET version_num='musik_12'")
+        conn.execute("PRAGMA user_version=12")
     with pytest.raises(ValueError, match="update-compose"):
         prepare(environment(tmp_path))
     prepare(environment(tmp_path, MUSIK_WRITERS_STOPPED="1"))
     backups = list((tmp_path / "backups").glob("*.sqlite"))
     assert len(backups) == 1
     with sqlite3.connect(backups[0]) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 12
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == LATEST_SCHEMA_VERSION

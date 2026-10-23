@@ -63,8 +63,12 @@ func main() {
 	}
 	defer store.Close()
 
-	idx := index.New(cfg)
-	tp := taste.New()
+	var idx *index.Index
+	var tp *taste.Profile
+	if !cfg.MultiUser {
+		idx = index.New(cfg)
+		tp = taste.New()
+	}
 
 	staticFS, err := fs.Sub(static.FS, ".")
 	if err != nil {
@@ -108,7 +112,7 @@ func main() {
 	if strings.HasPrefix(addr, ":") {
 		addr = "0.0.0.0" + addr
 	}
-	log.Printf("listening on http://%s  tracks=%d  sessions=multi", addr, idx.Size())
+	log.Printf("listening on http://%s  tracks=%d  sessions=multi", addr, srv.TrackCount())
 	if err := http.ListenAndServe(cfg.Addr, srv.Handler()); err != nil {
 		log.Fatal(err)
 	}

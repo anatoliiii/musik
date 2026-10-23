@@ -95,8 +95,8 @@ func loadIndex(t *testing.T, server *api.Server, rows []db.TrackRow) {
 		server.Play.Idx = idx
 		server.Play.Warm = server.Media.Warm
 	}
-	if server.Builder != nil {
-		server.Builder.Idx = idx
+	if server.Play != nil && server.Play.Builder != nil {
+		server.Play.Builder.Idx = idx
 	}
 }
 

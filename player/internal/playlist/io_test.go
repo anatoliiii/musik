@@ -1,6 +1,7 @@
 package playlist
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -40,7 +41,7 @@ func TestSmartPlaylistRoundTripAndImportExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ids, err := Evaluate(store, parsed)
+	ids, err := Evaluate(context.Background(), store, parsed)
 	if err != nil {
 		t.Fatal(err)
 	}

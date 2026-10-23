@@ -74,17 +74,23 @@ func (p *Profile) SourceName() string {
 // Maturity returns discovering|forming|ready from positive signal count.
 func (p *Profile) Maturity(formingAt, readyAt int) string {
 	p.mu.RLock()
-	defer p.mu.RUnlock()
+	n := p.NPositive
+	p.mu.RUnlock()
+	return MaturityOf(n, formingAt, readyAt)
+}
+
+// MaturityOf is Maturity for a count that is not stored on the profile.
+func MaturityOf(positive, formingAt, readyAt int) string {
 	if readyAt < 1 {
 		readyAt = 15
 	}
 	if formingAt < 1 {
 		formingAt = 5
 	}
-	if p.NPositive >= readyAt {
+	if positive >= readyAt {
 		return StatusReady
 	}
-	if p.NPositive >= formingAt {
+	if positive >= formingAt {
 		return StatusForming
 	}
 	return StatusDiscovering
@@ -92,7 +98,12 @@ func (p *Profile) Maturity(formingAt, readyAt int) string {
 
 // EffectiveExplore blends base explore with discover boost by maturity.
 func (p *Profile) EffectiveExplore(base, discover float64, formingAt, readyAt int) float64 {
-	switch p.Maturity(formingAt, readyAt) {
+	return ExploreFor(p.Maturity(formingAt, readyAt), base, discover)
+}
+
+// ExploreFor is EffectiveExplore for a maturity value already computed.
+func ExploreFor(maturity string, base, discover float64) float64 {
+	switch maturity {
 	case StatusDiscovering:
 		if discover > base {
 			return discover

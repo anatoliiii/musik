@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/torwin-job/musik/player/internal/playback"
 )
 
 type flightEntry struct {
@@ -138,7 +136,11 @@ func (s *Service) ensureMobileFile(id int64, srcPath string) (path, ctype string
 		return "", "", err
 	}
 
-	ferr := sharedMobileFlight.do(id, func() error {
+	flightID := id
+	if format == "mp3" {
+		flightID = -id
+	}
+	ferr := sharedMobileFlight.do(flightID, func() error {
 		if dstInfo, err := os.Stat(dst); err == nil && !dstInfo.ModTime().Before(srcInfo.ModTime()) && dstInfo.Size() > 0 {
 			return nil
 		}
@@ -310,11 +312,11 @@ func (s *Service) ensureWarm(id int64) {
 	if _, ok := s.warm.get(id); ok {
 		return
 	}
-	row, ok := s.idx.RowOf(id)
-	if !ok {
+	file, ok := s.files(id)
+	if !ok || file.Path == "" {
 		return
 	}
-	src := s.idx.MetaAt(row).Path
+	src := file.Path
 	path, ctype, err := s.ensureMobileFile(id, src)
 	if err != nil {
 		log.Printf("warm track %d: %v", id, err)
@@ -323,37 +325,8 @@ func (s *Service) ensureWarm(id int64) {
 	s.loadWarmFromFile(id, path, ctype)
 }
 
-func collectWarmIDs(sess *playback.Session) []int64 {
-	if sess == nil {
-		return nil
-	}
-	seen := map[int64]bool{}
-	var ids []int64
-	add := func(id int64) {
-		if id == 0 || seen[id] {
-			return
-		}
-		seen[id] = true
-		ids = append(ids, id)
-	}
-	add(sess.Current)
-	for i, item := range sess.Queue {
-		if i >= 6 {
-			break
-		}
-		add(item.TrackID)
-	}
-	if len(sess.DailyIDs) > 0 {
-		for i := sess.DailyPos; i < len(sess.DailyIDs) && len(ids) < 7; i++ {
-			add(sess.DailyIDs[i])
-		}
-	}
-	return ids
-}
-
-// Warm asynchronously prepares the current and upcoming session tracks.
-func (s *Service) Warm(sess *playback.Session) {
-	ids := collectWarmIDs(sess)
+// Warm asynchronously prepares the given tracks for mobile streaming.
+func (s *Service) Warm(ids []int64) {
 	if len(ids) == 0 {
 		return
 	}
@@ -401,6 +374,17 @@ func (s *Service) ServeMobile(w http.ResponseWriter, r *http.Request, id int64, 
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 
+	// An explicit format is a compatibility request, not the mobile default.
+	// Never return a small ALAC/M4A original or a warm AAC entry for q=mp3.
+	format := strings.ToLower(r.URL.Query().Get("q"))
+	if format == "" {
+		format = strings.ToLower(r.URL.Query().Get("fmt"))
+	}
+	if format == "mp3" || format == "aac" {
+		s.serveFormat(w, r, id, srcPath, format)
+		return
+	}
+
 	if s.serveMobileCached(w, r, id, srcPath) {
 		return
 	}
@@ -415,4 +399,31 @@ func (s *Service) ServeMobile(w http.ResponseWriter, r *http.Request, id int64, 
 		return
 	}
 	serveFile(w, r, path, ctype)
+}
+
+// serveFormat uses the same disk cache and ffmpeg budget as mobile playback,
+// but honors the requested codec even for small originals.
+func (s *Service) serveFormat(w http.ResponseWriter, r *http.Request, id int64, srcPath, format string) {
+	src, err := os.Stat(srcPath)
+	if err != nil {
+		http.Error(w, "file missing", http.StatusNotFound)
+		return
+	}
+	dst := s.mobileCachePath(id, format)
+	key := id
+	if format == "mp3" {
+		key = -id
+	}
+	err = sharedMobileFlight.do(key, func() error {
+		if cached, e := os.Stat(dst); e == nil && cached.Size() > 0 && !cached.ModTime().Before(src.ModTime()) {
+			return nil
+		}
+		return s.transcodeMobile(srcPath, dst, format)
+	})
+	if err != nil {
+		log.Printf("compatible transcode %d: %v", id, err)
+		http.Error(w, "audio preparation failed", http.StatusBadGateway)
+		return
+	}
+	serveFile(w, r, dst, mobileContentType(format))
 }

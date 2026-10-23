@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/torwin-job/musik/player/internal/playback"
 	"github.com/torwin-job/musik/player/internal/themes"
 )
 
@@ -68,8 +69,11 @@ func playHTTPStatus(err error) int {
 	if err == nil {
 		return 0
 	}
-	switch err.Error() {
-	case "нет доступных треков", "ничего не найдено", "track not found", "track not in playlist":
+	switch {
+	case errors.Is(err, playback.ErrNoTracks),
+		errors.Is(err, playback.ErrNothingFound),
+		errors.Is(err, playback.ErrTrackNotFound),
+		errors.Is(err, playback.ErrTrackNotInPlaylist):
 		return http.StatusNotFound
 	default:
 		return http.StatusBadRequest
@@ -91,7 +95,8 @@ func (s *Server) staticHandler() http.Handler {
 		}
 		setStaticCacheControl(w, r.URL.Path)
 		if r.URL.Path == "/" || r.URL.Path == "" {
-			f, err := s.Static.Open("index.html")
+			page := s.uiPage(r)
+			f, err := s.Static.Open(page)
 			if err != nil {
 				http.NotFound(w, r)
 				return
@@ -104,16 +109,31 @@ func (s *Server) staticHandler() http.Handler {
 			}
 			rs, ok := f.(io.ReadSeeker)
 			if !ok {
-				r.URL.Path = "/index.html"
+				r.URL.Path = "/" + page
 				fileServer.ServeHTTP(w, r)
 				return
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			http.ServeContent(w, r, "index.html", modTime(stat), rs)
+			// The same URL serves either interface; caches must key on the cookie.
+			w.Header().Add("Vary", "Cookie")
+			http.ServeContent(w, r, page, modTime(stat), rs)
 			return
 		}
 		fileServer.ServeHTTP(w, r)
 	})
+}
+
+// uiPage picks the interface for "/": the musik_ui cookie set from the
+// interface switch, else MUSIK_UI, else the original interface.
+func (s *Server) uiPage(r *http.Request) string {
+	choice := s.Cfg.UI
+	if c, err := r.Cookie("musik_ui"); err == nil {
+		choice = c.Value
+	}
+	if choice == "mozgolika" {
+		return "mozgolika.html"
+	}
+	return "index.html"
 }
 
 func setStaticCacheControl(w http.ResponseWriter, path string) {
@@ -130,7 +150,7 @@ func staticCacheControl(path string) string {
 		return "public, max-age=604800"
 	}
 	switch path {
-	case "/", "", "/index.html":
+	case "/", "", "/index.html", "/mozgolika.html":
 		// Revalidate the page itself: with max-age=3600 a browser keeps an old
 		// index.html (and the app.js it pairs with) for up to an hour after a deploy.
 		return "no-cache"
@@ -209,8 +229,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"static": s.staticVersion(),
 	}
 	if s.Auth == nil || !s.Auth.Cfg.Enabled() || s.Auth.Authorized(r) {
-		out["tracks"] = s.Idx.Size()
-		out["dim"] = s.Idx.Dim()
+		tracks, dim := s.catalogStats()
+		out["tracks"] = tracks
+		out["dim"] = dim
 	}
 	writeJSON(w, out)
 }
@@ -222,7 +243,7 @@ func (s *Server) staticVersion() string {
 		return ""
 	}
 	h := sha256.New()
-	for _, name := range []string{"index.html", "app.js", "style.css"} {
+	for _, name := range []string{"index.html", "mozgolika.html", "app.js", "style.css", "redesign.css"} {
 		f, err := s.Static.Open(name)
 		if err != nil {
 			continue
@@ -277,12 +298,7 @@ func (s *Server) handleManifest(w http.ResponseWriter, _ *http.Request) {
   "display": "standalone",
   "background_color": "#141210",
   "theme_color": "#c45c26",
-  "description": "Local smart music player",
-  "icons": [
-    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
-    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+  "description": "Local smart music player"
 }`))
 }
 
