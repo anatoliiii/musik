@@ -2142,8 +2142,8 @@ const MAP_LAYERS_DEFAULT = {
 };
 // Denser than this many points on screen, neighbour lines are only noise.
 const MAP_SIMILAR_MAX = 20000;
-// Transitions drawn at the fitted view; zooming in shows more.
-const MAP_TRANSITIONS_OVERVIEW = 200;
+// Transitions drawn at once: the strongest of those touching the screen.
+const MAP_TRANSITIONS_SHOWN = 250;
 const libMap = {
   data: null,
   loading: null,
@@ -2445,9 +2445,10 @@ function renderMapLabels() {
   const box = $("map-labels");
   box.innerHTML = "";
   libMap.labelItems = [];
-  const add = (el, x, y) => {
+  // Moods go down first; island labels fill the room that is left.
+  const add = (el, x, y, rank) => {
     box.appendChild(el);
-    libMap.labelItems.push({ el, x, y });
+    libMap.labelItems.push({ el, x, y, rank });
   };
   if (libMap.layers.islands) {
     for (const isl of d.islands) {
@@ -2458,7 +2459,7 @@ function renderMapLabels() {
       const title = isl.genre || isl.artist;
       b.title = `Включить остров «${title}» — ${isl.ids.length} ${ruPlural(isl.ids.length, "трек", "трека", "треков")}, сначала любимые`;
       b.onclick = () => playMapIds(isl.ids, `Карта · ${title}`);
-      add(b, isl.x, isl.y);
+      add(b, isl.x, isl.y, 1);
     }
   }
   for (const l of d.labels) {
@@ -2469,7 +2470,7 @@ function renderMapLabels() {
     b.textContent = l.name;
     b.title = `Включить «${l.name}» — ${l.track_ids.length} ${ruPlural(l.track_ids.length, "трек", "трека", "треков")}`;
     b.onclick = () => playMapIds(l.track_ids, `Карта · ${l.name}`);
-    add(b, l.x, l.y);
+    add(b, l.x, l.y, 0);
   }
 }
 
@@ -2633,13 +2634,14 @@ function drawMapLayer() {
     ctx.stroke();
   }
   if (layers.transitions && d.trans.length) {
-    // The server sends the strongest first; zooming in reveals the rest, so
-    // the overview stays a set of paths rather than a hairball.
-    const shown = Math.round(MAP_TRANSITIONS_OVERVIEW * libMap.view.s * libMap.view.s);
+    // The server sends the strongest first. Only the strongest that touch
+    // the screen are drawn, so any zoom shows paths rather than a hairball.
+    let left = MAP_TRANSITIONS_SHOWN;
     ctx.strokeStyle = col.accent;
     const lmax = Math.log1p(d.maxTrans);
-    for (const [a, b, c] of d.trans.slice(0, shown)) {
-      if (off(a, 200) && off(b, 200)) continue;
+    for (const [a, b, c] of d.trans) {
+      if (off(a) && off(b)) continue;
+      if (left-- <= 0) break;
       const k = Math.log1p(c) / lmax;
       ctx.globalAlpha = 0.06 + 0.32 * k;
       ctx.lineWidth = 0.6 + 1.6 * k;
@@ -2688,41 +2690,35 @@ function mapArc(ctx, ax, ay, bx, by) {
   ctx.stroke();
 }
 
-// Labels are DOM buttons over the canvas. Each tries its spot, then just
-// below, above and to the sides, and only then stacks under the others.
+// Labels are DOM buttons over the canvas. Each tries its own spot, then one
+// step below, above or to a side. A label with no room that close is hidden
+// rather than pushed away from its points; zooming in brings it back.
 function placeMapLabels() {
   const placed = [];
   const items = libMap.labelItems.map((it) => {
     const [sx, sy] = mapToScreen(it.x, it.y);
     return { ...it, sx, sy, bw: it.el.offsetWidth, bh: it.el.offsetHeight };
   });
-  items.sort((a, b) => a.sy - b.sy);
+  items.sort((a, b) => a.rank - b.rank || a.sy - b.sy);
   const hits = (x, y, it) =>
     placed.some((p) => x < p.x + p.bw + 4 && p.x < x + it.bw + 4 && y < p.y + p.bh + 4 && p.y < y + it.bh + 4);
   for (const it of items) {
-    const outside = it.sx < -40 || it.sy < -20 || it.sx > libMap.w + 40 || it.sy > libMap.h + 20;
-    it.el.style.visibility = outside ? "hidden" : "";
-    if (outside) continue;
-    const clampX = (x) => Math.min(libMap.w - it.bw - 6, Math.max(6, x));
-    const clampY = (y) => Math.min(libMap.h - it.bh - 6, Math.max(6, y));
     const cx = it.sx - it.bw / 2;
     const cy = it.sy - it.bh / 2;
     const dy = it.bh + 4;
     const dx = it.bw / 2 + 6;
     let spot = null;
     for (const [ox, oy] of [[0, 0], [0, dy], [0, -dy], [dx, 0], [-dx, 0], [dx, dy], [-dx, dy], [dx, -dy], [-dx, -dy]]) {
-      const x = clampX(cx + ox);
-      const y = clampY(cy + oy);
-      if (!hits(x, y, it)) {
+      const x = cx + ox;
+      const y = cy + oy;
+      const inside = x >= 4 && y >= 4 && x + it.bw <= libMap.w - 4 && y + it.bh <= libMap.h - 4;
+      if (inside && !hits(x, y, it)) {
         spot = [x, y];
         break;
       }
     }
-    if (!spot) {
-      let y = cy;
-      while (hits(clampX(cx), y, it) && y < libMap.h) y += dy;
-      spot = [clampX(cx), clampY(y)];
-    }
+    it.el.style.visibility = spot ? "" : "hidden";
+    if (!spot) continue;
     placed.push({ x: spot[0], y: spot[1], bw: it.bw, bh: it.bh });
     it.el.style.transform = `translate(${Math.round(spot[0])}px, ${Math.round(spot[1])}px)`;
   }
@@ -3005,6 +3001,18 @@ function mapSelectionIds(shuffle) {
   return rows.slice(0, MAP_PLAY_LIMIT).map((i) => d.ids[i]);
 }
 
+function setMapFull(on) {
+  const el = $("lib-map");
+  if (!el) return;
+  el.classList.toggle("is-full", on);
+  $("map-full").setAttribute("aria-pressed", String(on));
+  $("map-full").setAttribute("aria-label", on ? "Выйти из полноэкранного режима" : "На весь экран");
+  document.body.style.overflow = on ? "hidden" : "";
+  if (on && !document.fullscreenElement) el.requestFullscreen?.().catch(() => {});
+  if (!on && document.fullscreenElement === el) document.exitFullscreen?.().catch(() => {});
+  resizeMap();
+}
+
 function setMapLasso(on) {
   libMap.lasso = on;
   $("map-lasso").setAttribute("aria-pressed", String(on));
@@ -3028,6 +3036,13 @@ function wireLibraryMap() {
   $("map-lasso").onclick = () => setMapLasso(!libMap.lasso);
   $("map-zoom-in").onclick = () => mapZoomAt(libMap.w / 2, libMap.h / 2, 1.5);
   $("map-zoom-out").onclick = () => mapZoomAt(libMap.w / 2, libMap.h / 2, 1 / 1.5);
+  $("map-full").onclick = () => setMapFull(!$("lib-map").classList.contains("is-full"));
+  document.addEventListener("fullscreenchange", () => {
+    if (!document.fullscreenElement && $("lib-map").classList.contains("is-full")) setMapFull(false);
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && $("lib-map").classList.contains("is-full")) setMapFull(false);
+  });
   $("map-fit").onclick = () => {
     libMap.view = { s: 1, tx: 0, ty: 0 };
     libMap.dirty = true;
@@ -3173,6 +3188,7 @@ function renderLib(q) {
       return;
     }
     if (libCountText) $("lib-count").textContent = libCountText;
+    if (mapEl.classList.contains("is-full")) setMapFull(false);
   }
   const artistPage = libTab === "artists" && !!libArtist;
   $("lib-artist-head").hidden = !artistPage;
