@@ -35,7 +35,7 @@
   <link rel="stylesheet" href="/themes/base.css" />
   <link rel="stylesheet" href="/style.css?v=listen1" />
   <script>try { var savedTheme=JSON.parse(localStorage.getItem("musik_theme")||"null"); if(savedTheme&&savedTheme.id&&savedTheme.id!=="ember"&&/^[a-z][a-z0-9-]{0,31}$/.test(savedTheme.id)) document.write('<link rel="stylesheet" href="/themes/'+savedTheme.id+'.css?v=retro5">'); } catch(e) {};</script>
-  <link rel="stylesheet" href="/redesign.css?v=map2" />
+  <link rel="stylesheet" href="/redesign.css?v=map3" />
 </head>
 <body>
   <div id="login-gate" class="login-gate" hidden>
@@ -390,8 +390,11 @@
             <div class="map-zoom">
               <button type="button" class="map-icon" id="map-zoom-out" aria-label="Отдалить">−</button>
               <button type="button" class="map-icon" id="map-zoom-in" aria-label="Приблизить">+</button>
-              <button type="button" class="map-icon" id="map-fit" aria-label="Показать всю карту">
-                <svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/></svg>
+              <button type="button" class="map-icon" id="map-fit" aria-label="Показать всю карту" title="Показать всю карту">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></g><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg>
+              </button>
+              <button type="button" class="map-icon" id="map-full" aria-label="На весь экран" aria-pressed="false" title="На весь экран">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path class="map-full-on" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/><path class="map-full-off" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M9 4v4a1 1 0 0 1-1 1H4M20 9h-4a1 1 0 0 1-1-1V4M15 20v-4a1 1 0 0 1 1-1h4M4 15h4a1 1 0 0 1 1 1v4"/></svg>
               </button>
             </div>
           </div>
@@ -784,6 +787,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=map2"></script>
+  <script src="/app.js?v=map3"></script>
 </body>
 </html>

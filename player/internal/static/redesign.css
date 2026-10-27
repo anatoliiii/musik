@@ -1010,6 +1010,17 @@ html.cover-tint:has(body[data-nav="now"]) { background: var(--np-tint, var(--bg)
 }
 .map-selection[hidden] { display: none; }
 #map-sel-count { margin-right: auto; color: var(--fg-soft); }
+/* Full screen: the native Fullscreen API where it exists, and the same fixed
+   layout without it (iPhone Safari), so the class alone is enough. */
+.lib-map.is-full {
+  position: fixed; inset: 0; z-index: 1000; margin: 0;
+  padding: max(12px, env(safe-area-inset-top)) 16px max(12px, env(safe-area-inset-bottom));
+  grid-template-rows: auto auto minmax(0, 1fr); background: var(--bg);
+}
+.lib-map.is-full .map-stage { height: auto; min-height: 0; }
+.map-full-off { display: none; }
+.lib-map.is-full .map-full-on { display: none; }
+.lib-map.is-full .map-full-off { display: inline; }
 @media (max-width: 640px) {
   .map-genre { flex: 1 1 100%; }
   .map-stage { height: 64vh; }
