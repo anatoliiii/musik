@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"strings"
+
+	"github.com/torwin-job/musik/player/internal/privacy"
 )
 
 // parseSegments decodes the JSON array stored in tracks.artist_segments.
@@ -193,8 +195,11 @@ FROM tracks t
 LEFT JOIN features f ON f.track_id = t.id
 LEFT JOIN track_stats ts ON ts.track_id = t.id AND ts.profile_id = ?
 WHERE t.is_active = 1 AND t.is_duplicate_of IS NULL
+  AND (t.path NOT LIKE ? ESCAPE '!' OR t.path LIKE ? ESCAPE '!')
 ORDER BY t.id`
-	args := []any{s.ProfileID}
+	// Other profiles' private folders stay out (see package privacy).
+	private := "%/" + likeEscape(privacy.PrivateDir) + "/"
+	args := []any{s.ProfileID, private + "%", private + likeEscape(s.ProfileID) + "/%"}
 	if limit > 0 {
 		q += ` LIMIT ?`
 		args = append(args, limit)
@@ -217,4 +222,9 @@ func (s *Store) TrackPath(id int64) (string, error) {
 		return "", nil
 	}
 	return path, err
+}
+
+// likeEscape escapes v for a LIKE pattern that uses ESCAPE '!'.
+func likeEscape(v string) string {
+	return strings.NewReplacer("!", "!!", "%", "!%", "_", "!_").Replace(v)
 }

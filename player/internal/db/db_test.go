@@ -869,3 +869,28 @@ func TestReplaceTasteCentroidsEmptyDeletesThatVersion(t *testing.T) {
 func daysAgo(days int) string {
 	return time.Now().UTC().AddDate(0, 0, -days).Format(time.RFC3339Nano)
 }
+
+func TestCatalogTracksHideOtherProfilesPrivateFolders(t *testing.T) {
+	store, _ := openTestStore(t)
+	for id, path := range map[int]string{
+		1: "/music/Band/a.flac",
+		2: "/music/_private/" + store.ProfileID + "/b.flac",
+		3: "/music/_private/someone-else/c.flac",
+		4: "/music/xprivate/d.flac",
+	} {
+		if _, err := store.DB.Exec(`INSERT INTO tracks(id, path, title, created_at, updated_at) VALUES (?, ?, 'T', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`, id, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tracks, err := store.ListCatalogTracks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[int64]bool{}
+	for _, tr := range tracks {
+		got[tr.ID] = true
+	}
+	if !got[1] || !got[2] || got[3] || !got[4] || len(got) != 3 {
+		t.Fatalf("catalog ids = %v", got)
+	}
+}

@@ -33,6 +33,7 @@ type Server struct {
 	HTTP   *http.Client
 	Auth   *auth.Gate
 	multi  *multiUserState
+	yandex *yandexPlugin
 
 	listeners    *atomic.Int32
 	loginLimiter *auth.LoginLimiter
@@ -182,6 +183,17 @@ var apiRoutes = []routeDescriptor{
 	{"POST", "/api/tags", scopeProfile, (*Server).handleTagsCreate},
 	{"POST", "/api/tags/{id}/tracks", scopeProfile, (*Server).handleTagAddTrack},
 	{"DELETE", "/api/tags/{id}/tracks", scopeProfile, (*Server).handleTagRemoveTrack},
+	{"GET", "/api/yandex/status", scopeProfile, (*Server).handleYandexStatus},
+	{"POST", "/api/yandex/login", scopeProfile, (*Server).handleYandexLogin},
+	{"POST", "/api/yandex/login/poll", scopeProfile, (*Server).handleYandexLoginPoll},
+	{"POST", "/api/yandex/login/token", scopeProfile, (*Server).handleYandexLoginToken},
+	{"POST", "/api/yandex/logout", scopeProfile, (*Server).handleYandexLogout},
+	{"GET", "/api/yandex/search", scopeProfile, (*Server).handleYandexSearch},
+	{"GET", "/api/yandex/artists/{id}", scopeProfile, (*Server).handleYandexArtist},
+	{"GET", "/api/yandex/albums/{id}", scopeProfile, (*Server).handleYandexAlbum},
+	{"POST", "/api/yandex/downloads", scopeProfile, (*Server).handleYandexDownload},
+	{"GET", "/api/yandex/downloads", scopeProfile, (*Server).handleYandexDownloads},
+	{"DELETE", "/api/yandex/downloads/{id}", scopeProfile, (*Server).handleYandexDownloadCancel},
 	{"GET", "/manifest.webmanifest", scopePublic, (*Server).handleManifest},
 }
 
@@ -253,6 +265,7 @@ func New(cfg config.Config, store *db.Store, idx *index.Index, tp *taste.Profile
 		latency:      newLatencyRecorder(),
 		backgroundIO: make(chan func(), 256),
 	}
+	s.enableYandex()
 	// Multi-user keeps one server for routes, auth, and media. Taste indexes
 	// and engines belong to profiles and are opened on demand.
 	if cfg.MultiUser {

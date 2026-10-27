@@ -445,6 +445,232 @@
     }
   ],
   "paths": {
+    "/api/yandex/status": {
+      "get": {
+        "summary": "Yandex Music plugin state and the caller's Yandex sign-in",
+        "responses": {
+          "200": {
+            "description": "enabled, connected, login"
+          }
+        }
+      }
+    },
+    "/api/yandex/login": {
+      "post": {
+        "summary": "Start Yandex OAuth device login",
+        "responses": {
+          "200": {
+            "description": "user_code and verification_url to show"
+          }
+        }
+      }
+    },
+    "/api/yandex/login/poll": {
+      "post": {
+        "summary": "Poll the device login once",
+        "responses": {
+          "200": {
+            "description": "status pending or ok"
+          },
+          "410": {
+            "description": "Code expired"
+          }
+        }
+      }
+    },
+    "/api/yandex/login/token": {
+      "post": {
+        "summary": "Sign in to Yandex with an existing OAuth token",
+        "responses": {
+          "200": {
+            "description": "Signed in"
+          },
+          "400": {
+            "description": "Token required"
+          }
+        }
+      }
+    },
+    "/api/yandex/logout": {
+      "post": {
+        "summary": "Forget the caller's Yandex token and stop their downloads",
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        }
+      }
+    },
+    "/api/yandex/search": {
+      "get": {
+        "summary": "Search Yandex Music",
+        "responses": {
+          "200": {
+            "description": "artists, albums and tracks"
+          },
+          "403": {
+            "description": "Not signed in to Yandex"
+          },
+          "404": {
+            "description": "Plugin disabled (MUSIK_YANDEX) or not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "all",
+                "artist",
+                "album",
+                "track"
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "/api/yandex/artists/{id}": {
+      "get": {
+        "summary": "Yandex artist with albums and popular tracks",
+        "responses": {
+          "200": {
+            "description": "Artist"
+          },
+          "403": {
+            "description": "Not signed in to Yandex"
+          },
+          "404": {
+            "description": "Plugin disabled (MUSIK_YANDEX) or not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/yandex/albums/{id}": {
+      "get": {
+        "summary": "Yandex album with tracks",
+        "responses": {
+          "200": {
+            "description": "Album"
+          },
+          "403": {
+            "description": "Not signed in to Yandex"
+          },
+          "404": {
+            "description": "Plugin disabled (MUSIK_YANDEX) or not found"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/api/yandex/downloads": {
+      "get": {
+        "summary": "The caller's Yandex download jobs, newest first",
+        "responses": {
+          "200": {
+            "description": "jobs"
+          }
+        }
+      },
+      "post": {
+        "summary": "Download a Yandex track, album or artist into the library, then rescan. private:true saves into the active profile's own folder, hidden from other profiles.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "kind",
+                  "id"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "track",
+                      "album",
+                      "artist"
+                    ]
+                  },
+                  "id": {
+                    "type": "string"
+                  },
+                  "private": {
+                    "type": "boolean",
+                    "default": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Queued job"
+          },
+          "403": {
+            "description": "Not signed in to Yandex"
+          },
+          "404": {
+            "description": "Plugin disabled (MUSIK_YANDEX) or not found"
+          }
+        }
+      }
+    },
+    "/api/yandex/downloads/{id}": {
+      "delete": {
+        "summary": "Cancel one of the caller's Yandex downloads",
+        "responses": {
+          "200": {
+            "description": "Cancelled"
+          },
+          "404": {
+            "description": "No such job"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "security": [],

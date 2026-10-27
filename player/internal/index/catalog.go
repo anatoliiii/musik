@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/torwin-job/musik/player/internal/db"
+	"github.com/torwin-job/musik/player/internal/privacy"
 )
 
 // Catalog is the immutable, profile-independent part of the index: track
@@ -30,6 +31,11 @@ type Catalog struct {
 	// stamps[row] identifies the stored embedding (features.computed_at and
 	// its dimension), so a refresh reuses vectors that did not change.
 	stamps []string
+	// private is set when some track lives in a profile's private folder;
+	// views caches ForProfile results for this catalog.
+	private bool
+	viewMu  sync.Mutex
+	views   map[string]*Catalog
 }
 
 func embeddingStamp(r db.TrackRow) string {
@@ -42,10 +48,29 @@ func embeddingStamp(r db.TrackRow) string {
 // buildCatalog builds a catalog from rows ordered by id. vector returns the
 // normalized embedding of row i (it may reuse a vector from a previous catalog).
 func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow) ([]float32, error)) (*Catalog, error) {
-	n := len(rows)
+	meta := make([]Meta, len(rows))
+	stamps := make([]string, len(rows))
+	for i, r := range rows {
+		meta[i] = Meta{
+			ID: r.ID, Path: r.Path, Title: r.Title, Artist: r.Artist,
+			Artists: r.ArtistSegments, AlbumArtist: r.AlbumArtist, Album: r.Album,
+			Duration: r.Duration, FileMD5: r.FileMD5, CreatedAt: parseTime(r.CreatedAt),
+			ArtworkPath: r.ArtworkPath, ClusterID: r.ClusterID,
+			Year: r.Year, BPM: r.BPM, LUFS: r.LUFS, HasBPM: r.HasBPM, HasLUFS: r.HasLUFS,
+			KeyName: r.KeyName,
+		}
+		stamps[i] = embeddingStamp(r)
+	}
+	return assembleCatalog(meta, stamps, dim, func(i int) ([]float32, error) { return vector(i, rows[i]) })
+}
+
+// assembleCatalog builds a catalog from track metadata ordered by id and
+// builds the lookups every profile index shares.
+func assembleCatalog(meta []Meta, stamps []string, dim int, vector func(i int) ([]float32, error)) (*Catalog, error) {
+	n := len(meta)
 	c := &Catalog{
 		ids:          make([]int64, n),
-		meta:         make([]Meta, n),
+		meta:         meta,
 		matrix:       make([]float32, n*dim),
 		n:            n,
 		d:            dim,
@@ -56,7 +81,7 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 		albumRows:    make(map[string][]int),
 		artistAlbums: make(map[string][]int),
 		ruleIDs:      make(map[string][]int64),
-		stamps:       make([]string, n),
+		stamps:       stamps,
 	}
 	if n == 0 {
 		c.d = 0
@@ -64,21 +89,15 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 	}
 	artistNames := make(map[string]string)
 	albumNames := make(map[string][2]string)
-	for i, r := range rows {
-		vec, err := vector(i, r)
+	for i, r := range meta {
+		vec, err := vector(i)
 		if err != nil {
 			return nil, err
 		}
 		copy(c.matrix[i*dim:(i+1)*dim], vec[:dim])
 		c.ids[i] = r.ID
-		c.stamps[i] = embeddingStamp(r)
-		c.meta[i] = Meta{
-			ID: r.ID, Path: r.Path, Title: r.Title, Artist: r.Artist,
-			Artists: r.ArtistSegments, AlbumArtist: r.AlbumArtist, Album: r.Album,
-			Duration: r.Duration, FileMD5: r.FileMD5, CreatedAt: parseTime(r.CreatedAt),
-			ArtworkPath: r.ArtworkPath, ClusterID: r.ClusterID,
-			Year: r.Year, BPM: r.BPM, LUFS: r.LUFS, HasBPM: r.HasBPM, HasLUFS: r.HasLUFS,
-			KeyName: r.KeyName,
+		if privacy.PrivateOwner(r.Path) != "" {
+			c.private = true
 		}
 		c.idRow[r.ID] = i
 		if r.FileMD5 != "" {
@@ -97,7 +116,7 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 				albumNames[aKey] = [2]string{owner, strings.TrimSpace(r.Album)}
 			}
 		}
-		for _, name := range trackArtistNames(r.Artist, r.ArtistSegments) {
+		for _, name := range trackArtistNames(r.Artist, r.Artists) {
 			key := normName(name)
 			if key == "" {
 				continue
@@ -134,6 +153,54 @@ func buildCatalog(rows []db.TrackRow, dim int, vector func(i int, r db.TrackRow)
 		return names[0], names[1]
 	})
 	return c, nil
+}
+
+// ForProfile returns the part of the catalog profileID may see: shared
+// tracks plus that profile's own private ones (see package privacy). An
+// empty profileID gets the shared tracks only. Without private tracks the
+// catalog is returned as is; otherwise each view is built once per catalog,
+// and profiles without private music share the one shared view.
+func (c *Catalog) ForProfile(profileID string) *Catalog {
+	if c == nil || !c.private {
+		return c
+	}
+	owns := false
+	if profileID != "" {
+		for _, m := range c.meta {
+			if privacy.PrivateOwner(m.Path) == profileID {
+				owns = true
+				break
+			}
+		}
+	}
+	if !owns {
+		profileID = ""
+	}
+	c.viewMu.Lock()
+	defer c.viewMu.Unlock()
+	if v := c.views[profileID]; v != nil {
+		return v
+	}
+	keep := make([]int, 0, c.n)
+	for i, m := range c.meta {
+		if privacy.VisibleTo(m.Path, profileID) {
+			keep = append(keep, i)
+		}
+	}
+	meta := make([]Meta, len(keep))
+	stamps := make([]string, len(keep))
+	for j, i := range keep {
+		meta[j], stamps[j] = c.meta[i], c.stamps[i]
+	}
+	v, _ := assembleCatalog(meta, stamps, c.d, func(j int) ([]float32, error) {
+		i := keep[j]
+		return c.matrix[i*c.d : (i+1)*c.d], nil
+	})
+	if c.views == nil {
+		c.views = map[string]*Catalog{}
+	}
+	c.views[profileID] = v
+	return v
 }
 
 func addRuleTarget(c *Catalog, targetType, targetKey string, id int64) {

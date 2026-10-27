@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -12,20 +13,9 @@ import (
 )
 
 func (s *Server) handleLibraryRescan(w http.ResponseWriter, _ *http.Request) {
-	s.ensureWorkerBeforeEnqueue()
-	rescanPayload := map[string]any{"mixes": playback.GeneratedMixContract()}
-	rescanBody, _ := json.Marshal(rescanPayload)
-	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": "full_rescan", "payload": rescanPayload})
+	out, code, err := s.enqueueRescan()
 	if err != nil {
-		id, e2 := s.Store.EnqueueJob("full_rescan", string(rescanBody))
-		if e2 != nil {
-			writeErr(w, 503, "enqueue_failed", "worker unreachable and local enqueue failed: "+err.Error())
-			return
-		}
-		writeJSON(w, map[string]any{
-			"ok": true, "id": id, "job_id": id, "status": "pending",
-			"hint": "start `musik worker` to process jobs",
-		})
+		writeErr(w, code, "enqueue_failed", err.Error())
 		return
 	}
 	if code >= 400 {
@@ -33,6 +23,26 @@ func (s *Server) handleLibraryRescan(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	writeJSON(w, out)
+}
+
+// enqueueRescan starts the scan → embed → mixes pipeline for new files,
+// through the worker or, when it is down, the database queue.
+func (s *Server) enqueueRescan() (any, int, error) {
+	s.ensureWorkerBeforeEnqueue()
+	rescanPayload := map[string]any{"mixes": playback.GeneratedMixContract()}
+	rescanBody, _ := json.Marshal(rescanPayload)
+	out, code, err := s.proxyWorker("POST", "/jobs", map[string]any{"kind": "full_rescan", "payload": rescanPayload})
+	if err != nil {
+		id, e2 := s.Store.EnqueueJob("full_rescan", string(rescanBody))
+		if e2 != nil {
+			return nil, 503, errors.New("worker unreachable and local enqueue failed: " + err.Error())
+		}
+		return map[string]any{
+			"ok": true, "id": id, "job_id": id, "status": "pending",
+			"hint": "start `musik worker` to process jobs",
+		}, 200, nil
+	}
+	return out, code, nil
 }
 
 func (s *Server) handleEnqueueJob(w http.ResponseWriter, r *http.Request) {

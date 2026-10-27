@@ -11,6 +11,10 @@ func (s *Server) handleTrackLyrics(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "bad_id", "bad track id")
 		return
 	}
+	if s.trackHidden(id) {
+		writeErr(w, 404, "not_found", "track not found")
+		return
+	}
 	ly, ok, err := s.Store.GetLyrics(id)
 	if err != nil {
 		writeErr(w, 500, "db", err.Error())

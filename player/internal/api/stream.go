@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/torwin-job/musik/player/internal/privacy"
 )
 
 func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -19,7 +21,7 @@ func (s *Server) handleStream(w http.ResponseWriter, r *http.Request) {
 	path := ""
 	if ok {
 		path = s.Idx.MetaAt(row).Path
-	} else if p, err := s.Store.TrackPath(id); err == nil && p != "" {
+	} else if p, err := s.Store.TrackPath(id); err == nil && p != "" && privacy.VisibleTo(p, s.Store.ProfileID) {
 		path = p
 	} else {
 		writeErr(w, 404, "not_found", "not found")
@@ -75,4 +77,17 @@ func id3v2Len(r io.ReaderAt) int64 {
 		n += 10
 	}
 	return n
+}
+
+// trackHidden reports a track that exists but sits in another profile's
+// private folder. Handlers that look tracks up outside the profile index
+// answer such ids as not found.
+func (s *Server) trackHidden(id int64) bool {
+	if s.Idx != nil {
+		if _, ok := s.Idx.RowOf(id); ok {
+			return false
+		}
+	}
+	p, err := s.Store.TrackPath(id)
+	return err == nil && p != "" && !privacy.VisibleTo(p, s.Store.ProfileID)
 }

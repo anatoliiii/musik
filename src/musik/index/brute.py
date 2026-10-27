@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from musik.db.schema import connect
+from musik.privacy import visible_to
 
 
 @dataclass(frozen=True)
@@ -138,6 +139,8 @@ def load_index() -> EmbeddingIndex:
             """,
             {"profile": conn.profile_id},
         ).fetchall()
+        # Mixes and tips for one profile never draw on another's private folder.
+        rows = [row for row in rows if visible_to(row["path"], conn.profile_id)]
 
     if not rows:
         return EmbeddingIndex(

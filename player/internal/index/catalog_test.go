@@ -97,3 +97,48 @@ func TestRefreshCatalogFetchesOnlyChangedEmbeddings(t *testing.T) {
 		t.Fatalf("artist rows=%v", rows)
 	}
 }
+
+func TestCatalogForProfileHidesOtherProfilesPrivateTracks(t *testing.T) {
+	vec := func(a, b float32) []byte { return Float32Bytes([]float32{a, b}) }
+	cat, err := BuildCatalog([]db.TrackRow{
+		{ID: 1, Path: "/music/Band/One.flac", Artist: "Band", Album: "Shared", Title: "One", Embedding: vec(1, 0), Dim: 2},
+		{ID: 2, Path: "/music/_private/alice/Yandex Music/Solo/Two.flac", Artist: "Solo", Album: "Mine", Title: "Two", Embedding: vec(0, 1), Dim: 2},
+		{ID: 3, Path: "/music/_private/bob/Three.flac", Artist: "Other", Title: "Three", Embedding: vec(1, 1), Dim: 2},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := func(c *Catalog) []int64 { return append([]int64{}, c.ids...) }
+	if got := ids(cat.ForProfile("alice")); len(got) != 2 || got[0] != 1 || got[1] != 2 {
+		t.Fatalf("alice sees %v", got)
+	}
+	if got := ids(cat.ForProfile("carol")); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("carol sees %v", got)
+	}
+	if cat.ForProfile("carol") != cat.ForProfile("") {
+		t.Fatal("profiles without private music should share one view")
+	}
+	if cat.ForProfile("alice") != cat.ForProfile("alice") {
+		t.Fatal("view rebuilt on every call")
+	}
+	alice := New(config.Config{})
+	alice.Attach(cat.ForProfile("alice"), nil)
+	if _, ok := alice.RowOf(3); ok {
+		t.Fatal("bob's private track is in alice's index")
+	}
+	if rows := alice.RowsForArtist("Other"); len(rows) != 0 {
+		t.Fatalf("artist lookup leaks bob's track: %v", rows)
+	}
+	row, ok := alice.RowOf(2)
+	if !ok || alice.Vector(row)[1] < 0.99 {
+		t.Fatal("alice's private vector lost")
+	}
+
+	shared, err := BuildCatalog([]db.TrackRow{{ID: 1, Path: "/music/a.flac", Embedding: vec(1, 0), Dim: 2}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shared.ForProfile("alice") != shared {
+		t.Fatal("catalog without private tracks should be used as is")
+	}
+}

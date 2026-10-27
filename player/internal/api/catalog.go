@@ -66,7 +66,7 @@ func (s *Server) handleTrack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tj := s.trackJSON(id)
-	if tj == nil {
+	if tj == nil || s.trackHidden(id) {
 		writeErr(w, 404, "not_found", "track not found")
 		return
 	}

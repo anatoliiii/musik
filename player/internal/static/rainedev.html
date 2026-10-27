@@ -60,6 +60,7 @@
         <button type="button" class="tab" data-view="player" aria-label="Сейчас играет"><svg class="rd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 18V5l12-2v13M9 8l12-2M9 18a3 3 0 1 1-3-3c1.7 0 3 1.3 3 3Zm12-2a3 3 0 1 1-3-3c1.7 0 3 1.3 3 3Z"></path></svg><span>Сейчас играет</span></button>
         <button type="button" class="tab" data-view="profile" aria-label="Профиль"><svg class="rd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 21a8 8 0 0 0-16 0M16 7a4 4 0 1 1-8 0 4 4 0 0 1 8 0Z"></path></svg><span>Профиль</span></button>
         <button type="button" class="tab" data-view="upload" aria-label="Загрузка"><svg class="rd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V3m-5 5 5-5 5 5M4 14v6a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-6"></path></svg><span>Загрузка</span></button>
+        <button type="button" class="tab" data-view="yandex" aria-label="Яндекс Музыка" hidden><svg class="rd-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"></circle><path d="M10 8v8l6-4z"></path></svg><span>Яндекс</span></button>
         <div class="nav-foot">
           <label class="profile-switch" id="profile-switch-wrap" hidden>
             <span>Профиль</span>
@@ -646,6 +647,64 @@
             <p class="jobs-empty">Загружаем состояние очереди…</p>
           </div>
         </section>
+      </section>
+      <section id="view-yandex" class="view">
+        <h1 class="page-title">Яндекс Музыка</h1>
+        <p class="sub">Найди исполнителя, альбом или трек и скачай в библиотеку. После загрузки треки проходят обычную обработку.</p>
+        <div class="ym-account jobs-panel" id="ym-account">
+          <div class="jobs-head">
+            <div>
+              <span class="upload-card-kicker">Аккаунт</span>
+              <h2 id="ym-account-title">Не подключено</h2>
+            </div>
+            <button type="button" class="btn quiet" id="ym-logout" hidden>Выйти из Яндекса</button>
+          </div>
+          <div id="ym-login" hidden>
+            <p class="jobs-hint">Вход отдельный для каждого пользователя musik. Пароль от Яндекса сюда не вводится.</p>
+            <div class="ym-row">
+              <button type="button" class="btn primary" id="ym-login-start">Войти через Яндекс</button>
+            </div>
+            <div class="ym-code" id="ym-code" hidden>
+              <p>Открой <a id="ym-code-link" href="https://ya.ru/device" target="_blank" rel="noopener noreferrer">ya.ru/device</a> и введи код:</p>
+              <strong id="ym-code-value" class="ym-code-value">—</strong>
+              <p class="jobs-hint" id="ym-code-hint">Ждём подтверждения…</p>
+            </div>
+            <details class="ym-token">
+              <summary>Войти по OAuth-токену</summary>
+              <form id="ym-token-form" class="ym-row">
+                <input id="ym-token" type="password" autocomplete="off" placeholder="OAuth-токен Яндекс Музыки" />
+                <button type="submit" class="btn">Сохранить</button>
+              </form>
+            </details>
+          </div>
+        </div>
+        <div id="ym-main" hidden>
+          <form id="ym-search-form" class="ym-row ym-search">
+            <input id="ym-q" type="search" autocomplete="off" placeholder="Исполнитель, альбом или песня" />
+            <select id="ym-type" aria-label="Что искать">
+              <option value="all">Всё</option>
+              <option value="artist">Исполнители</option>
+              <option value="album">Альбомы</option>
+              <option value="track">Треки</option>
+            </select>
+            <button type="submit" class="btn primary">Найти</button>
+          </form>
+          <p class="jobs-hint">«Скачать» добавляет в общую библиотеку, её видят все. «Только мне» кладёт в личную папку профиля, другие профили её не видят.</p>
+          <div id="ym-detail" class="ym-detail" hidden></div>
+          <div id="ym-results" class="ym-results"></div>
+          <section class="jobs-panel" aria-labelledby="ym-jobs-title">
+            <div class="jobs-head">
+              <div>
+                <span class="upload-card-kicker">Загрузки</span>
+                <h2 id="ym-jobs-title">Из Яндекс Музыки</h2>
+              </div>
+              <span class="jobs-badge" id="ym-jobs-badge">—</span>
+            </div>
+            <div class="jobs-list" id="ym-jobs">
+              <p class="jobs-empty">Загрузок пока нет.</p>
+            </div>
+          </section>
+        </div>
       </section>
     </main>
 

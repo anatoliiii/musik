@@ -68,7 +68,8 @@ func ReloadProfile(store *db.Store, idx *index.Index, tp *taste.Profile, play *p
 	if err != nil {
 		return err
 	}
-	idx.Attach(cat, stats)
+	// A profile sees shared tracks and its own private folder only.
+	idx.Attach(cat.ForProfile(store.ProfileID), stats)
 	pos, neg, _ := store.ListenSignalCounts()
 	if blob, err := store.LatestProfile("global"); err == nil && len(blob) > 0 {
 		v := index.BytesToFloat32(blob)
@@ -92,7 +93,8 @@ func (s *Service) publishEntityVectors(cat *index.Catalog) {
 		return
 	}
 	idx := index.New(s.Cfg)
-	idx.Attach(cat, nil)
+	// Installation-wide vectors cover shared tracks, not private ones.
+	idx.Attach(cat.ForProfile(""), nil)
 	rows := idx.EntityVectorRows(db.EntityModelVersion)
 	store := s.Store
 	go func() {

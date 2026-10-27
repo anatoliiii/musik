@@ -246,6 +246,24 @@ JSON, кроме стрима, обложек, фото и `POST /api/library/up
 | GET | `/api/metrics/listening` | `on_this_day` (тот же календарный день прошлых лет) и `year` (этот год: время, доля дослушиваний, топы) |
 | GET | `/api/metrics/recommendations` | 90 дней исходов, latency p50/p95/p99, последняя политика, недавние запросы, прогоны обучения, состояние explore. На экран недели не выводится |
 
+### Яндекс Музыка (плагин, `MUSIK_YANDEX=1`)
+
+Без плагина всё, кроме `status`, отвечает 404 `plugin_disabled`. Вход в Яндекс привязан к пользователю musik, а «только мне» к активному профилю. Если вход в Яндекс не выполнен или истёк, ответ 403 `yandex_login_required`, а не 401: 401 означает вход в сам musik.
+
+| Метод | Путь | Что делает |
+|-------|------|------------|
+| GET | `/api/yandex/status` | `{enabled, connected, login, display_name, has_plus}` |
+| POST | `/api/yandex/login` | начать вход по коду: `{user_code, verification_url, interval, expires_in}` |
+| POST | `/api/yandex/login/poll` | один опрос: `{status:"pending"}` или данные аккаунта; 410, если код истёк |
+| POST | `/api/yandex/login/token` | `{token}` — вход готовым OAuth-токеном |
+| POST | `/api/yandex/logout` | удалить токен, остановить загрузки пользователя, отозвать токен у Яндекса |
+| GET | `/api/yandex/search` | `?q=&type=all\|artist\|album\|track` → `{artists, albums, tracks}` |
+| GET | `/api/yandex/artists/{id}` | исполнитель, его альбомы и популярные треки |
+| GET | `/api/yandex/albums/{id}` | альбом и треки |
+| POST | `/api/yandex/downloads` | `{kind:"track"\|"album"\|"artist", id, private?}` — поставить загрузку; после неё `full_rescan` |
+| GET | `/api/yandex/downloads` | загрузки пользователя: `status`, `total`, `saved`, `skipped`, `unavailable`, `failed` |
+| DELETE | `/api/yandex/downloads/{id}` | отменить загрузку |
+
 Лимит одновременных слушателей шары — `MUSIK_SHARE_MAX_LISTENERS` (по умолчанию 4). Абсолютный URL берётся из `MUSIK_PUBLIC_BASE_URL`.
 
 ## admin

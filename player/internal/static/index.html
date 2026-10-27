@@ -78,6 +78,7 @@
         <button type="button" class="tab" data-view="collections">Плейлисты</button>
         <button type="button" class="tab" data-view="profile">Профиль</button>
         <button type="button" class="tab" data-view="upload">Загрузка</button>
+        <button type="button" class="tab" data-view="yandex" hidden>Яндекс Музыка</button>
         <div class="nav-foot">
           <label class="profile-switch" id="profile-switch-wrap" hidden>
             <span>Профиль</span>
@@ -629,6 +630,64 @@
             <p class="jobs-empty">Загружаем состояние очереди…</p>
           </div>
         </section>
+      </section>
+      <section id="view-yandex" class="view">
+        <h1 class="page-title">Яндекс Музыка</h1>
+        <p class="sub">Найди исполнителя, альбом или трек и скачай в библиотеку. После загрузки треки проходят обычную обработку.</p>
+        <div class="ym-account jobs-panel" id="ym-account">
+          <div class="jobs-head">
+            <div>
+              <span class="upload-card-kicker">Аккаунт</span>
+              <h2 id="ym-account-title">Не подключено</h2>
+            </div>
+            <button type="button" class="btn quiet" id="ym-logout" hidden>Выйти из Яндекса</button>
+          </div>
+          <div id="ym-login" hidden>
+            <p class="jobs-hint">Вход отдельный для каждого пользователя musik. Пароль от Яндекса сюда не вводится.</p>
+            <div class="ym-row">
+              <button type="button" class="btn primary" id="ym-login-start">Войти через Яндекс</button>
+            </div>
+            <div class="ym-code" id="ym-code" hidden>
+              <p>Открой <a id="ym-code-link" href="https://ya.ru/device" target="_blank" rel="noopener noreferrer">ya.ru/device</a> и введи код:</p>
+              <strong id="ym-code-value" class="ym-code-value">—</strong>
+              <p class="jobs-hint" id="ym-code-hint">Ждём подтверждения…</p>
+            </div>
+            <details class="ym-token">
+              <summary>Войти по OAuth-токену</summary>
+              <form id="ym-token-form" class="ym-row">
+                <input id="ym-token" type="password" autocomplete="off" placeholder="OAuth-токен Яндекс Музыки" />
+                <button type="submit" class="btn">Сохранить</button>
+              </form>
+            </details>
+          </div>
+        </div>
+        <div id="ym-main" hidden>
+          <form id="ym-search-form" class="ym-row ym-search">
+            <input id="ym-q" type="search" autocomplete="off" placeholder="Исполнитель, альбом или песня" />
+            <select id="ym-type" aria-label="Что искать">
+              <option value="all">Всё</option>
+              <option value="artist">Исполнители</option>
+              <option value="album">Альбомы</option>
+              <option value="track">Треки</option>
+            </select>
+            <button type="submit" class="btn primary">Найти</button>
+          </form>
+          <p class="jobs-hint">«Скачать» добавляет в общую библиотеку, её видят все. «Только мне» кладёт в личную папку профиля, другие профили её не видят.</p>
+          <div id="ym-detail" class="ym-detail" hidden></div>
+          <div id="ym-results" class="ym-results"></div>
+          <section class="jobs-panel" aria-labelledby="ym-jobs-title">
+            <div class="jobs-head">
+              <div>
+                <span class="upload-card-kicker">Загрузки</span>
+                <h2 id="ym-jobs-title">Из Яндекс Музыки</h2>
+              </div>
+              <span class="jobs-badge" id="ym-jobs-badge">—</span>
+            </div>
+            <div class="jobs-list" id="ym-jobs">
+              <p class="jobs-empty">Загрузок пока нет.</p>
+            </div>
+          </section>
+        </div>
       </section>
     </main>
 

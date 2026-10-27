@@ -435,7 +435,7 @@ function setSeekPct(pct) {
   $("seek").style.setProperty("--seek-pct", `${Math.max(0, Math.min(100, pct))}%`);
 }
 
-const NAV_OF_VIEW = { home: "listen", library: "collection", collections: "collection", profile: "me", upload: "me", player: "now" };
+const NAV_OF_VIEW = { home: "listen", library: "collection", collections: "collection", profile: "me", upload: "me", yandex: "me", player: "now" };
 
 function setView(name, nav = NAV_OF_VIEW[name]) {
   document.body.dataset.nav = nav || "";
@@ -459,6 +459,7 @@ function setView(name, nav = NAV_OF_VIEW[name]) {
   }
   if (name === "library") loadLibrary().catch(console.error);
   if (name === "collections") loadPlaylists().catch(console.error);
+  if (name === "yandex") refreshYandexStatus();
   if (name === "profile") {
     loadSettings().catch(console.error);
     loadInstalledThemes();
@@ -5314,6 +5315,7 @@ function wire() {
   $("btn-share-radio-profile").onclick = () => createShareLink().catch((e) => toast(e.message || String(e)));
   $("btn-refresh-mixes").onclick = () => refreshMixes();
   wireUploads();
+  wireYandex();
   $("btn-play").onclick = togglePlay;
   $("mini-play").onclick = (e) => {
     e.stopPropagation();
@@ -5508,6 +5510,316 @@ function wire() {
   });
 }
 
+// Yandex Music plugin (MUSIK_YANDEX=1): each musik user signs in to Yandex
+// separately, searches, and downloads into the shared library or into the
+// active profile's private folder. The server then runs the usual rescan.
+let ymStatus = null;
+let ymLoginTimer = null;
+let ymJobsTimer = null;
+
+async function refreshYandexStatus() {
+  let status;
+  try {
+    status = await api("/api/yandex/status");
+  } catch (_) {
+    return;
+  }
+  ymStatus = status;
+  document.querySelectorAll('[data-view="yandex"]').forEach((tab) => {
+    tab.hidden = !status.enabled;
+  });
+  if (status.enabled) renderYandexAccount();
+}
+
+function renderYandexAccount() {
+  const connected = !!ymStatus?.connected;
+  const who = ymStatus?.display_name || ymStatus?.login || "";
+  $("ym-account-title").textContent = connected
+    ? `${who}${ymStatus.has_plus ? " · Плюс" : " · без Плюса: доступны не все треки"}`
+    : "Не подключено";
+  $("ym-logout").hidden = !connected;
+  $("ym-login").hidden = connected;
+  $("ym-main").hidden = !connected;
+  if (connected) {
+    stopYandexLogin();
+    refreshYandexJobs().catch(() => {});
+  }
+}
+
+function stopYandexLogin() {
+  clearTimeout(ymLoginTimer);
+  ymLoginTimer = null;
+  $("ym-code").hidden = true;
+}
+
+async function startYandexLogin() {
+  stopYandexLogin();
+  const code = await api("/api/yandex/login", { method: "POST", body: "{}" });
+  $("ym-code-value").textContent = code.user_code;
+  $("ym-code-link").href = code.verification_url || "https://ya.ru/device";
+  $("ym-code-link").textContent = (code.verification_url || "ya.ru/device").replace(/^https?:\/\//, "");
+  $("ym-code-hint").textContent = "Ждём подтверждения…";
+  $("ym-code").hidden = false;
+  const step = Math.max(2, Number(code.interval) || 5) * 1000;
+  const poll = async () => {
+    try {
+      const res = await api("/api/yandex/login/poll", { method: "POST", body: "{}" });
+      if (res.status === "pending") {
+        ymLoginTimer = setTimeout(poll, step);
+        return;
+      }
+      ymStatus = { ...ymStatus, ...res };
+      toast("Яндекс Музыка подключена");
+      renderYandexAccount();
+    } catch (e) {
+      $("ym-code-hint").textContent = e.message || String(e);
+      ymLoginTimer = null;
+    }
+  };
+  ymLoginTimer = setTimeout(poll, step);
+}
+
+async function saveYandexToken(event) {
+  event.preventDefault();
+  const token = $("ym-token").value.trim();
+  if (!token) return;
+  const res = await api("/api/yandex/login/token", { method: "POST", body: JSON.stringify({ token }) });
+  $("ym-token").value = "";
+  ymStatus = { ...ymStatus, ...res };
+  toast("Яндекс Музыка подключена");
+  renderYandexAccount();
+}
+
+async function logoutYandex() {
+  await api("/api/yandex/logout", { method: "POST", body: "{}" });
+  ymStatus = { ...ymStatus, connected: false, login: "", display_name: "" };
+  clearInterval(ymJobsTimer);
+  ymJobsTimer = null;
+  $("ym-results").replaceChildren();
+  $("ym-detail").hidden = true;
+  $("ym-detail").replaceChildren();
+  toast("Вы вышли из Яндекс Музыки");
+  renderYandexAccount();
+}
+
+// A Yandex error after the token expired brings back the sign-in panel.
+function yandexFailed(e) {
+  toast(e.message || String(e));
+  refreshYandexStatus();
+}
+
+function ymEl(tag, className, text) {
+  const el = document.createElement(tag);
+  if (className) el.className = className;
+  if (text != null) el.textContent = text;
+  return el;
+}
+
+function ymCover(src, round) {
+  const box = ymEl("div", "ym-cover" + (round ? " round" : ""));
+  if (src) {
+    const img = document.createElement("img");
+    img.src = src;
+    img.alt = "";
+    img.loading = "lazy";
+    img.onerror = () => img.remove();
+    box.append(img);
+  }
+  return box;
+}
+
+function ymDownloadButtons(kind, id, label) {
+  const wrap = ymEl("div", "ym-actions");
+  const shared = ymEl("button", "btn primary", label || "Скачать");
+  shared.type = "button";
+  shared.title = "В общую библиотеку";
+  shared.onclick = () => downloadFromYandex(kind, id, false, shared);
+  const mine = ymEl("button", "btn", "Только мне");
+  mine.type = "button";
+  mine.title = "В личную папку профиля — другие профили не увидят";
+  mine.onclick = () => downloadFromYandex(kind, id, true, mine);
+  wrap.append(shared, mine);
+  return wrap;
+}
+
+function ymCard({ cover, round, title, sub, open, kind, id, label }) {
+  const card = ymEl("article", "ym-card");
+  const body = ymEl("div", "ym-card-body");
+  const name = ymEl(open ? "button" : "strong", open ? "ym-link" : "", title);
+  if (open) {
+    name.type = "button";
+    name.onclick = open;
+  }
+  body.append(name);
+  if (sub) body.append(ymEl("span", "ym-sub", sub));
+  card.append(ymCover(cover, round), body, ymDownloadButtons(kind, id, label));
+  return card;
+}
+
+function ymYear(album) {
+  return album.year ? ` · ${album.year}` : "";
+}
+
+function ymTrackRow(track, number) {
+  const row = ymEl("article", "ym-track" + (track.available ? "" : " unavailable"));
+  row.append(ymEl("span", "ym-num", number != null ? String(number) : ""));
+  const body = ymEl("div", "ym-card-body");
+  body.append(ymEl("strong", "", track.title));
+  body.append(ymEl("span", "ym-sub", [track.artists.join(", "), track.album].filter(Boolean).join(" · ")));
+  row.append(body, ymEl("span", "ym-sub", fmtTime(track.duration)));
+  if (track.available) row.append(ymDownloadButtons("track", track.id, "Скачать"));
+  else row.append(ymEl("span", "ym-sub", "недоступен"));
+  return row;
+}
+
+function ymBlock(title, items) {
+  const block = ymEl("section", "ym-block");
+  block.append(ymEl("h2", "ym-block-title", title));
+  const list = ymEl("div", "ym-list");
+  list.append(...items);
+  block.append(list);
+  return block;
+}
+
+async function searchYandex(event) {
+  event?.preventDefault();
+  const q = $("ym-q").value.trim();
+  if (!q) return;
+  const type = $("ym-type").value;
+  const out = $("ym-results");
+  out.replaceChildren(ymEl("p", "jobs-empty", "Ищем…"));
+  $("ym-detail").hidden = true;
+  const res = await api(`/api/yandex/search?q=${encodeURIComponent(q)}&type=${encodeURIComponent(type)}`);
+  out.replaceChildren();
+  if (res.artists.length) {
+    out.append(ymBlock("Исполнители", res.artists.slice(0, 10).map((a) => ymCard({
+      cover: a.cover, round: true, title: a.name, sub: "исполнитель",
+      open: () => openYandexArtist(a.id).catch(yandexFailed), kind: "artist", id: a.id, label: "Скачать всё",
+    }))));
+  }
+  if (res.albums.length) {
+    out.append(ymBlock("Альбомы", res.albums.slice(0, 12).map((a) => ymCard({
+      cover: a.cover, title: a.title, sub: `${a.artists.join(", ")}${ymYear(a)}${a.track_count ? ` · ${a.track_count} тр.` : ""}`,
+      open: () => openYandexAlbum(a.id).catch(yandexFailed), kind: "album", id: a.id, label: "Скачать альбом",
+    }))));
+  }
+  if (res.tracks.length) {
+    out.append(ymBlock("Треки", res.tracks.slice(0, 20).map((t) => ymTrackRow(t))));
+  }
+  if (!out.children.length) out.append(ymEl("p", "jobs-empty", "Ничего не нашлось."));
+}
+
+function showYandexDetail(nodes) {
+  const box = $("ym-detail");
+  const back = ymEl("button", "btn quiet", "← К результатам");
+  back.type = "button";
+  back.onclick = () => {
+    box.hidden = true;
+    box.replaceChildren();
+    $("ym-results").hidden = false;
+  };
+  box.replaceChildren(back, ...nodes);
+  box.hidden = false;
+  $("ym-results").hidden = true;
+  box.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function openYandexArtist(id) {
+  const res = await api(`/api/yandex/artists/${encodeURIComponent(id)}`);
+  const head = ymCard({ cover: res.artist.cover, round: true, title: res.artist.name,
+    sub: `${res.albums.length} альб.`, kind: "artist", id: res.artist.id, label: "Скачать всё" });
+  head.classList.add("ym-head");
+  const nodes = [head];
+  if (res.albums.length) {
+    nodes.push(ymBlock("Альбомы", res.albums.map((a) => ymCard({
+      cover: a.cover, title: a.title, sub: `${a.year || ""}${a.track_count ? ` · ${a.track_count} тр.` : ""}`,
+      open: () => openYandexAlbum(a.id).catch(yandexFailed), kind: "album", id: a.id, label: "Скачать альбом",
+    }))));
+  }
+  if (res.tracks.length) nodes.push(ymBlock("Популярные треки", res.tracks.map((t) => ymTrackRow(t))));
+  showYandexDetail(nodes);
+}
+
+async function openYandexAlbum(id) {
+  const res = await api(`/api/yandex/albums/${encodeURIComponent(id)}`);
+  const a = res.album;
+  const head = ymCard({ cover: a.cover, title: a.title, sub: `${a.artists.join(", ")}${ymYear(a)}`,
+    kind: "album", id: a.id, label: "Скачать альбом" });
+  head.classList.add("ym-head");
+  showYandexDetail([head, ymBlock("Треки", res.tracks.map((t, i) => ymTrackRow(t, i + 1)))]);
+}
+
+async function downloadFromYandex(kind, id, isPrivate, button) {
+  if (button) button.disabled = true;
+  try {
+    await api("/api/yandex/downloads", { method: "POST", body: JSON.stringify({ kind, id, private: isPrivate }) });
+    toast(isPrivate ? "Загрузка в личную папку началась" : "Загрузка в библиотеку началась");
+    await refreshYandexJobs();
+  } catch (e) {
+    yandexFailed(e);
+  } finally {
+    if (button) setTimeout(() => { button.disabled = false; }, 1500);
+  }
+}
+
+const YM_JOB_STATES = { queued: "В очереди", running: "Качаем", done: "Готово", failed: "Ошибка", cancelled: "Отменено" };
+const YM_JOB_KINDS = { track: "Трек", album: "Альбом", artist: "Исполнитель" };
+
+async function refreshYandexJobs() {
+  const { jobs } = await api("/api/yandex/downloads");
+  const list = $("ym-jobs");
+  const active = jobs.filter((j) => j.status === "queued" || j.status === "running");
+  $("ym-jobs-badge").textContent = active.length ? `${active.length} активн.` : "нет активных";
+  list.replaceChildren();
+  if (!jobs.length) list.append(ymEl("p", "jobs-empty", "Загрузок пока нет."));
+  for (const job of jobs) {
+    const row = ymEl("article", "job-row");
+    row.dataset.status = job.status === "queued" ? "pending" : job.status;
+    const head = ymEl("div", "job-row-head");
+    head.append(ymEl("strong", "", `${YM_JOB_KINDS[job.kind] || job.kind}: ${job.title || job.item_id}${job.private ? " · только мне" : ""}`));
+    const state = ymEl("span", "job-state", YM_JOB_STATES[job.status] || job.status);
+    head.append(state);
+    const done = job.saved + job.skipped + job.failed + (job.unavailable || 0);
+    const pct = job.status === "done" ? 100 : job.total ? (done / job.total) * 100 : 0;
+    const track = ymEl("div", "job-progress");
+    const fill = ymEl("span");
+    fill.style.setProperty("--job-pct", `${pct}%`);
+    track.append(fill);
+    const meta = ymEl("div", "job-row-meta");
+    const counts = [`сохранено ${job.saved}`];
+    if (job.skipped) counts.push(`уже были ${job.skipped}`);
+    if (job.unavailable) counts.push(`недоступно ${job.unavailable}`);
+    if (job.failed) counts.push(`ошибок ${job.failed}`);
+    meta.append(ymEl("span", "job-message", job.error || job.current || counts.join(" · ")));
+    meta.append(ymEl("span", "", job.total ? `${done}/${job.total}` : ""));
+    row.append(head, track, meta);
+    if (active.includes(job)) {
+      const stop = ymEl("button", "btn quiet", "Отменить");
+      stop.type = "button";
+      stop.onclick = () => api(`/api/yandex/downloads/${job.id}`, { method: "DELETE" })
+        .then(() => refreshYandexJobs()).catch(yandexFailed);
+      row.append(stop);
+    }
+    list.append(row);
+  }
+  if (active.length && !ymJobsTimer) {
+    ymJobsTimer = setInterval(() => {
+      if (!document.hidden) refreshYandexJobs().catch(() => {});
+    }, 2000);
+  } else if (!active.length && ymJobsTimer) {
+    clearInterval(ymJobsTimer);
+    ymJobsTimer = null;
+  }
+}
+
+function wireYandex() {
+  if (!$("view-yandex")) return;
+  $("ym-login-start").onclick = () => startYandexLogin().catch(yandexFailed);
+  $("ym-token-form").onsubmit = (e) => saveYandexToken(e).catch(yandexFailed);
+  $("ym-logout").onclick = () => logoutYandex().catch(yandexFailed);
+  $("ym-search-form").onsubmit = (e) => searchYandex(e).catch(yandexFailed);
+}
+
 async function bootApp() {
   if (!multiUser || account?.user?.roles?.includes("admin")) startBackgroundJobsMonitor();
   api("/api/profile")
@@ -5516,6 +5828,7 @@ async function bootApp() {
   loadMixes().catch(console.error);
   loadArtistPhotos().finally(() => loadHomeCatalog().catch(console.error));
   restorePlayback().catch(console.error);
+  refreshYandexStatus();
 }
 
 wireAudio();

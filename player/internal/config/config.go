@@ -48,6 +48,13 @@ type Config struct {
 	OIDCIssuer           string
 	OIDCClientID         string
 	OIDCClientSecret     string
+	// Yandex turns on the Yandex Music plugin (search and download into
+	// the library); YandexQuality is lossless, hq or nq. The URLs point it
+	// at a proxy when the server cannot reach Yandex directly.
+	Yandex         bool
+	YandexQuality  string
+	YandexAPIURL   string
+	YandexOAuthURL string
 }
 
 func Load() Config {
@@ -96,6 +103,10 @@ func Load() Config {
 		OIDCIssuer:           env("MUSIK_OIDC_ISSUER", ""),
 		OIDCClientID:         env("MUSIK_OIDC_CLIENT_ID", ""),
 		OIDCClientSecret:     env("MUSIK_OIDC_CLIENT_SECRET", ""),
+		Yandex:               envBool("MUSIK_YANDEX", false),
+		YandexQuality:        stringsToLower(env("MUSIK_YANDEX_QUALITY", "lossless")),
+		YandexAPIURL:         env("MUSIK_YANDEX_API_URL", ""),
+		YandexOAuthURL:       env("MUSIK_YANDEX_OAUTH_URL", ""),
 	}
 }
 
