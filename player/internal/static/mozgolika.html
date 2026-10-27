@@ -35,7 +35,7 @@
   <link rel="stylesheet" href="/themes/base.css" />
   <link rel="stylesheet" href="/style.css?v=listen1" />
   <script>try { var savedTheme=JSON.parse(localStorage.getItem("musik_theme")||"null"); if(savedTheme&&savedTheme.id&&savedTheme.id!=="ember"&&/^[a-z][a-z0-9-]{0,31}$/.test(savedTheme.id)) document.write('<link rel="stylesheet" href="/themes/'+savedTheme.id+'.css?v=retro5">'); } catch(e) {};</script>
-  <link rel="stylesheet" href="/redesign.css?v=map1" />
+  <link rel="stylesheet" href="/redesign.css?v=map2" />
 </head>
 <body>
   <div id="login-gate" class="login-gate" hidden>
@@ -395,6 +395,7 @@
               </button>
             </div>
           </div>
+          <div class="map-layers" id="map-layers" role="group" aria-label="Слои карты"></div>
           <div class="map-stage" id="map-stage">
             <canvas id="map-canvas" aria-label="Карта библиотеки: похожие по звучанию треки рядом"></canvas>
             <div class="map-labels" id="map-labels"></div>
@@ -783,6 +784,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=map1"></script>
+  <script src="/app.js?v=map2"></script>
 </body>
 </html>

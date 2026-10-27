@@ -91,10 +91,18 @@ def test_map_places_tracks_and_mood_labels(tmp_path, monkeypatch, test_database)
     ambient = doc["genres"].index("Ambient")
     assert all(points[t][3] == ambient for t in calm_ids)
 
+    # Each track keeps only its best mood: the fake text tower ties every
+    # loud prompt, so the loud group goes to the first one and the rest drop.
     labels = {lab["id"]: lab for lab in doc["labels"]}
-    assert set(labels) == {m[0] for m in library_map.MOODS}
+    assert set(labels) == {"workout", "sleep"}
     sleep = labels["sleep"]
-    assert set(sleep["track_ids"][:10]) <= set(calm_ids)
+    assert set(sleep["track_ids"]) == set(calm_ids)
+    assert set(labels["workout"]["track_ids"]) == set(loud_ids)
+
+    # Sound neighbours ride along in each point and stay inside the group.
+    for t in calm_ids:
+        assert len(points[t]) == 4 + library_map.NEIGHBORS
+        assert set(points[t][4:]) <= set(calm_ids) - {t}
     calm_xy = np.array([points[t][1:3] for t in calm_ids]).mean(axis=0)
     loud_xy = np.array([points[t][1:3] for t in loud_ids]).mean(axis=0)
     at = np.array([sleep["x"], sleep["y"]])
@@ -116,6 +124,7 @@ def test_map_without_text_model_keeps_points(tmp_path, monkeypatch, test_databas
     assert result.n == 10 and len(doc["points"]) == 10
     assert doc["labels"] == [] and doc["genres"] == []
     assert all(p[3] == -1 for p in doc["points"])
+    assert all(len(p) == 4 + library_map.NEIGHBORS and p[0] not in p[4:] for p in doc["points"])
 
 
 def test_empty_library_writes_empty_map(tmp_path, monkeypatch, test_database):
@@ -143,3 +152,10 @@ def test_clusters_queue_one_map_job_for_a_capable_worker(tmp_path, monkeypatch, 
     claimed = claim_next(kinds=("library_map",))
     assert claimed is not None and claimed["id"] == first["library_map_job"]
     assert claim_next(kinds=("library_map",)) is None
+
+
+def test_neighbors_handle_tiny_libraries():
+    X = np.eye(3, dtype=np.float32)
+    assert library_map._neighbors(X[:1]).tolist() == [[-1, -1, -1]]
+    two = library_map._neighbors(X[:2])
+    assert two[:, 0].tolist() == [1, 0] and (two[:, 1:] == -1).all()

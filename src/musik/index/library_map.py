@@ -3,7 +3,10 @@
 The map is a derived artifact that is always rebuilt and read whole, so it
 lives as one JSON value in scan_state['library_map'] instead of its own table.
 It covers every ready track; the player drops other profiles' private tracks
-when it serves the map.
+when it serves the map. Only what needs the embeddings or the CLAP text tower
+is computed here (layout, moods, sound neighbours); plays, favourites,
+transitions and k-means clusters already live in the database and the player
+reads them per profile.
 """
 
 from __future__ import annotations
@@ -20,21 +23,32 @@ from musik.db.schema import connect, utcnow
 log = logging.getLogger(__name__)
 
 MAP_KEY = "library_map"
-MAP_VERSION = 1
+MAP_VERSION = 2
 LABEL_MIX_SIZE = 50
 MAX_GENRES = 40
+NEIGHBORS = 3
+# A mood with fewer of its own tracks than this share of the library is dropped.
+MIN_MOOD_SHARE = 0.01
 
 # (id, label, colour, CLAP prompt). English prompts: the text tower of
 # larger_clap_music_and_speech was trained on English captions.
 MOODS: tuple[tuple[str, str, str, str], ...] = (
     ("workout", "Тренировка", "#e4675a", "energetic intense workout music with a driving beat"),
     ("party", "Вечеринка", "#d97bb0", "upbeat dance party music"),
+    ("dance", "Танцы", "#e58fd0", "electronic club dance music with a four on the floor beat"),
     ("happy", "Радостное", "#e2b13c", "happy cheerful uplifting music"),
+    ("romance", "Романтика", "#e88a8a", "romantic tender love song"),
+    ("road", "Дорога", "#d9a05b", "driving road trip rock music"),
+    ("epic", "Эпик", "#c96b4a", "epic orchestral cinematic music with choir and drums"),
+    ("heavy", "Драйв", "#c9824a", "loud distorted electric guitar rock music"),
+    ("rage", "Агрессия", "#b8443a", "aggressive angry heavy metal with screaming vocals"),
     ("focus", "Фокус", "#7fb27a", "calm instrumental music for focus and concentration"),
-    ("chill", "Чилл", "#5fb3a8", "chill relaxed laid-back music"),
-    ("sleep", "Сон", "#a28ad8", "soft quiet ambient music for sleep"),
-    ("sad", "Грустное", "#5a9fd8", "sad melancholic music"),
-    ("heavy", "Драйв", "#c9824a", "aggressive heavy loud guitar music"),
+    ("chill", "Чилл", "#5fb3a8", "chill relaxed laid-back lo-fi beats"),
+    ("night", "Ночь", "#6f7fd0", "dark atmospheric night city synth music"),
+    ("meditation", "Медитация", "#8fc0b0", "slow meditative drone music with no beat"),
+    ("sleep", "Сон", "#a28ad8", "soft quiet lullaby for sleep"),
+    ("sad", "Грустное", "#5a9fd8", "sad slow piano music"),
+    ("melancholy", "Меланхолия", "#7a95b8", "melancholic nostalgic song with vocals"),
 )
 
 
@@ -153,7 +167,7 @@ def _normalize(xy: np.ndarray) -> np.ndarray:
 
 
 def _mood_labels(X: np.ndarray, ids: np.ndarray, xy: np.ndarray) -> list[dict]:
-    """Place each mood at the densest spot among its best-matching tracks."""
+    """Give every track one mood, then label each mood where its tracks gather."""
     if X.shape[0] < 8:
         return []
     try:
@@ -168,14 +182,20 @@ def _mood_labels(X: np.ndarray, ids: np.ndarray, xy: np.ndarray) -> list[dict]:
         return []
     sims = X @ T.T
     # CLAP text/audio cosines sit in a narrow band and differ by prompt, so
-    # rank tracks per mood on a standardized score.
+    # compare moods on a standardized score. Ranking every mood on its own
+    # sent all the calm ones to the same quiet tracks; picking each track's
+    # best mood keeps them apart.
     z = (sims - sims.mean(axis=0)) / np.maximum(sims.std(axis=0), 1e-6)
+    own = np.argmax(z, axis=1)
     n = X.shape[0]
-    top_k = int(np.clip(round(n * 0.03), 8, 80))
+    min_size = max(5, int(n * MIN_MOOD_SHARE))
     labels = []
     for j, (mood_id, name, color, _prompt) in enumerate(MOODS):
-        order = np.argsort(-z[:, j])
-        pts = xy[order[:top_k]]
+        members = np.flatnonzero(own == j)
+        if members.size < min_size:
+            continue
+        members = members[np.argsort(-z[members, j])]
+        pts = xy[members[: min(members.size, 80)]]
         # The best matches can sit on two islands; a plain mean would land
         # between them. Anchor on the point with the most close neighbours.
         dist = np.linalg.norm(pts[:, None, :] - pts[None, :, :], axis=2)
@@ -189,10 +209,27 @@ def _mood_labels(X: np.ndarray, ids: np.ndarray, xy: np.ndarray) -> list[dict]:
                 "color": color,
                 "x": round(float(x), 4),
                 "y": round(float(y), 4),
-                "track_ids": [int(t) for t in ids[order[: min(LABEL_MIX_SIZE, n)]]],
+                "track_ids": [int(t) for t in ids[members[:LABEL_MIX_SIZE]]],
             }
         )
     return labels
+
+
+def _neighbors(X: np.ndarray, *, k: int = NEIGHBORS, chunk: int = 1024) -> np.ndarray:
+    """Row indices of each track's k closest tracks by cosine, -1 when fewer exist."""
+    n = X.shape[0]
+    out = np.full((n, k), -1, dtype=np.int64)
+    if n < 2:
+        return out
+    kk = min(k, n - 1)
+    for start in range(0, n, chunk):
+        sims = X[start : start + chunk] @ X.T
+        rows = np.arange(sims.shape[0])
+        sims[rows, start + rows] = -np.inf
+        part = np.argpartition(-sims, kk - 1, axis=1)[:, :kk]
+        order = np.argsort(-sims[rows[:, None], part], axis=1)
+        out[start : start + sims.shape[0], :kk] = part[rows[:, None], order]
+    return out
 
 
 def build_library_map(*, seed: int = 42) -> MapResult:
@@ -204,14 +241,17 @@ def build_library_map(*, seed: int = 42) -> MapResult:
         xy, method = np.zeros((0, 2), dtype=np.float32), "none"
     genres, picks = _track_genres(ids)
     labels = _mood_labels(X, ids, xy)
+    nbr = _neighbors(X) if ids.size else np.zeros((0, NEIGHBORS), dtype=np.int64)
+    nbr_ids = np.where(nbr >= 0, ids[np.maximum(nbr, 0)], -1) if ids.size else nbr
     doc = {
         "version": MAP_VERSION,
         "method": method,
         "updated_at": utcnow(),
         "genres": genres,
+        # [track_id, x, y, genre index or -1, neighbour track ids...]
         "points": [
-            [int(tid), round(float(x), 4), round(float(y), 4), int(g)]
-            for tid, (x, y), g in zip(ids.tolist(), xy.tolist(), picks, strict=True)
+            [int(tid), round(float(x), 4), round(float(y), 4), int(g), *map(int, nb)]
+            for tid, (x, y), g, nb in zip(ids.tolist(), xy.tolist(), picks, nbr_ids.tolist(), strict=True)
         ],
         "labels": labels,
     }
