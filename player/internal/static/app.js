@@ -2115,10 +2115,35 @@ async function showTips(kind) {
 }
 
 // Library map (Mozgolika "Карта"): the worker job library_map lays the CLAP
-// embeddings out with UMAP into [0,1]² and puts mood labels where CLAP text
-// prompts match best. The view is a scale plus a pan in CSS pixels.
+// embeddings out with UMAP into [0,1]² and adds mood labels and sound
+// neighbours. Everything else is data the player already keeps per profile:
+// plays and k-means clusters from /api/library, favourites, and listened
+// transitions (sent with the map). The view is a scale plus a pan in CSS px.
 const MAP_PLAY_LIMIT = 500;
 const MAP_REFRESH_MS = 120000;
+const MAP_LAYERS_KEY = "musik_map_layers";
+const MAP_LAYERS = [
+  ["heat", "Тепло"],
+  ["favorites", "Любимое"],
+  ["transitions", "Мои переходы"],
+  ["similar", "Похожие"],
+  ["artists", "Артисты"],
+  ["focus", "Связи трека"],
+  ["islands", "Острова"],
+];
+const MAP_LAYERS_DEFAULT = {
+  heat: true,
+  favorites: false,
+  transitions: true,
+  similar: false,
+  artists: false,
+  focus: true,
+  islands: true,
+};
+// Denser than this many points on screen, neighbour lines are only noise.
+const MAP_SIMILAR_MAX = 20000;
+// Transitions drawn at the fitted view; zooming in shows more.
+const MAP_TRANSITIONS_OVERVIEW = 200;
 const libMap = {
   data: null,
   loading: null,
@@ -2127,6 +2152,8 @@ const libMap = {
   lasso: false,
   path: null,
   selected: null,
+  focus: -1,
+  focusNbrs: null,
   view: { s: 1, tx: 0, ty: 0 },
   w: 0,
   h: 0,
@@ -2137,7 +2164,28 @@ const libMap = {
   pointers: new Map(),
   gesture: null,
   wired: false,
+  layers: loadMapLayers(),
+  labelItems: [],
+  sprite: null,
 };
+
+function loadMapLayers() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(MAP_LAYERS_KEY) || "null");
+    if (saved && typeof saved === "object") return { ...MAP_LAYERS_DEFAULT, ...saved };
+  } catch {
+    // Storage may be blocked; defaults are fine.
+  }
+  return { ...MAP_LAYERS_DEFAULT };
+}
+
+function saveMapLayers() {
+  try {
+    localStorage.setItem(MAP_LAYERS_KEY, JSON.stringify(libMap.layers));
+  } catch {
+    // Not remembered, still applied.
+  }
+}
 
 function mapVisible() {
   const el = $("lib-map");
@@ -2147,6 +2195,7 @@ function mapVisible() {
 function prepareMap(d) {
   const pts = d.points || [];
   const n = pts.length;
+  const k = pts.reduce((m, p) => Math.max(m, p.length - 4), 0);
   const out = {
     ready: !!d.ready,
     total: d.total || 0,
@@ -2157,23 +2206,139 @@ function prepareMap(d) {
     ys: new Float32Array(n),
     gs: new Int16Array(n),
     index: new Map(),
+    k,
+    nbrs: new Int32Array(n * k).fill(-1),
+    trans: [],
+    maxTrans: 0,
+    bbox: [0, 0, 1, 1],
+    plays: new Float32Array(n),
+    maxPlays: 0,
+    clusters: new Int16Array(n).fill(-1),
+    artists: new Array(n).fill(""),
+    artistGroups: [],
+    islands: [],
   };
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   pts.forEach(([id, x, y, g], i) => {
     out.ids[i] = id;
     out.xs[i] = x;
     out.ys[i] = y;
     out.gs[i] = g;
     out.index.set(id, i);
+    x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+    y0 = Math.min(y0, y); y1 = Math.max(y1, y);
   });
+  if (n) out.bbox = [x0, y0, x1, y1];
+  pts.forEach((p, i) => {
+    for (let j = 0; j < k; j++) {
+      const t = p[4 + j] >= 0 ? out.index.get(p[4 + j]) : undefined;
+      if (t !== undefined) out.nbrs[i * k + j] = t;
+    }
+  });
+  for (const [from, to, count] of d.transitions || []) {
+    const a = out.index.get(from);
+    const b = out.index.get(to);
+    if (a === undefined || b === undefined) continue;
+    out.trans.push([a, b, count]);
+    out.maxTrans = Math.max(out.maxTrans, count);
+  }
   return out;
+}
+
+// Per-profile data from /api/library: plays, clusters and artists. Rerun
+// whenever the library reloads; the layout itself does not change.
+function joinMapProfile(d) {
+  const byId = new Map(library.map((t) => [t.id, t]));
+  const groups = new Map();
+  d.maxPlays = 0;
+  for (let i = 0; i < d.ids.length; i++) {
+    const t = byId.get(d.ids[i]);
+    d.plays[i] = t?.plays || 0;
+    d.clusters[i] = t && t.cluster_id >= 0 ? t.cluster_id : -1;
+    d.artists[i] = (t?.artist || "").trim();
+    d.maxPlays = Math.max(d.maxPlays, d.plays[i]);
+    const key = d.artists[i].toLowerCase();
+    if (!key) continue;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(i);
+  }
+  d.artistGroups = [...groups.values()]
+    .filter((g) => g.length > 1)
+    .map((g) => g.sort((a, b) => d.xs[a] - d.xs[b]));
+  d.islands = mapIslands(d);
+}
+
+function mapDensestSpot(d, members) {
+  // The densest point of a sample, then the mean of the members around it, so
+  // a cluster split over two islands is labelled on its main part.
+  const step = Math.max(1, Math.floor(members.length / 300));
+  const sample = members.filter((_, k) => k % step === 0);
+  let best = sample[0];
+  let bestN = -1;
+  for (const a of sample) {
+    let near = 0;
+    for (const b of sample) if (Math.hypot(d.xs[a] - d.xs[b], d.ys[a] - d.ys[b]) < 0.06) near++;
+    if (near > bestN) {
+      bestN = near;
+      best = a;
+    }
+  }
+  let sx = 0, sy = 0, m = 0;
+  for (const i of members) {
+    if (Math.hypot(d.xs[i] - d.xs[best], d.ys[i] - d.ys[best]) > 0.1) continue;
+    sx += d.xs[i];
+    sy += d.ys[i];
+    m++;
+  }
+  return [sx / m, sy / m];
+}
+
+// Islands are the existing k-means clusters (features.cluster_id): labelled
+// with their main genre and their "capital", the artist played most there.
+function mapIslands(d) {
+  const by = new Map();
+  for (let i = 0; i < d.ids.length; i++) {
+    const c = d.clusters[i];
+    if (c < 0) continue;
+    if (!by.has(c)) by.set(c, []);
+    by.get(c).push(i);
+  }
+  const minSize = Math.max(8, d.ids.length * 0.02);
+  const islands = [];
+  for (const members of by.values()) {
+    if (members.length < minSize) continue;
+    const genreCount = new Map();
+    const artistPlays = new Map();
+    const artistTracks = new Map();
+    for (const i of members) {
+      if (d.gs[i] >= 0) genreCount.set(d.gs[i], (genreCount.get(d.gs[i]) || 0) + 1);
+      const a = d.artists[i];
+      if (!a) continue;
+      artistPlays.set(a, (artistPlays.get(a) || 0) + d.plays[i]);
+      artistTracks.set(a, (artistTracks.get(a) || 0) + 1);
+    }
+    const top = (m) => [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+    const g = top(genreCount);
+    const genre = g && g[1] >= members.length * 0.25 ? d.genres[g[0]] : "";
+    const played = top(artistPlays);
+    const most = top(artistTracks);
+    const artist = played && played[1] > 0 ? played[0] : most && most[1] >= 3 ? most[0] : "";
+    if (!genre && !artist) continue;
+    const [x, y] = mapDensestSpot(d, members);
+    const order = [...members].sort((a, b) => d.plays[b] - d.plays[a]);
+    islands.push({ x, y, genre, artist, ids: order.map((i) => d.ids[i]) });
+  }
+  return islands;
 }
 
 async function loadLibraryMap() {
   libMap.loading ||= api("/api/library/map")
     .then((d) => {
       libMap.data = prepareMap(d);
+      joinMapProfile(libMap.data);
       libMap.loadedAt = Date.now();
       libMap.selected = null;
+      libMap.focus = -1;
       renderMapChrome();
     })
     .finally(() => {
@@ -2187,7 +2352,7 @@ async function showLibraryMap() {
   const stale = Date.now() - libMap.loadedAt > MAP_REFRESH_MS;
   if (!libMap.data || stale) {
     try {
-      if (libMap.data) loadLibraryMap().then(() => { libMap.dirty = true; requestMap(); }).catch(console.error);
+      if (libMap.data) loadLibraryMap().catch(console.error);
       else await loadLibraryMap();
     } catch (e) {
       const empty = $("map-empty");
@@ -2195,8 +2360,11 @@ async function showLibraryMap() {
       empty.textContent = `Не удалось загрузить карту: ${e.message || e}`;
       return;
     }
+  } else {
+    // Plays may have changed since the map came in.
+    joinMapProfile(libMap.data);
+    renderMapChrome();
   }
-  renderMapChrome();
   resizeMap();
 }
 
@@ -2226,34 +2394,94 @@ function renderMapChrome() {
   libMap.genre = select.value === "" ? -1 : +select.value;
   select.hidden = !d.genres.length;
 
+  renderMapLayers();
+  renderMapLabels();
+  renderMapSelection();
+  libMap.dirty = true;
+  requestMap();
+}
+
+function renderMapLayers() {
+  const box = $("map-layers");
+  if (!box) return;
+  const d = libMap.data;
+  const unavailable = {
+    heat: !d.maxPlays && "Пока нет прослушиваний",
+    favorites: !favoriteIds.size && "В избранном пусто",
+    transitions: !d.trans.length && "Переходов пока нет: они копятся, когда треки играют подряд",
+    similar: !d.k && "Появится после следующего пересчёта карты",
+    artists: !d.artistGroups.length && "Нет артистов с несколькими треками",
+    islands: !d.islands.length && "Нет кластеров: они появятся после пересчёта",
+  };
+  box.innerHTML = "";
+  for (const [key, name] of MAP_LAYERS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "map-chip";
+    b.textContent = name;
+    b.setAttribute("aria-pressed", String(!!libMap.layers[key]));
+    if (unavailable[key]) {
+      b.disabled = true;
+      b.title = unavailable[key];
+    }
+    b.onclick = () => {
+      libMap.layers[key] = !libMap.layers[key];
+      saveMapLayers();
+      b.setAttribute("aria-pressed", String(libMap.layers[key]));
+      if (key === "islands") renderMapLabels();
+      libMap.dirty = true;
+      requestMap();
+    };
+    box.appendChild(b);
+  }
+}
+
+function playMapIds(ids, name) {
+  return playFixed({ track_ids: ids.slice(0, MAP_PLAY_LIMIT), name }).catch((e) => toast(e.message || String(e)));
+}
+
+function renderMapLabels() {
+  const d = libMap.data;
   const box = $("map-labels");
   box.innerHTML = "";
-  d.labels.forEach((l) => {
+  libMap.labelItems = [];
+  const add = (el, x, y) => {
+    box.appendChild(el);
+    libMap.labelItems.push({ el, x, y });
+  };
+  if (libMap.layers.islands) {
+    for (const isl of d.islands) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "map-island";
+      b.innerHTML = `${isl.genre ? `<b>${escapeHtml(isl.genre)}</b>` : ""}${isl.artist ? `<span>${escapeHtml(isl.artist)}</span>` : ""}`;
+      const title = isl.genre || isl.artist;
+      b.title = `Включить остров «${title}» — ${isl.ids.length} ${ruPlural(isl.ids.length, "трек", "трека", "треков")}, сначала любимые`;
+      b.onclick = () => playMapIds(isl.ids, `Карта · ${title}`);
+      add(b, isl.x, isl.y);
+    }
+  }
+  for (const l of d.labels) {
     const b = document.createElement("button");
     b.type = "button";
     b.className = "map-label";
     b.style.setProperty("--c", l.color);
     b.textContent = l.name;
     b.title = `Включить «${l.name}» — ${l.track_ids.length} ${ruPlural(l.track_ids.length, "трек", "трека", "треков")}`;
-    b.onclick = () =>
-      playFixed({ track_ids: l.track_ids, name: `Карта · ${l.name}` }).catch((e) => toast(e.message || String(e)));
-    box.appendChild(b);
-  });
-  renderMapSelection();
-  libMap.dirty = true;
-  requestMap();
+    b.onclick = () => playMapIds(l.track_ids, `Карта · ${l.name}`);
+    add(b, l.x, l.y);
+  }
 }
 
 function resizeMap() {
   const stage = $("map-stage");
-  const canvas = $("map-canvas");
-  if (!stage || !canvas) return;
+  if (!stage) return;
   const rect = stage.getBoundingClientRect();
   if (!rect.width || !rect.height) return;
   libMap.w = rect.width;
   libMap.h = rect.height;
   libMap.dpr = Math.min(window.devicePixelRatio || 1, 2);
-  for (const c of [canvas, $("map-overlay")]) {
+  for (const c of [$("map-canvas"), $("map-overlay")]) {
     c.width = Math.round(rect.width * libMap.dpr);
     c.height = Math.round(rect.height * libMap.dpr);
   }
@@ -2261,18 +2489,23 @@ function resizeMap() {
   requestMap();
 }
 
-function mapScale() {
-  return Math.min(libMap.w, libMap.h) * 0.9 * libMap.view.s;
+// The view fits the points' bounding box, so a wide map fills a wide screen.
+function mapFrame() {
+  const [x0, y0, x1, y1] = libMap.data?.bbox || [0, 0, 1, 1];
+  const bw = Math.max(x1 - x0, 0.05);
+  const bh = Math.max(y1 - y0, 0.05);
+  const base = Math.min((libMap.w - 48) / bw, (libMap.h - 48) / bh);
+  return { b: Math.max(base, 1) * libMap.view.s, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2 };
 }
 
 function mapToScreen(x, y) {
-  const b = mapScale();
-  return [(x - 0.5) * b + libMap.w / 2 + libMap.view.tx, (y - 0.5) * b + libMap.h / 2 + libMap.view.ty];
+  const { b, cx, cy } = mapFrame();
+  return [(x - cx) * b + libMap.w / 2 + libMap.view.tx, (y - cy) * b + libMap.h / 2 + libMap.view.ty];
 }
 
 function mapToWorld(px, py) {
-  const b = mapScale();
-  return [(px - libMap.w / 2 - libMap.view.tx) / b + 0.5, (py - libMap.h / 2 - libMap.view.ty) / b + 0.5];
+  const { b, cx, cy } = mapFrame();
+  return [(px - libMap.w / 2 - libMap.view.tx) / b + cx, (py - libMap.h / 2 - libMap.view.ty) / b + cy];
 }
 
 function mapZoomAt(px, py, k) {
@@ -2295,12 +2528,38 @@ function mapHighlighted(i) {
   return null;
 }
 
+function mapColors() {
+  const css = getComputedStyle($("map-stage"));
+  const c = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
+  return {
+    muted: c("--muted", "#9a968e"),
+    fg: c("--fg", "#ece8e1"),
+    bg: c("--surface", "#1a1b20"),
+    accent: c("--accent", "#e8a33d"),
+    accent2: c("--accent2", "#5fb3a8"),
+  };
+}
+
+// A soft round brush for the heat layer, recoloured with the theme accent.
+function mapHeatSprite(color) {
+  if (libMap.sprite?.color === color) return libMap.sprite.canvas;
+  const c = document.createElement("canvas");
+  c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, color);
+  grad.addColorStop(1, "transparent");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 64, 64);
+  libMap.sprite = { color, canvas: c };
+  return c;
+}
+
 function drawMapLayer() {
   const d = libMap.data;
   const ctx = $("map-canvas").getContext("2d");
-  const css = getComputedStyle($("map-stage"));
-  const color = (name, fallback) => css.getPropertyValue(name).trim() || fallback;
-  const { w, h, dpr } = libMap;
+  const col = mapColors();
+  const { w, h, dpr, layers } = libMap;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, w, h);
 
@@ -2308,74 +2567,172 @@ function drawMapLayer() {
   const step = 28;
   const ox = (((libMap.view.tx + w / 2) % step) + step) % step;
   const oy = (((libMap.view.ty + h / 2) % step) + step) % step;
-  ctx.fillStyle = color("--muted", "#9a968e");
+  ctx.fillStyle = col.muted;
   ctx.globalAlpha = 0.16;
   for (let x = ox; x < w; x += step) for (let y = oy; y < h; y += step) ctx.fillRect(x, y, 1.4, 1.4);
 
-  for (const l of d.labels) {
-    const [sx, sy] = mapToScreen(l.x, l.y);
-    const r = 70 * Math.sqrt(libMap.view.s);
-    const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, r);
-    g.addColorStop(0, l.color);
-    g.addColorStop(1, "transparent");
-    ctx.globalAlpha = 0.26;
-    ctx.fillStyle = g;
-    ctx.fillRect(sx - r, sy - r, r * 2, r * 2);
+  const n = d.ids.length;
+  const sx = new Float32Array(n);
+  const sy = new Float32Array(n);
+  const r = mapPointRadius();
+  let onScreen = 0;
+  for (let i = 0; i < n; i++) {
+    [sx[i], sy[i]] = mapToScreen(d.xs[i], d.ys[i]);
+    if (sx[i] >= -r && sy[i] >= -r && sx[i] <= w + r && sy[i] <= h + r) onScreen++;
+  }
+  const off = (i, m = r) => sx[i] < -m || sy[i] < -m || sx[i] > w + m || sy[i] > h + m;
+
+  if (layers.heat && d.maxPlays > 0) {
+    const sprite = mapHeatSprite(col.accent);
+    const R = Math.min(70, 24 * Math.sqrt(libMap.view.s));
+    const lmax = Math.log1p(d.maxPlays);
+    ctx.globalCompositeOperation = "lighter";
+    for (let i = 0; i < n; i++) {
+      if (!d.plays[i] || off(i, R)) continue;
+      ctx.globalAlpha = 0.04 + 0.22 * (Math.log1p(d.plays[i]) / lmax);
+      ctx.drawImage(sprite, sx[i] - R, sy[i] - R, R * 2, R * 2);
+    }
+    ctx.globalCompositeOperation = "source-over";
   }
 
-  const r = mapPointRadius();
+  for (const l of d.labels) {
+    const [lx, ly] = mapToScreen(l.x, l.y);
+    const R = 70 * Math.sqrt(libMap.view.s);
+    const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, R);
+    g.addColorStop(0, l.color);
+    g.addColorStop(1, "transparent");
+    ctx.globalAlpha = 0.22;
+    ctx.fillStyle = g;
+    ctx.fillRect(lx - R, ly - R, R * 2, R * 2);
+  }
+
+  ctx.lineWidth = 1;
+  if (layers.similar && d.k && onScreen <= MAP_SIMILAR_MAX) {
+    ctx.strokeStyle = col.fg;
+    ctx.globalAlpha = 0.09;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      if (off(i)) continue;
+      for (let j = 0; j < d.k; j++) {
+        const t = d.nbrs[i * d.k + j];
+        if (t < 0) continue;
+        ctx.moveTo(sx[i], sy[i]);
+        ctx.lineTo(sx[t], sy[t]);
+      }
+    }
+    ctx.stroke();
+  }
+  if (layers.artists) {
+    ctx.strokeStyle = col.accent2;
+    ctx.globalAlpha = 0.22;
+    ctx.beginPath();
+    for (const g of d.artistGroups) {
+      ctx.moveTo(sx[g[0]], sy[g[0]]);
+      for (let k = 1; k < g.length; k++) ctx.lineTo(sx[g[k]], sy[g[k]]);
+    }
+    ctx.stroke();
+  }
+  if (layers.transitions && d.trans.length) {
+    // The server sends the strongest first; zooming in reveals the rest, so
+    // the overview stays a set of paths rather than a hairball.
+    const shown = Math.round(MAP_TRANSITIONS_OVERVIEW * libMap.view.s * libMap.view.s);
+    ctx.strokeStyle = col.accent;
+    const lmax = Math.log1p(d.maxTrans);
+    for (const [a, b, c] of d.trans.slice(0, shown)) {
+      if (off(a, 200) && off(b, 200)) continue;
+      const k = Math.log1p(c) / lmax;
+      ctx.globalAlpha = 0.06 + 0.32 * k;
+      ctx.lineWidth = 0.6 + 1.6 * k;
+      mapArc(ctx, sx[a], sy[a], sx[b], sy[b]);
+    }
+    ctx.lineWidth = 1;
+  }
+
   const dim = [];
   const lit = [];
   const plain = [];
-  for (let i = 0; i < d.ids.length; i++) {
-    const [sx, sy] = mapToScreen(d.xs[i], d.ys[i]);
-    if (sx < -r || sy < -r || sx > w + r || sy > h + r) continue;
+  for (let i = 0; i < n; i++) {
+    if (off(i)) continue;
     const hl = mapHighlighted(i);
-    (hl === null ? plain : hl ? lit : dim).push(sx, sy);
+    (hl === null ? plain : hl ? lit : dim).push(sx[i], sy[i]);
   }
-  const dots = (list, fill, alpha) => {
+  const dots = (list, fill, alpha, rr = r) => {
     if (!list.length) return;
     ctx.globalAlpha = alpha;
     ctx.fillStyle = fill;
     ctx.beginPath();
     for (let k = 0; k < list.length; k += 2) {
-      ctx.moveTo(list[k] + r, list[k + 1]);
-      ctx.arc(list[k], list[k + 1], r, 0, Math.PI * 2);
+      ctx.moveTo(list[k] + rr, list[k + 1]);
+      ctx.arc(list[k], list[k + 1], rr, 0, Math.PI * 2);
     }
     ctx.fill();
   };
-  dots(plain, color("--muted", "#9a968e"), 0.55);
-  dots(dim, color("--muted", "#9a968e"), 0.14);
-  dots(lit, color("--accent", "#e8a33d"), 0.92);
+  dots(plain, col.muted, 0.55);
+  dots(dim, col.muted, 0.14);
+  dots(lit, col.accent, 0.92);
+  if (layers.favorites && favoriteIds.size) {
+    const fav = [];
+    for (let i = 0; i < n; i++) if (favoriteIds.has(d.ids[i]) && !off(i)) fav.push(sx[i], sy[i]);
+    dots(fav, col.accent2, 0.95, r + 1);
+  }
   ctx.globalAlpha = 1;
 }
 
-// Labels are DOM buttons over the canvas; push overlapping ones apart
-// vertically so a cluster of moods stays readable (as a stack).
+// Curved, so A→B and B→A stay two visible lines.
+function mapArc(ctx, ax, ay, bx, by) {
+  const mx = (ax + bx) / 2 - (by - ay) * 0.18;
+  const my = (ay + by) / 2 + (bx - ax) * 0.18;
+  ctx.beginPath();
+  ctx.moveTo(ax, ay);
+  ctx.quadraticCurveTo(mx, my, bx, by);
+  ctx.stroke();
+}
+
+// Labels are DOM buttons over the canvas. Each tries its spot, then just
+// below, above and to the sides, and only then stacks under the others.
 function placeMapLabels() {
-  const box = $("map-labels");
-  const nodes = [...box.children];
-  const items = libMap.data.labels.map((l, i) => {
-    const [sx, sy] = mapToScreen(l.x, l.y);
-    return { el: nodes[i], sx, sy, bw: nodes[i].offsetWidth, bh: nodes[i].offsetHeight };
+  const placed = [];
+  const items = libMap.labelItems.map((it) => {
+    const [sx, sy] = mapToScreen(it.x, it.y);
+    return { ...it, sx, sy, bw: it.el.offsetWidth, bh: it.el.offsetHeight };
   });
   items.sort((a, b) => a.sy - b.sy);
-  const placed = [];
+  const hits = (x, y, it) =>
+    placed.some((p) => x < p.x + p.bw + 4 && p.x < x + it.bw + 4 && y < p.y + p.bh + 4 && p.y < y + it.bh + 4);
   for (const it of items) {
-    let x = Math.min(libMap.w - it.bw - 6, Math.max(6, it.sx - it.bw / 2));
-    let y = it.sy - it.bh / 2;
-    for (const p of placed) {
-      if (x < p.x + p.bw + 4 && p.x < x + it.bw + 4 && y < p.y + p.bh + 4 && p.y < y + it.bh + 4) y = p.y + p.bh + 4;
+    const outside = it.sx < -40 || it.sy < -20 || it.sx > libMap.w + 40 || it.sy > libMap.h + 20;
+    it.el.style.visibility = outside ? "hidden" : "";
+    if (outside) continue;
+    const clampX = (x) => Math.min(libMap.w - it.bw - 6, Math.max(6, x));
+    const clampY = (y) => Math.min(libMap.h - it.bh - 6, Math.max(6, y));
+    const cx = it.sx - it.bw / 2;
+    const cy = it.sy - it.bh / 2;
+    const dy = it.bh + 4;
+    const dx = it.bw / 2 + 6;
+    let spot = null;
+    for (const [ox, oy] of [[0, 0], [0, dy], [0, -dy], [dx, 0], [-dx, 0], [dx, dy], [-dx, dy], [dx, -dy], [-dx, -dy]]) {
+      const x = clampX(cx + ox);
+      const y = clampY(cy + oy);
+      if (!hits(x, y, it)) {
+        spot = [x, y];
+        break;
+      }
     }
-    y = Math.min(libMap.h - it.bh - 6, Math.max(6, y));
-    placed.push({ x, y, bw: it.bw, bh: it.bh });
-    it.el.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px)`;
+    if (!spot) {
+      let y = cy;
+      while (hits(clampX(cx), y, it) && y < libMap.h) y += dy;
+      spot = [clampX(cx), clampY(y)];
+    }
+    placed.push({ x: spot[0], y: spot[1], bw: it.bw, bh: it.bh });
+    it.el.style.transform = `translate(${Math.round(spot[0])}px, ${Math.round(spot[1])}px)`;
   }
 }
 
 // Points go on the base canvas (redrawn only when the view changes); the
-// lasso and the now-playing pulse go on an overlay above the labels.
+// focused track's links, the lasso and the now-playing pulse go on an overlay
+// above the labels.
 function drawMapFrame(t) {
+  const d = libMap.data;
   if (libMap.dirty) {
     drawMapLayer();
     placeMapLabels();
@@ -2386,46 +2743,88 @@ function drawMapFrame(t) {
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, overlay.width, overlay.height);
   ctx.setTransform(libMap.dpr, 0, 0, libMap.dpr, 0, 0);
-  const accent = getComputedStyle($("map-stage")).getPropertyValue("--accent").trim() || "#e8a33d";
+  const col = mapColors();
+  const r = mapPointRadius();
+
+  const f = libMap.focus;
+  if (f >= 0 && libMap.layers.focus) {
+    // Dim the map so the focused track's links read on top of every layer.
+    ctx.globalAlpha = 0.55;
+    ctx.fillStyle = col.bg;
+    ctx.fillRect(0, 0, libMap.w, libMap.h);
+    const [fx, fy] = mapToScreen(d.xs[f], d.ys[f]);
+    const ends = [];
+    ctx.lineWidth = 1.6;
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = col.accent2;
+    const nbrs = d.k ? Array.from(d.nbrs.subarray(f * d.k, f * d.k + d.k)) : libMap.focusNbrs || [];
+    for (const nb of nbrs) {
+      if (nb < 0) continue;
+      const [x, y] = mapToScreen(d.xs[nb], d.ys[nb]);
+      ctx.beginPath();
+      ctx.moveTo(fx, fy);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      ends.push([x, y, col.accent2]);
+    }
+    ctx.strokeStyle = col.accent;
+    for (const [a, b] of d.trans) {
+      if (a !== f && b !== f) continue;
+      const o = a === f ? b : a;
+      const [x, y] = mapToScreen(d.xs[o], d.ys[o]);
+      const [ax, ay, bx, by] = a === f ? [fx, fy, x, y] : [x, y, fx, fy];
+      mapArc(ctx, ax, ay, bx, by);
+      ends.push([x, y, col.accent]);
+    }
+    for (const [x, y, c] of ends) {
+      ctx.fillStyle = c;
+      ctx.beginPath();
+      ctx.arc(x, y, r + 1.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.fillStyle = col.fg;
+    ctx.beginPath();
+    ctx.arc(fx, fy, r + 2, 0, Math.PI * 2);
+    ctx.fill();
+  }
 
   if (libMap.path && libMap.path.length > 1) {
     ctx.beginPath();
     libMap.path.forEach(([x, y], k) => {
-      const [sx, sy] = mapToScreen(x, y);
-      if (k) ctx.lineTo(sx, sy);
-      else ctx.moveTo(sx, sy);
+      const [px, py] = mapToScreen(x, y);
+      if (k) ctx.lineTo(px, py);
+      else ctx.moveTo(px, py);
     });
     ctx.closePath();
     ctx.globalAlpha = 0.12;
-    ctx.fillStyle = accent;
+    ctx.fillStyle = col.accent;
     ctx.fill();
     ctx.globalAlpha = 0.9;
     ctx.setLineDash([6, 5]);
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = accent;
+    ctx.strokeStyle = col.accent;
     ctx.stroke();
     ctx.setLineDash([]);
   }
 
-  const i = current ? libMap.data.index.get(current.id) : undefined;
+  const i = current ? d.index.get(current.id) : undefined;
   if (i !== undefined) {
-    const [sx, sy] = mapToScreen(libMap.data.xs[i], libMap.data.ys[i]);
-    const r = mapPointRadius();
+    const [px, py] = mapToScreen(d.xs[i], d.ys[i]);
     const phase = (t % 1600) / 1600;
-    ctx.fillStyle = accent;
-    ctx.strokeStyle = accent;
+    ctx.fillStyle = col.accent;
+    ctx.strokeStyle = col.accent;
     ctx.globalAlpha = 0.3;
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 7, 0, Math.PI * 2);
+    ctx.arc(px, py, r + 7, 0, Math.PI * 2);
     ctx.fill();
     ctx.globalAlpha = 1 - phase;
     ctx.lineWidth = 2;
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 4 + phase * 14, 0, Math.PI * 2);
+    ctx.arc(px, py, r + 4 + phase * 14, 0, Math.PI * 2);
     ctx.stroke();
     ctx.globalAlpha = 1;
     ctx.beginPath();
-    ctx.arc(sx, sy, r + 1.5, 0, Math.PI * 2);
+    ctx.arc(px, py, r + 1.5, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.globalAlpha = 1;
@@ -2477,10 +2876,33 @@ function mapTrackInfo(id) {
   return api(`/api/tracks/${id}`);
 }
 
+function closeMapCard() {
+  $("map-card").hidden = true;
+  if (libMap.focus >= 0) {
+    libMap.focus = -1;
+    libMap.focusNbrs = null;
+    requestMap();
+  }
+}
+
 async function showMapCard(i, px, py) {
   const card = $("map-card");
-  const id = libMap.data.ids[i];
+  const d = libMap.data;
+  const id = d.ids[i];
   card.dataset.id = String(id);
+  libMap.focus = i;
+  libMap.focusNbrs = null;
+  requestMap();
+  if (!d.k) {
+    // A map built before sound neighbours: ask the live index instead.
+    api(`/api/similar/${id}`)
+      .then((hits) => {
+        if (libMap.focus !== i) return;
+        libMap.focusNbrs = hits.slice(0, 5).map((h) => d.index.get(h.id)).filter((x) => x !== undefined);
+        requestMap();
+      })
+      .catch(() => {});
+  }
   let t;
   try {
     t = await mapTrackInfo(id);
@@ -2490,12 +2912,15 @@ async function showMapCard(i, px, py) {
   }
   if (card.dataset.id !== String(id)) return;
   const art = t.artwork || `/api/artwork/${id}`;
+  const plays = d.plays[i];
   const sub = [t.artist, t.album].filter(Boolean).join(" · ");
+  const heard = plays ? `слушал ${plays} ${ruPlural(plays, "раз", "раза", "раз")}` : "ещё не слушал";
   card.innerHTML = `
     <img class="map-card-art" src="${escapeHtml(art)}" alt="" loading="lazy" />
     <div class="map-card-text">
       <b>${escapeHtml(t.title || "Без названия")}</b>
       <span>${escapeHtml(sub)}</span>
+      <small>${heard}${favoriteIds.has(id) ? " · в избранном" : ""}</small>
     </div>
     <div class="map-card-actions">
       <button type="button" class="btn primary" data-act="play">Играть</button>
@@ -2510,7 +2935,7 @@ async function showMapCard(i, px, py) {
   };
   card.onclick = (e) => {
     const act = e.target.closest("[data-act]")?.dataset.act;
-    if (act === "close") card.hidden = true;
+    if (act === "close") closeMapCard();
     if (act === "play") playFixed({ track_id: id, name: t.title }).catch((err) => toast(err.message || String(err)));
     if (act === "radio") startRadio({ track_id: id }).catch((err) => toast(err.message || String(err)));
   };
@@ -2592,6 +3017,8 @@ function wireLibraryMap() {
   const canvas = $("map-canvas");
   const stage = $("map-stage");
   new ResizeObserver(() => resizeMap()).observe(stage);
+  // Right and middle buttons pan the map, so no browser menu over it.
+  stage.addEventListener("contextmenu", (e) => e.preventDefault());
 
   $("map-genre").onchange = (e) => {
     libMap.genre = e.target.value === "" ? -1 : +e.target.value;
@@ -2612,27 +3039,28 @@ function wireLibraryMap() {
     libMap.dirty = true;
     requestMap();
   };
-  const playSelection = (shuffle) =>
-    playFixed({ track_ids: mapSelectionIds(shuffle), name: "Карта · выделение" }).catch((e) => toast(e.message || String(e)));
+  const playSelection = (shuffle) => playMapIds(mapSelectionIds(shuffle), "Карта · выделение");
   $("map-sel-play").onclick = () => playSelection(false);
   $("map-sel-shuffle").onclick = () => playSelection(true);
 
   canvas.addEventListener("pointerdown", (e) => {
     if (!libMap.data) return;
+    // No text selection or image drag while panning with the mouse.
+    if (e.pointerType === "mouse") e.preventDefault();
     canvas.setPointerCapture(e.pointerId);
     const p = mapPointerPos(e);
     libMap.pointers.set(e.pointerId, p);
-    $("map-card").hidden = true;
+    closeMapCard();
     if (libMap.pointers.size === 2) {
       // A second finger turns any drag or lasso into a pinch.
       libMap.path = null;
       const [a, b] = [...libMap.pointers.values()];
       libMap.gesture = { pinch: Math.hypot(a[0] - b[0], a[1] - b[1]), mid: [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2] };
-    } else if (libMap.lasso) {
+    } else if (libMap.lasso && e.button === 0) {
       libMap.path = [mapToWorld(...p)];
       libMap.gesture = null;
     } else {
-      libMap.gesture = { start: p, last: p, moved: false };
+      libMap.gesture = { start: p, last: p, moved: e.button !== 0 };
     }
   });
   canvas.addEventListener("pointermove", (e) => {

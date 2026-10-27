@@ -18,12 +18,17 @@ type libraryMapDoc struct {
 	Method    string            `json:"method"`
 	UpdatedAt string            `json:"updated_at"`
 	Genres    []string          `json:"genres"`
-	Points    [][4]float64      `json:"points"` // [track_id, x, y, genre index or -1]
+	Points    [][]float64       `json:"points"` // [track_id, x, y, genre index or -1, neighbour ids...]
 	Labels    []libraryMapLabel `json:"labels"`
 }
 
+// mapTransitionLimit caps the transitions layer; the strongest steps come first.
+const mapTransitionLimit = 3000
+
 // handleLibraryMap serves the worker-built 2D map, limited to the tracks this
 // profile may see: the worker places every track, private folders included.
+// The profile's own listened transitions come along; plays, favourites and
+// clusters the page already has from /api/library and /api/favorites.
 func (s *Server) handleLibraryMap(w http.ResponseWriter, _ *http.Request) {
 	catalog, err := s.Store.ListCatalogTracks()
 	if err != nil {
@@ -46,10 +51,28 @@ func (s *Server) handleLibraryMap(w http.ResponseWriter, _ *http.Request) {
 	for _, t := range catalog {
 		visible[t.ID] = true
 	}
-	points := make([][4]float64, 0, len(doc.Points))
+	points := make([][]float64, 0, len(doc.Points))
 	for _, p := range doc.Points {
-		if visible[int64(p[0])] {
-			points = append(points, p)
+		if len(p) < 4 || !visible[int64(p[0])] {
+			continue
+		}
+		// A neighbour in someone else's private folder is not even named.
+		for i := 4; i < len(p); i++ {
+			if p[i] >= 0 && !visible[int64(p[i])] {
+				p[i] = -1
+			}
+		}
+		points = append(points, p)
+	}
+	steps, err := s.Store.ListMapTransitions(mapTransitionLimit)
+	if err != nil {
+		writeErr(w, 500, "db", err.Error())
+		return
+	}
+	transitions := make([][3]int64, 0, len(steps))
+	for _, t := range steps {
+		if visible[t.From] && visible[t.To] {
+			transitions = append(transitions, [3]int64{t.From, t.To, int64(t.Count)})
 		}
 	}
 	labels := make([]libraryMapLabel, 0, len(doc.Labels))
@@ -71,12 +94,13 @@ func (s *Server) handleLibraryMap(w http.ResponseWriter, _ *http.Request) {
 		genres = []string{}
 	}
 	writeJSON(w, map[string]any{
-		"ready":      raw != "",
-		"method":     doc.Method,
-		"updated_at": doc.UpdatedAt,
-		"total":      len(catalog),
-		"genres":     genres,
-		"points":     points,
-		"labels":     labels,
+		"ready":       raw != "",
+		"method":      doc.Method,
+		"updated_at":  doc.UpdatedAt,
+		"total":       len(catalog),
+		"genres":      genres,
+		"points":      points,
+		"labels":      labels,
+		"transitions": transitions,
 	})
 }
