@@ -438,12 +438,14 @@ function setSeekPct(pct) {
   $("seek").style.setProperty("--seek-pct", `${Math.max(0, Math.min(100, pct))}%`);
 }
 
-const NAV_OF_VIEW = { home: "listen", library: "collection", collections: "collection", profile: "me", upload: "me", player: "now" };
+const NAV_OF_VIEW = { home: "listen", library: "collection", map: "map", collections: "collection", profile: "me", upload: "me", player: "now" };
 
 function setView(name, nav = NAV_OF_VIEW[name]) {
   document.body.dataset.nav = nav || "";
   const title = $("lib-title");
-  if (title) title.textContent = nav === "search" ? "Поиск" : "Коллекция";
+  if (title) {
+    title.textContent = nav === "search" ? "Поиск" : nav === "map" ? "Карта" : title.dataset.defaultTitle || "Коллекция";
+  }
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
     // In Mozgolika edition primary tabs light up for their whole section and
@@ -2144,6 +2146,9 @@ const MAP_LAYERS_DEFAULT = {
 const MAP_SIMILAR_MAX = 20000;
 // Transitions drawn at once: the strongest of those touching the screen.
 const MAP_TRANSITIONS_SHOWN = 250;
+const MAP_COVER_START = 1.5;
+const MAP_COVER_END = 8;
+const MAP_COVER_CACHE_LIMIT = 256;
 const libMap = {
   data: null,
   loading: null,
@@ -2167,6 +2172,10 @@ const libMap = {
   layers: loadMapLayers(),
   labelItems: [],
   sprite: null,
+  covers: new Map(),
+  coverProgress: 0,
+  coverTime: 0,
+  coverAnimating: false,
 };
 
 function loadMapLayers() {
@@ -2215,6 +2224,7 @@ function prepareMap(d) {
     maxPlays: 0,
     clusters: new Int16Array(n).fill(-1),
     artists: new Array(n).fill(""),
+    artwork: new Array(n).fill(""),
     artistGroups: [],
     islands: [],
   };
@@ -2256,6 +2266,7 @@ function joinMapProfile(d) {
     d.plays[i] = t?.plays || 0;
     d.clusters[i] = t && t.cluster_id >= 0 ? t.cluster_id : -1;
     d.artists[i] = (t?.artist || "").trim();
+    d.artwork[i] = t?.artwork || "";
     d.maxPlays = Math.max(d.maxPlays, d.plays[i]);
     const key = d.artists[i].toLowerCase();
     if (!key) continue;
@@ -2523,6 +2534,11 @@ function mapPointRadius() {
   return Math.min(6, Math.max(2, 2.2 * Math.sqrt(libMap.view.s)));
 }
 
+function mapCoverTarget(scale) {
+  const p = Math.max(0, Math.min(1, Math.log(scale / MAP_COVER_START) / Math.log(MAP_COVER_END / MAP_COVER_START)));
+  return p * p * (3 - 2 * p);
+}
+
 function mapHighlighted(i) {
   if (libMap.selected) return libMap.selected.has(i);
   if (libMap.genre >= 0) return libMap.data.gs[i] === libMap.genre;
@@ -2556,7 +2572,23 @@ function mapHeatSprite(color) {
   return c;
 }
 
-function drawMapLayer() {
+// Only request covers for visible, non-overlapping points at close zoom.
+function mapCover(url) {
+  let entry = libMap.covers.get(url);
+  if (entry) return entry;
+  const img = new Image();
+  entry = { img, ready: false };
+  libMap.covers.set(url, entry);
+  while (libMap.covers.size > MAP_COVER_CACHE_LIMIT) {
+    libMap.covers.delete(libMap.covers.keys().next().value);
+  }
+  img.onload = () => { entry.ready = true; entry.readyAt = performance.now(); libMap.dirty = true; requestMap(); };
+  img.onerror = () => { entry.failed = true; };
+  img.src = thumbURL(url, 96);
+  return entry;
+}
+
+function drawMapLayer(t) {
   const d = libMap.data;
   const ctx = $("map-canvas").getContext("2d");
   const col = mapColors();
@@ -2677,6 +2709,41 @@ function drawMapLayer() {
     for (let i = 0; i < n; i++) if (favoriteIds.has(d.ids[i]) && !off(i)) fav.push(sx[i], sy[i]);
     dots(fav, col.accent2, 0.95, r + 1);
   }
+  libMap.coverAnimating = false;
+  if (libMap.coverProgress > 0) {
+    const size = Math.min(48, 40 + Math.max(0, Math.log2(libMap.view.s / MAP_COVER_END)) * 4);
+    const occupied = [];
+    for (let i = 0; i < n; i++) {
+      if (!d.artwork[i] || off(i, size / 2) || mapHighlighted(i) === false) continue;
+      const x = sx[i] - size / 2, y = sy[i] - size / 2;
+      if (occupied.some((p) => Math.abs(p[0] - x) < size + 3 && Math.abs(p[1] - y) < size + 3)) continue;
+      if (occupied.length >= 100) break;
+      occupied.push([x, y]);
+      const cover = mapCoverTarget(libMap.view.s) > 0 ? mapCover(d.artwork[i]) : libMap.covers.get(d.artwork[i]);
+      if (!cover) continue;
+      if (!cover.ready) continue;
+      const fade = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 1 : Math.min(1, Math.max(0, (t - cover.readyAt) / 250));
+      if (fade < 1) libMap.coverAnimating = true;
+      const progress = libMap.coverProgress * fade;
+      const radius = r + (size / 2 - r) * progress;
+      const side = Math.min(cover.img.naturalWidth, cover.img.naturalHeight);
+      if (!side) continue;
+      ctx.save();
+      ctx.globalAlpha = progress;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(cover.img, (cover.img.naturalWidth - side) / 2, (cover.img.naturalHeight - side) / 2, side, side,
+        sx[i] - radius, sy[i] - radius, radius * 2, radius * 2);
+      ctx.restore();
+      ctx.globalAlpha = progress * 0.7;
+      ctx.strokeStyle = col.fg;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   ctx.globalAlpha = 1;
 }
 
@@ -2730,7 +2797,7 @@ function placeMapLabels() {
 function drawMapFrame(t) {
   const d = libMap.data;
   if (libMap.dirty) {
-    drawMapLayer();
+    drawMapLayer(t);
     placeMapLabels();
     libMap.dirty = false;
   }
@@ -2830,9 +2897,19 @@ function drawMapFrame(t) {
 function mapTick(t) {
   libMap.raf = 0;
   if (!mapVisible() || !libMap.data || !libMap.w) return;
+  const target = mapCoverTarget(libMap.view.s);
+  const elapsed = libMap.coverTime ? Math.min(50, t - libMap.coverTime) : 16;
+  libMap.coverTime = t;
+  const previous = libMap.coverProgress;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) libMap.coverProgress = target;
+  else {
+    libMap.coverProgress += (target - libMap.coverProgress) * (1 - Math.exp(-elapsed / 110));
+    if (Math.abs(target - libMap.coverProgress) < 0.005) libMap.coverProgress = target;
+  }
+  if (previous !== libMap.coverProgress || libMap.coverAnimating) libMap.dirty = true;
   const pulsing = drawMapFrame(t);
   // Animate only while something moves; otherwise look for a track change twice a second.
-  if (pulsing || libMap.path) libMap.raf = requestAnimationFrame(mapTick);
+  if (pulsing || libMap.path || libMap.coverProgress !== target || libMap.coverAnimating) libMap.raf = requestAnimationFrame(mapTick);
   else libMap.idle = setTimeout(requestMap, 500);
 }
 
@@ -2851,7 +2928,7 @@ function mapPointerPos(e) {
 function mapHit(px, py) {
   const d = libMap.data;
   let best = -1;
-  let bestD = Math.max(16, mapPointRadius() + 8) ** 2;
+  let bestD = Math.max(16, mapPointRadius() + 8, 24 * libMap.coverProgress) ** 2;
   for (let i = 0; i < d.ids.length; i++) {
     if (mapHighlighted(i) === false) continue;
     const [sx, sy] = mapToScreen(d.xs[i], d.ys[i]);
