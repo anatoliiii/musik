@@ -446,6 +446,7 @@ input[type="range"] { accent-color: var(--accent); }
   color: var(--fg);
 }
 body[data-nav="search"] .seg { display: none; }
+body[data-nav="map"] .seg { display: none; }
 body[data-nav="search"] #lib-filter { font-size: 1.05rem; }
 
 @media (prefers-reduced-motion: reduce) {
