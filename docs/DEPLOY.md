@@ -133,6 +133,54 @@ data/themes/ink/
 Папка с `id` встроенной темы заменяет её файлы. Своя палитра из «Профиля»
 хранится только в браузере.
 
+## Плагины
+
+Образы player и worker плагины не содержат и ничего не скачивают. Manifest и
+executable ставит администратор. Протокол — [sdk/plugin/v1/README.md](../sdk/plugin/v1/README.md).
+
+В `.env` укажите **один** каталог на хосте (несколько путей через `:` Compose
+не монтирует):
+
+```dotenv
+MUSIK_PLUGIN_DIRS=/srv/musik/plugins
+```
+
+Compose монтирует его в player **на запись** как `/plugins` и внутри контейнера
+задаёт `MUSIK_PLUGIN_DIRS=/plugins`. Запись нужна самому плагину: cookies и
+прочие его файлы живут рядом с executable, плеер их не хранит. В каталоге лежит
+`*.json` manifest; executable — файл из поля `executable`, относительно этого
+каталога. Образ player не включает интерпретатор плагина: executable должен
+запускаться в контейнере сам (статический бинарник или скрипт с интерпретатором,
+который уже есть в образе).
+
+Библиотека у player тоже смонтирована **на запись** (`/music`): плагин пишет
+туда готовый файл через временный `.part` и атомарное переименование. Worker
+монтирует ту же библиотеку **только для чтения** и после успешного импорта
+выполняет обычный `full_rescan` (scan, embed, reload). У player `/music` и
+`/plugins` остаются с правом записи.
+
+Без Docker плеер сканирует `MUSIK_PLUGIN_DIRS` как есть. Если переменная пустая,
+каталог — `$XDG_DATA_HOME/musik/plugins` или `~/.local/share/musik/plugins`.
+Таймаут и параллелизм — `MUSIK_PLUGIN_TIMEOUT` (900 секунд) и
+`MUSIK_PLUGIN_CONCURRENCY` (2).
+
+### Яндекс Музыка
+
+В репозитории есть protocol v1 плагин с поиском и импортом треков, альбомов и
+артистов. Соберите executable из каталога `player/`:
+
+```sh
+go build -o plugins/yandex/yandex-plugin ./cmd/yandex-plugin
+```
+
+Установите `MUSIK_PLUGIN_DIRS` на `player/plugins/yandex` или скопируйте туда
+`manifest.json` и executable. Положите OAuth token в файл `token` рядом с
+executable и ограничьте доступ учётной записью player (например, mode `0600`).
+В multi-user установке этот v1 плагин использует один серверный token и доступен
+администратору; protocol v1 пока не предоставляет отдельный вход Яндекса для
+каждого профиля. Дополнительные настройки описаны в
+[`player/plugins/yandex/README.md`](../player/plugins/yandex/README.md).
+
 ## Makefile
 
 | Цель | Действие |

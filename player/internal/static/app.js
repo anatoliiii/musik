@@ -124,6 +124,8 @@ function renderAccount(me) {
   $("oidc-link").hidden = !multiUser || !account || !me.oidc;
   $("password-form").hidden = !account?.local_account;
   document.querySelector('[data-view="upload"]').hidden = multiUser && !admin;
+  if (!multiUser || admin) loadPluginTabs().catch(() => clearPluginTabs());
+  else clearPluginTabs();
   if (admin) refreshAdminLists().catch((error) => toast(error.message));
   if (!account) return;
   refreshDeviceTokenProfiles();
@@ -436,12 +438,14 @@ function setSeekPct(pct) {
   $("seek").style.setProperty("--seek-pct", `${Math.max(0, Math.min(100, pct))}%`);
 }
 
-const NAV_OF_VIEW = { home: "listen", library: "collection", collections: "collection", profile: "me", upload: "me", yandex: "me", player: "now" };
+const NAV_OF_VIEW = { home: "listen", library: "collection", map: "map", collections: "collection", profile: "me", upload: "me", yandex: "me", player: "now" };
 
 function setView(name, nav = NAV_OF_VIEW[name]) {
   document.body.dataset.nav = nav || "";
   const title = $("lib-title");
-  if (title) title.textContent = nav === "search" ? "Поиск" : "Коллекция";
+  if (title) {
+    title.textContent = nav === "search" ? "Поиск" : nav === "map" ? "Карта" : title.dataset.defaultTitle || "Коллекция";
+  }
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.querySelectorAll(".tab[data-view]").forEach((b) => {
     // In Mozgolika edition primary tabs light up for their whole section and
@@ -2143,6 +2147,9 @@ const MAP_LAYERS_DEFAULT = {
 const MAP_SIMILAR_MAX = 20000;
 // Transitions drawn at once: the strongest of those touching the screen.
 const MAP_TRANSITIONS_SHOWN = 250;
+const MAP_COVER_START = 1.5;
+const MAP_COVER_END = 8;
+const MAP_COVER_CACHE_LIMIT = 256;
 const libMap = {
   data: null,
   loading: null,
@@ -2166,6 +2173,10 @@ const libMap = {
   layers: loadMapLayers(),
   labelItems: [],
   sprite: null,
+  covers: new Map(),
+  coverProgress: 0,
+  coverTime: 0,
+  coverAnimating: false,
 };
 
 function loadMapLayers() {
@@ -2214,6 +2225,7 @@ function prepareMap(d) {
     maxPlays: 0,
     clusters: new Int16Array(n).fill(-1),
     artists: new Array(n).fill(""),
+    artwork: new Array(n).fill(""),
     artistGroups: [],
     islands: [],
   };
@@ -2255,6 +2267,7 @@ function joinMapProfile(d) {
     d.plays[i] = t?.plays || 0;
     d.clusters[i] = t && t.cluster_id >= 0 ? t.cluster_id : -1;
     d.artists[i] = (t?.artist || "").trim();
+    d.artwork[i] = t?.artwork || "";
     d.maxPlays = Math.max(d.maxPlays, d.plays[i]);
     const key = d.artists[i].toLowerCase();
     if (!key) continue;
@@ -2522,6 +2535,11 @@ function mapPointRadius() {
   return Math.min(6, Math.max(2, 2.2 * Math.sqrt(libMap.view.s)));
 }
 
+function mapCoverTarget(scale) {
+  const p = Math.max(0, Math.min(1, Math.log(scale / MAP_COVER_START) / Math.log(MAP_COVER_END / MAP_COVER_START)));
+  return p * p * (3 - 2 * p);
+}
+
 function mapHighlighted(i) {
   if (libMap.selected) return libMap.selected.has(i);
   if (libMap.genre >= 0) return libMap.data.gs[i] === libMap.genre;
@@ -2555,7 +2573,23 @@ function mapHeatSprite(color) {
   return c;
 }
 
-function drawMapLayer() {
+// Only request covers for visible, non-overlapping points at close zoom.
+function mapCover(url) {
+  let entry = libMap.covers.get(url);
+  if (entry) return entry;
+  const img = new Image();
+  entry = { img, ready: false };
+  libMap.covers.set(url, entry);
+  while (libMap.covers.size > MAP_COVER_CACHE_LIMIT) {
+    libMap.covers.delete(libMap.covers.keys().next().value);
+  }
+  img.onload = () => { entry.ready = true; entry.readyAt = performance.now(); libMap.dirty = true; requestMap(); };
+  img.onerror = () => { entry.failed = true; };
+  img.src = thumbURL(url, 96);
+  return entry;
+}
+
+function drawMapLayer(t) {
   const d = libMap.data;
   const ctx = $("map-canvas").getContext("2d");
   const col = mapColors();
@@ -2676,6 +2710,41 @@ function drawMapLayer() {
     for (let i = 0; i < n; i++) if (favoriteIds.has(d.ids[i]) && !off(i)) fav.push(sx[i], sy[i]);
     dots(fav, col.accent2, 0.95, r + 1);
   }
+  libMap.coverAnimating = false;
+  if (libMap.coverProgress > 0) {
+    const size = Math.min(48, 40 + Math.max(0, Math.log2(libMap.view.s / MAP_COVER_END)) * 4);
+    const occupied = [];
+    for (let i = 0; i < n; i++) {
+      if (!d.artwork[i] || off(i, size / 2) || mapHighlighted(i) === false) continue;
+      const x = sx[i] - size / 2, y = sy[i] - size / 2;
+      if (occupied.some((p) => Math.abs(p[0] - x) < size + 3 && Math.abs(p[1] - y) < size + 3)) continue;
+      if (occupied.length >= 100) break;
+      occupied.push([x, y]);
+      const cover = mapCoverTarget(libMap.view.s) > 0 ? mapCover(d.artwork[i]) : libMap.covers.get(d.artwork[i]);
+      if (!cover) continue;
+      if (!cover.ready) continue;
+      const fade = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 1 : Math.min(1, Math.max(0, (t - cover.readyAt) / 250));
+      if (fade < 1) libMap.coverAnimating = true;
+      const progress = libMap.coverProgress * fade;
+      const radius = r + (size / 2 - r) * progress;
+      const side = Math.min(cover.img.naturalWidth, cover.img.naturalHeight);
+      if (!side) continue;
+      ctx.save();
+      ctx.globalAlpha = progress;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], radius, 0, Math.PI * 2);
+      ctx.clip();
+      ctx.drawImage(cover.img, (cover.img.naturalWidth - side) / 2, (cover.img.naturalHeight - side) / 2, side, side,
+        sx[i] - radius, sy[i] - radius, radius * 2, radius * 2);
+      ctx.restore();
+      ctx.globalAlpha = progress * 0.7;
+      ctx.strokeStyle = col.fg;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(sx[i], sy[i], radius, 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   ctx.globalAlpha = 1;
 }
 
@@ -2729,7 +2798,7 @@ function placeMapLabels() {
 function drawMapFrame(t) {
   const d = libMap.data;
   if (libMap.dirty) {
-    drawMapLayer();
+    drawMapLayer(t);
     placeMapLabels();
     libMap.dirty = false;
   }
@@ -2829,9 +2898,19 @@ function drawMapFrame(t) {
 function mapTick(t) {
   libMap.raf = 0;
   if (!mapVisible() || !libMap.data || !libMap.w) return;
+  const target = mapCoverTarget(libMap.view.s);
+  const elapsed = libMap.coverTime ? Math.min(50, t - libMap.coverTime) : 16;
+  libMap.coverTime = t;
+  const previous = libMap.coverProgress;
+  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) libMap.coverProgress = target;
+  else {
+    libMap.coverProgress += (target - libMap.coverProgress) * (1 - Math.exp(-elapsed / 110));
+    if (Math.abs(target - libMap.coverProgress) < 0.005) libMap.coverProgress = target;
+  }
+  if (previous !== libMap.coverProgress || libMap.coverAnimating) libMap.dirty = true;
   const pulsing = drawMapFrame(t);
   // Animate only while something moves; otherwise look for a track change twice a second.
-  if (pulsing || libMap.path) libMap.raf = requestAnimationFrame(mapTick);
+  if (pulsing || libMap.path || libMap.coverProgress !== target || libMap.coverAnimating) libMap.raf = requestAnimationFrame(mapTick);
   else libMap.idle = setTimeout(requestMap, 500);
 }
 
@@ -2850,7 +2929,7 @@ function mapPointerPos(e) {
 function mapHit(px, py) {
   const d = libMap.data;
   let best = -1;
-  let bestD = Math.max(16, mapPointRadius() + 8) ** 2;
+  let bestD = Math.max(16, mapPointRadius() + 8, 24 * libMap.coverProgress) ** 2;
   for (let i = 0; i < d.ids.length; i++) {
     if (mapHighlighted(i) === false) continue;
     const [sx, sy] = mapToScreen(d.xs[i], d.ys[i]);
@@ -4266,15 +4345,46 @@ function togglePlay() {
   }
 }
 
+function normalizeQueueTrack(item) {
+  const id = Number(item?.id || item?.track_id || 0);
+  if (!id) return null;
+  return {
+    id,
+    title: item.title || "",
+    artist: item.artist || "",
+    album: item.album || "",
+    duration: item.duration || 0,
+    artwork: item.artwork || `/api/artwork/${id}`,
+    stream: item.stream || `/api/stream/${id}`,
+    impression_id: item.impression_id || "",
+    source: item.source || "",
+    features_json: item.features_json,
+  };
+}
+
+// Next track already shown in the local queue/playlist — used to bridge the
+// gap while track_end finishes taste writes on the server.
+function peekLocalNext(fromId) {
+  const list = currentQueue || [];
+  if (!list.length) return null;
+  if (queueKind === "playlist") {
+    const idx = list.findIndex((t) => Number(t.id || t.track_id) === Number(fromId));
+    if (idx < 0 || idx + 1 >= list.length) return null;
+    return normalizeQueueTrack(list[idx + 1]);
+  }
+  return normalizeQueueTrack(list[0]);
+}
+
 async function skipTrack() {
   const audio = $("audio");
   const fromId = current?.id;
+  const impression = current?.impression_id;
   bumpPlayback();
   audio.pause();
   const data = await postEvent("skip", {
     reason: "skipped",
     track_id: fromId,
-    impression_id: current?.impression_id,
+    impression_id: impression,
     listened_sec: listenedAccum,
     duration_sec: audio.duration || current?.duration || 0,
   });
@@ -4619,7 +4729,10 @@ function wireAudio() {
     if (seeking || audio.seeking) return;
     setPlayIcon(false);
     updatePositionState();
-    pushPlaybackState({ playing: false });
+    // Natural end also fires pause. Don't publish playing:false for the
+    // finished track — auto-advance is about to claim the next one, and a
+    // false write here makes other devices / sync think we stopped.
+    if (!audio.ended) pushPlaybackState({ playing: false });
     if (reloadPending) setTimeout(reloadIfIdle, 3000);
   });
   audio.addEventListener("seeked", () => {
@@ -4677,13 +4790,35 @@ function wireAudio() {
     const id = Number(audio.dataset.trackId || 0);
     const gen = Number(audio.dataset.gen || 0);
     if (!id || gen !== playbackGen || id !== current?.id) return;
+    const impression = current?.impression_id;
+    const listened = listenedAccum;
+    const duration = audio.duration || current?.duration || 0;
+    // Cue the locally known next track immediately. Manual skip feels fast
+    // because the tap starts the request; natural end used to sit silent for
+    // the whole track_end round-trip (taste persist + queue refill).
+    const localNext = peekLocalNext(id);
+    if (localNext) renderNow(localNext, { announce: false });
     postEvent("track_end", {
       reason: "completed",
       track_id: id,
-      impression_id: current?.impression_id,
-      listened_sec: listenedAccum,
-      duration_sec: audio.duration || current?.duration || 0,
-    }).catch(console.error);
+      impression_id: impression,
+      listened_sec: listened,
+      duration_sec: duration,
+    })
+      .then((data) => {
+        const nextId = Number(data?.next?.id || data?.next_id || 0);
+        // renderNow above skipped track_start; record it once the server
+        // confirms the same next track (a different next already announced).
+        if (
+          localNext &&
+          nextId &&
+          Number(localNext.id) === nextId &&
+          Number(current?.id) === nextId
+        ) {
+          postEvent("track_start", { track_id: nextId }).catch(() => {});
+        }
+      })
+      .catch(console.error);
   });
 
   const startSeek = () => {
@@ -6294,6 +6429,330 @@ function wireTheme() {
   syncRetroField();
 }
 
+/* plugin-panels */
+const pluginJobWatch = {};
+
+function clearPluginTabs() {
+  document.querySelectorAll("[data-plugin-tab], [data-plugin-view]").forEach((el) => el.remove());
+}
+
+async function loadPluginTabs() {
+  if (multiUser && !account?.user?.roles?.includes("admin")) {
+    clearPluginTabs();
+    return;
+  }
+  const catalog = await api("/api/plugins");
+  renderPluginTabs(catalog.plugins || []);
+}
+
+function renderPluginTabs(plugins) {
+  clearPluginTabs();
+  const navs = document.querySelectorAll("nav.tabs, nav.mobile-nav");
+  const main = document.querySelector("main");
+  if (!main) return;
+  for (const plugin of plugins) {
+    if (!plugin || !/^[a-z][a-z0-9-]{0,62}$/.test(plugin.id || "")) continue;
+    const caps = plugin.capabilities || [];
+    const canSearch = caps.includes("library.search");
+    const canImport = caps.includes("library.import_url");
+    if (!canImport) continue;
+    const label = plugin.name || plugin.id;
+    const viewName = "plugin-" + plugin.id;
+    navs.forEach((nav) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "tab";
+      button.dataset.view = viewName;
+      button.dataset.pluginTab = plugin.id;
+      button.textContent = label;
+      button.addEventListener("click", () => setView(viewName));
+      const foot = nav.querySelector(".nav-foot");
+      if (foot) nav.insertBefore(button, foot);
+      else nav.append(button);
+    });
+    const section = document.createElement("section");
+    section.id = "view-" + viewName;
+    section.className = "view";
+    section.dataset.pluginView = plugin.id;
+    const title = document.createElement("h1");
+    title.className = "page-title";
+    title.textContent = label;
+    section.append(title);
+    if (plugin.description) {
+      const hint = document.createElement("p");
+      hint.className = "sub";
+      hint.textContent = plugin.description;
+      section.append(hint);
+    }
+    const status = document.createElement("p");
+    status.className = "status-line plugin-status";
+    status.hidden = true;
+    const panel = document.createElement("div");
+    panel.className = "plugin-import";
+    panel.hidden = true;
+    if (canSearch) section.append(pluginSearchForm(plugin, status, panel));
+    if (canImport) section.append(pluginAddressForm(plugin, status, panel));
+    section.append(status, panel);
+    if (canSearch) {
+      const list = document.createElement("ul");
+      list.className = "plugin-results";
+      list.dataset.pluginResults = plugin.id;
+      section.append(list);
+    }
+    main.append(section);
+  }
+}
+
+function pluginSearchForm(plugin, status, panel) {
+  const form = document.createElement("form");
+  form.className = "form-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.required = true;
+  input.maxLength = 500;
+  input.autocomplete = "off";
+  input.placeholder = "Запрос";
+  input.setAttribute("aria-label", "Запрос");
+  const button = document.createElement("button");
+  button.className = "btn primary";
+  button.type = "submit";
+  button.textContent = "Найти";
+  form.append(input, button);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const list = form.parentElement?.querySelector("[data-plugin-results]");
+    runPluginSearch(plugin, input.value.trim(), list, status, button, panel).catch((error) => {
+      status.hidden = false;
+      status.textContent = "Не получилось";
+      toast(error.message);
+    });
+  });
+  return form;
+}
+
+function pluginAddressForm(plugin, status, panel) {
+  const form = document.createElement("form");
+  form.className = "form-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.required = true;
+  input.maxLength = 4096;
+  input.autocomplete = "off";
+  input.placeholder = "Адрес";
+  input.setAttribute("aria-label", "Адрес");
+  const button = document.createElement("button");
+  button.className = "btn primary";
+  button.type = "submit";
+  button.textContent = "В библиотеку";
+  form.append(input, button);
+  form.addEventListener("submit", (event) => {
+    event.preventDefault();
+    button.disabled = true;
+    importPluginURL(plugin.id, pluginAddress(input.value), status, panel)
+      .catch((error) => {
+        status.hidden = false;
+        status.textContent = "Не получилось";
+        toast(error.message);
+      })
+      .finally(() => { button.disabled = false; });
+  });
+  return form;
+}
+
+async function runPluginSearch(plugin, query, list, status, button, panel) {
+  if (!query || !list) return;
+  button.disabled = true;
+  status.hidden = false;
+  status.textContent = "Ищем…";
+  list.replaceChildren();
+  try {
+    const data = await api(`/api/plugins/${encodeURIComponent(plugin.id)}/search`, {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    });
+    const items = data.items || [];
+    if (!items.length) {
+      status.textContent = "Ничего не нашлось";
+      return;
+    }
+    status.hidden = true;
+    for (const item of items) {
+      list.append(pluginResultRow(plugin, item, status, panel));
+    }
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function pluginResultRow(plugin, item, status, panel) {
+  const row = document.createElement("li");
+  row.className = "plugin-result";
+  const text = document.createElement("div");
+  text.className = "plugin-result-text";
+  const title = document.createElement("strong");
+  title.textContent = item.title || "";
+  const meta = document.createElement("span");
+  const bits = [];
+  if (item.artist) bits.push(item.artist);
+  if (Number.isFinite(item.duration)) bits.push(fmtTime(item.duration));
+  meta.textContent = bits.join(" · ");
+  text.append(title, meta);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "btn";
+  button.textContent = "В библиотеку";
+  button.addEventListener("click", () => {
+    button.disabled = true;
+    importPluginURL(plugin.id, item.url, status, panel)
+      .catch((error) => {
+        status.hidden = false;
+        status.textContent = "Не получилось";
+        toast(error.message);
+      })
+      .finally(() => { button.disabled = false; });
+  });
+  row.append(text, button);
+  return row;
+}
+
+function pluginAddress(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/https?:\/+/i);
+  if (!match) return text;
+  const tail = text.slice(match.index + match[0].length).replace(/^\/+/, "");
+  return `${match[0].split(":")[0].toLowerCase()}://${tail}`;
+}
+
+async function importPluginURL(pluginId, url, status, panel) {
+  status.hidden = false;
+  status.textContent = "Ставим в очередь…";
+  if (panel) {
+    panel.hidden = true;
+    panel.replaceChildren();
+  }
+  const job = await api(`/api/plugins/${encodeURIComponent(pluginId)}/import`, {
+    method: "POST",
+    body: JSON.stringify({ url }),
+  });
+  await watchPluginJob(pluginId, job.id, status, panel);
+}
+
+async function watchPluginJob(pluginId, jobId, status, panel) {
+  const token = (pluginJobWatch[pluginId] || 0) + 1;
+  pluginJobWatch[pluginId] = token;
+  for (;;) {
+    if (pluginJobWatch[pluginId] !== token) return;
+    const job = await api(`/api/plugin-jobs/${encodeURIComponent(jobId)}`);
+    if (pluginJobWatch[pluginId] !== token) return;
+    renderPluginImport(status, panel, job);
+    if (job.status === "done" || job.status === "error" || job.status === "cancelled") return;
+    await new Promise((resolve) => setTimeout(resolve, 800));
+  }
+}
+
+const PLUGIN_JOB_NAMES = {
+  pending: "Ждём",
+  running: "Скачиваем",
+  done: "В библиотеке",
+  error: "Не получилось",
+  cancelled: "Отменено",
+};
+
+const PLUGIN_TRACK_NAMES = {
+  pending: "Ждёт",
+  running: "Качается",
+  done: "Готово",
+  error: "Ошибка",
+};
+
+function pluginImportItems(job) {
+  const items = Array.isArray(job?.progress?.items) ? job.progress.items : [];
+  if (job?.status !== "done") return items;
+  return items.map((item) => (
+    item?.status === "error" ? item : { ...item, status: "done", pct: 100 }
+  ));
+}
+
+function pluginJobLabel(job) {
+  const progress = job.progress || {};
+  const items = pluginImportItems(job);
+  let text = PLUGIN_JOB_NAMES[job.status] || "Скачиваем";
+  if (items.length > 1) {
+    const finished = items.filter((item) => item.status === "done" || item.status === "error").length;
+    const current = items.some((item) => item.status === "running") ? finished + 1 : finished;
+    text += ` · ${Math.min(items.length, Math.max(current, 1))} из ${items.length}`;
+  } else if (progress.message) {
+    text += ` · ${progress.message}`;
+  }
+  if (job.error) text += ` · ${job.error}`;
+  return text;
+}
+
+function renderPluginImport(status, panel, job) {
+  status.textContent = pluginJobLabel(job);
+  if (!panel) {
+    status.hidden = false;
+    return;
+  }
+  status.hidden = true;
+  const items = pluginImportItems(job);
+  const pct = job.status === "done"
+    ? 100
+    : Math.max(0, Math.min(100, Number(job.progress?.pct) || 0));
+  panel.hidden = false;
+  panel.replaceChildren();
+
+  const head = document.createElement("div");
+  head.className = "plugin-import-head";
+  const label = document.createElement("span");
+  label.textContent = status.textContent;
+  const percent = document.createElement("span");
+  percent.textContent = `${Math.round(pct)}%`;
+  head.append(label, percent);
+
+  const bar = document.createElement("div");
+  bar.className = "plugin-import-bar";
+  bar.setAttribute("role", "progressbar");
+  bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", "100");
+  bar.setAttribute("aria-valuenow", String(Math.round(pct)));
+  bar.setAttribute("aria-label", status.textContent);
+  const fill = document.createElement("span");
+  fill.style.setProperty("--plugin-pct", `${pct}%`);
+  bar.append(fill);
+  panel.append(head, bar);
+
+  if (!items.length) return;
+  const list = document.createElement("ol");
+  list.className = "plugin-import-tracks";
+  items.forEach((item, index) => {
+    const state = PLUGIN_TRACK_NAMES[item.status] ? item.status : "pending";
+    const row = document.createElement("li");
+    row.className = "plugin-import-track";
+    row.dataset.status = state;
+    const title = document.createElement("strong");
+    title.textContent = item.title || `Песня ${index + 1}`;
+    const note = document.createElement("span");
+    note.className = "plugin-import-state";
+    note.textContent = state === "running" && Number.isFinite(Number(item.pct))
+      ? `${PLUGIN_TRACK_NAMES[state]} ${Math.round(item.pct)}%`
+      : PLUGIN_TRACK_NAMES[state];
+    row.append(title, note);
+    if (state === "running") {
+      const trackBar = document.createElement("span");
+      trackBar.className = "plugin-track-bar";
+      const trackFill = document.createElement("span");
+      const trackPct = Math.max(0, Math.min(100, Number(item.pct) || 0));
+      trackFill.style.setProperty("--plugin-pct", `${trackPct}%`);
+      trackBar.append(trackFill);
+      row.append(trackBar);
+    }
+    list.append(row);
+  });
+  panel.append(list);
+}
+/* /plugin-panels */
+
 function wire() {
   wireTheme();
   wireUiChoice();
@@ -6859,7 +7318,10 @@ function wireYandex() {
 }
 
 async function bootApp() {
-  if (!multiUser || account?.user?.roles?.includes("admin")) startBackgroundJobsMonitor();
+  if (!multiUser || account?.user?.roles?.includes("admin")) {
+    startBackgroundJobsMonitor();
+    loadPluginTabs().catch(() => clearPluginTabs());
+  }
   api("/api/profile")
     .then((p) => renderMaturity(p.maturity))
     .catch(console.error);

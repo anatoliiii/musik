@@ -62,6 +62,7 @@
         <button type="button" class="tab active" data-view="home" data-nav="listen" aria-current="page"><span>Слушать</span></button>
         <button type="button" class="tab" data-view="library" data-nav="search" data-lib-default="tracks"><span>Поиск</span></button>
         <button type="button" class="tab" data-view="library" data-nav="collection" data-lib-default="albums"><span>Коллекция</span></button>
+        <button type="button" class="tab" data-view="library" data-nav="map" data-lib-default="map"><span>Карта</span></button>
         <button type="button" class="tab" data-view="profile" data-nav="me"><span>Я</span></button>
         <span class="tabs-divider" aria-hidden="true"></span>
         <button type="button" class="tab tab-secondary" data-view="player" data-nav="now">Сейчас играет</button>
@@ -348,7 +349,7 @@
       </section>
 
       <section id="view-library" class="view">
-        <h1 class="page-title" id="lib-title">Коллекция</h1>
+        <h1 class="page-title" id="lib-title" data-default-title="Коллекция">Коллекция</h1>
         <p class="sub" id="lib-count">—</p>
         <div class="seg" role="tablist" aria-label="Разделы библиотеки">
           <button type="button" class="seg-btn" data-lib="games">Игры</button>
@@ -787,6 +788,6 @@
     </div>
   </div>
   <div id="toast" class="toast" hidden></div>
-  <script src="/app.js?v=map3"></script>
+  <script src="/app.js?v=map-v3"></script>
 </body>
 </html>

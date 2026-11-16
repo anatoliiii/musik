@@ -4,6 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
+
+	"github.com/torwin-job/musik/player/internal/plugins"
 )
 
 type Config struct {
@@ -55,12 +58,22 @@ type Config struct {
 	YandexQuality  string
 	YandexAPIURL   string
 	YandexOAuthURL string
+	// PluginDirs is the manifest scan list. nil means the process was not
+	// given directories; Load fills it from MUSIK_PLUGIN_DIRS or the XDG default.
+	PluginDirs          []string
+	PluginTimeout       time.Duration
+	PluginSearchTimeout time.Duration
+	PluginConcurrency   int
 }
 
 func Load() Config {
 	root := findRoot()
 	db := env("MUSIK_DB_PATH", filepath.Join(root, "data", "db", "musik.db"))
 	dataDir := env("MUSIK_DATA_DIR", filepath.Dir(filepath.Dir(db)))
+	pluginDirs, err := plugins.DefaultDirsFromEnv()
+	if err != nil {
+		pluginDirs = nil
+	}
 	return Config{
 		Root:                 root,
 		DBPath:               db,
@@ -107,6 +120,10 @@ func Load() Config {
 		YandexQuality:        stringsToLower(env("MUSIK_YANDEX_QUALITY", "lossless")),
 		YandexAPIURL:         env("MUSIK_YANDEX_API_URL", ""),
 		YandexOAuthURL:       env("MUSIK_YANDEX_OAUTH_URL", ""),
+		PluginDirs:           pluginDirs,
+		PluginTimeout:        time.Duration(envInt("MUSIK_PLUGIN_TIMEOUT", 900)) * time.Second,
+		PluginSearchTimeout:  time.Duration(envInt("MUSIK_PLUGIN_SEARCH_TIMEOUT", 30)) * time.Second,
+		PluginConcurrency:    envInt("MUSIK_PLUGIN_CONCURRENCY", 2),
 	}
 }
 

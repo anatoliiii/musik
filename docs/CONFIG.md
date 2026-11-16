@@ -21,7 +21,7 @@ openssl rand -hex 32     # генератор для паролей, токен�
 
 | Переменная | Значение |
 | --- | --- |
-| `MUSIK_LIBRARY` | Путь к музыке **на хосте**. В контейнерах она видна как `/music`; worker читает её только для чтения. |
+| `MUSIK_LIBRARY` | Путь к музыке **на хосте**. В контейнерах она видна как `/music`. Player монтирует её на запись: плагин кладёт сюда импортированные файлы. Worker читает её только для чтения. |
 
 ## 2. Вход: один владелец (по умолчанию)
 
@@ -154,6 +154,27 @@ Redirect URI клиента: `<MUSIK_PUBLIC_BASE_URL>/api/auth/oidc/default/call
 | `MUSIK_NIGHTLY_MIXES_TIMEZONE` | `UTC` в Compose | IANA-зона, например `Europe/Moscow`. |
 | `MUSIK_WATCH_DEBOUNCE_SEC`, `MUSIK_WATCH_CLUSTERS`, `MUSIK_WATCH_MIXES` | 45, 1, 1 | Для `musik watch`: пауза после изменений в папке и что пересчитывать. |
 | `MUSIK_WORKER_JOB_KINDS` | все | Виды заданий этого воркера, JSON-список, например `["embed","full_rescan"]`, если работают несколько воркеров (отдельный GPU). |
+
+## 9. Плагины
+
+Плеер не скачивает плагины и не кладёт их в образ. Manifest (`*.json`) лежит
+прямо в каталоге плагинов; executable — рядом или в подкаталоге. Протокол —
+[sdk/plugin/v1/README.md](../sdk/plugin/v1/README.md). После успешного импорта
+плеер ставит обычный `full_rescan`.
+
+| Переменная | По умолчанию | Смысл |
+| --- | --- | --- |
+| `MUSIK_PLUGIN_DIRS` | `$XDG_DATA_HOME/musik/plugins` или `~/.local/share/musik/plugins` | Каталоги manifest. Непустое значение заменяет умолчание. Несколько путей разделяет системный разделитель (`:` на Linux). В Compose это **один** каталог на хосте: он монтируется на запись как `/plugins`, а процесс внутри контейнера видит `MUSIK_PLUGIN_DIRS=/plugins`. |
+| `MUSIK_PLUGIN_TIMEOUT` | 900 | Секунды на одну задачу импорта. |
+| `MUSIK_PLUGIN_SEARCH_TIMEOUT` | 30 | Секунды на `library.search`. Короче, чем импорт. |
+| `MUSIK_PLUGIN_CONCURRENCY` | 2 | Сколько процессов плагинов может работать одновременно. |
+| `MUSIK_YANDEX_QUALITY` | `lossless` | Качество для protocol v1 плагина Яндекс Музыки: `lossless`, `hq` или `nq`. |
+| `MUSIK_YANDEX_API_URL` | `https://api.music.yandex.net` | API URL или совместимый прокси для плагина Яндекс Музыки. |
+| `MUSIK_YANDEX_TOKEN_FILE` | `token` рядом с executable | Другой путь к OAuth token файлу. Секрет остаётся в каталоге плагина. |
+
+Cookies и другие секреты плагина задаются его собственной конфигурацией, не
+в `.env` плеера и не в теле задания. Каталог плагина в Docker смонтирован на
+запись, чтобы executable мог хранить свои файлы рядом с собой.
 
 ## Пример: один владелец, SQLite
 
